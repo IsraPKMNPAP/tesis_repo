@@ -1,10 +1,15 @@
+import sys
 import os
 import pandas as pd
+# Añadir la raíz del proyecto al path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from src.data_cleaning.cleaning import limpiar_dataset
+
 
 # Paths relativos al directorio raíz
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RAW_PATH = os.path.join(ROOT_DIR, "data", "raw", "dataset_bicicicletas.csv")
+RAW_PATH = os.path.join(ROOT_DIR, "data", "raw", "all_data.csv")
 PROCESSED_DIR = os.path.join(ROOT_DIR, "data", "processed")
 PROCESSED_PATH = os.path.join(PROCESSED_DIR, "dataset_bicicicletas_clean.csv")
 
