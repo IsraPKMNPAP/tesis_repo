@@ -1,5 +1,6 @@
 # Paquetes
 import pandas as pd
+import numpy as np
 
 # Funciones de limpieza
 def convertir_timestamp(df):
@@ -46,10 +47,28 @@ def categorias_a_str(df):
         df[col] = df[col].astype(str)
     return df
 
+def imputar_valores(df, metodo="mixto"):
+    df = df.copy()
+    if metodo == "mixto":
+        for col in df.columns:
+            if df[col].dtype.name == 'category':
+                df[col] = df[col].cat.add_categories(['missing']).fillna('missing')
+            elif df[col].dtype in [np.float64, np.int64]:
+                df[col] = df.groupby('participant')[col].transform(lambda x: x.fillna(x.median()))
+    elif metodo == "media":
+        df = df.fillna(df.mean(numeric_only=True))
+    elif metodo == "drop":
+        df = df.dropna()
+    # --- Diagnóstico de valores faltantes ---
+    n_missing = df.isna().sum().sum()
+    if n_missing > 0:
+        print(f"Advertencia: quedan {n_missing} valores NaN no imputados.")
+    return df
+        
 def limpiar_dataset(df):
     df = convertir_timestamp(df)
     df = convertir_columnas_binarias(df)
     df = categorias_a_str(df)
     df = convertir_a_categorico(df)
-    df.fillna(0, inplace=True)
+    df = imputar_valores(df)
     return df
