@@ -83,7 +83,7 @@ def main():
         saved_path = args.save
         print(f"Guardado en: {saved_path}")
 
-    if args.print-cmd:
+    if args.print_cmd:
         base_cmd = [
             "python",
             "mains/run_training.py",
@@ -108,4 +108,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
