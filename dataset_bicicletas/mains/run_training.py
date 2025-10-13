@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sys
 from pathlib import Path
 import numpy as np
 import pandas as pd
+
+# Asegurar que el directorio padre (raíz del paquete) esté en sys.path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Ejecutar desde el directorio dataset_bicicletas
 from src.data_loading.load import load_all_data

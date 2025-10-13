@@ -97,3 +97,10 @@ Recomendación: ejecutar los comandos situándote dentro de la carpeta `dataset_
 - Si instalas PyTorch con CUDA específica, puedes omitir `torch` del `requirements.txt` y hacer la instalación manual según tu GPU.
 - Las utilidades de features mantienen el orden original de las columnas y generan un hash corto útil para etiquetar experimentos.
 
+### Ejecutar como módulo (recomendado)
+
+Para asegurar la resolución correcta de imports de `src/` y `utils/`, puedes ejecutar los scripts como módulos desde la carpeta `dataset_bicicletas`:
+
+- `python -m mains.run_cleaning --csv-in data/raw/all_data.csv --csv-out data/processed/dataset_bicicletas_clean.csv`
+- `python -m mains.run_features --csv data/processed/dataset_bicicletas_clean.csv --interactive --save utils/feature_sets/exp1.json --print-cmd --no-clean`
+- `python -m mains.run_training --csv data/processed/dataset_bicicletas_clean.csv --no-clean --features-file utils/feature_sets/exp1.json --prefix exp1`
