@@ -216,15 +216,23 @@ class VideoWindowsDataset(Dataset):
         part: Optional[str] = None
 
         if isinstance(obj, dict):
-            # Preferred key is 'frames' per user data; fallbacks supported
-            cand = obj.get("frames") or obj.get("x")
-            if isinstance(cand, torch.Tensor):
-                x = cand
+            # Buscar el tensor de frames sin evaluación booleana
+            if "frames" in obj:
+                x = obj["frames"]
+            elif "x" in obj:
+                x = obj["x"]
             else:
-                raise TypeError(f"No tensor 'frames' en {p}")
-            y = obj.get("label") if isinstance(obj.get("label"), (int, torch.Tensor)) else obj.get("y")
+                raise KeyError(f"No se encontró un tensor 'frames' o 'x' en {p}")
+
+            # Extraer etiqueta
+            y = obj.get("label")
             if isinstance(y, torch.Tensor):
                 y = int(y.item())
+            elif isinstance(obj.get("y"), (int, torch.Tensor)):
+                y = obj.get("y")
+                if isinstance(y, torch.Tensor):
+                    y = int(y.item())
+
             ts = obj.get("timestamp") or obj.get("ts")
             wid = obj.get("window_id") or obj.get("idx")
             part = obj.get("participant")
