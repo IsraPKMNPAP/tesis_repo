@@ -2,36 +2,27 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import os
 import sys
-from typing import Optional, Tuple
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader
+from sklearn.metrics import classification_report
 
-# Ensure package root on path (same pattern as run_training.py)
+# Ensure package root on path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.data_loading.video_windows import (
-    VideoWindowsDataset,
-    adjust_paths_prefix,
-    map_by_timestamp_or_order,
-)
+from src.data_loading.video_windows import VideoWindowsDataset
 from src.models.video_torch import VideoCNNLSTM, train_gpu, extract_embeddings
 from src.models.econ import fit_mnlogit
 from utils.results_io import ensure_dir, default_prefix, save_text
 
 
 def collate_windows(batch):
-    # batch is a list of WindowSample. We build tensors and simple lists for meta.
-    xs = []
-    ys = []
-    ts = []
-    wids = []
-    parts = []
+    xs, ys, ts, wids, parts = [], [], [], [], []
     for b in batch:
         xs.append(b.x)
         ys.append(-1 if b.y is None else int(b.y))
@@ -39,17 +30,15 @@ def collate_windows(batch):
         wids.append(b.window_id)
         parts.append(b.participant)
 
-    # Stack along batch dimension; handle inputs of shape [T,C,H,W] or [C,H,W]
     if xs[0].dim() == 3:
-        x = torch.stack(xs, dim=0)  # [B, C, H, W]
+        x = torch.stack(xs, dim=0)
     elif xs[0].dim() == 4:
-        x = torch.stack(xs, dim=0)  # [B, T, C, H, W]
+        x = torch.stack(xs, dim=0)
     else:
         raise ValueError(f"Tensor de entrada con dimensión no soportada: {xs[0].shape}")
 
     y = torch.tensor(ys, dtype=torch.long)
 
-    # Return a simple container compatible with attribute access in training code
     class B:
         def __init__(self, x, y, timestamp, window_id, participant):
             self.x = x
@@ -62,15 +51,17 @@ def collate_windows(batch):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Train CNN+LSTM on precomputed video window tensors")
-    ap.add_argument("--pickle", type=str, required=True, help="Ruta al X_proc_final.pkl con rutas y metadatos")
+    ap = argparse.ArgumentParser(description="Train CNN+LSTM on linked video window tensors (processed pickle)")
+    ap.add_argument(
+        "--pickle",
+        type=str,
+        default="~/projects/tesis_repo/dataset_bicicletas/data/processed/X_proc_final_linked.pkl",
+        help="Ruta al pickle procesado con columna 'gpu_tensor_path'",
+    )
     ap.add_argument("--path-col", type=str, default="gpu_tensor_path", help="Columna con rutas a .pt")
     ap.add_argument("--label-col", type=str, default="action", help="Columna con label entero")
     ap.add_argument("--timestamp-col", type=str, default="timestamp")
     ap.add_argument("--window-id-col", type=str, default="window")
-    ap.add_argument("--onedrive-prefix", type=str, default=None, help="Prefijo a reemplazar (Windows/OneDrive)")
-    ap.add_argument("--linux-root", type=str, default=None, help="Raíz de datos en GPU/Linux")
-    ap.add_argument("--map-by-timestamp", action="store_true", help="Mapear usando timestamp/orden a window_i.pt")
     ap.add_argument("--batch-size", type=int, default=16)
     ap.add_argument("--epochs", type=int, default=20)
     ap.add_argument("--lr", type=float, default=1e-3)
@@ -79,30 +70,27 @@ def main():
     ap.add_argument("--lstm-hidden", type=int, default=128)
     ap.add_argument("--lstm-layers", type=int, default=1)
     ap.add_argument("--bidirectional", action="store_true")
-    ap.add_argument("--num-classes", type=int, required=False, help="Si no se provee, se infiere de la columna de labels")
-    ap.add_argument("--arkoudi", action="store_true", help="Usar cabeza Arkoudi (embeddings de clase, logits = z @ E^T)")
-    ap.add_argument("--arkoudi-no-norm", action="store_true", help="Desactivar normalización L2 en Arkoudi head")
+    ap.add_argument("--num-classes", type=int, required=False)
+    ap.add_argument("--arkoudi", action="store_true")
+    ap.add_argument("--arkoudi-no-norm", action="store_true")
     ap.add_argument("--val-split", type=float, default=0.2)
-    ap.add_argument("--prefix", type=str, default=None, help="Prefijo para resultados en results/")
+    ap.add_argument("--prefix", type=str, default=None)
     args = ap.parse_args()
 
-    # Load dataframe from pickle
-    pkl_path = Path(args.pickle)
+    pkl_path = Path(os.path.expanduser(args.pickle))
     if not pkl_path.exists():
         raise FileNotFoundError(f"No existe el pickle: {pkl_path}")
     df = pd.read_pickle(pkl_path)
-
-    # Optional path prefix adjustment
-    if args.onedrive_prefix and args.linux_root:
-        df = adjust_paths_prefix(df, column=args.path_col, src_prefix=args.onedrive_prefix, dst_prefix=args.linux_root)
-
-    # Optional timestamp/order mapping to GPU window files
-    if args.map_by_timestamp and args.linux_root:
-        df = map_by_timestamp_or_order(df, timestamp_col=args.timestamp_col, gpu_root=args.linux_root)
-        # Use the mapped column from here on
-        path_col = "gpu_tensor_path"
-    else:
-        path_col = args.path_col
+    # Verify path column exists
+    if args.path_col not in df.columns:
+        # Try a common fallback
+        if "gpu_tensor_path" in df.columns:
+            print(f"Aviso: columna '{args.path_col}' no existe. Usando 'gpu_tensor_path'.")
+            args.path_col = "gpu_tensor_path"
+        else:
+            raise KeyError(
+                f"El pickle no contiene la columna de rutas '{args.path_col}'. Ejecuta primero run_link_video_tensors para generar 'gpu_tensor_path'."
+            )
 
     # Split train/val
     idx = np.arange(len(df))
@@ -115,10 +103,18 @@ def main():
     df_val = df.iloc[val_idx].reset_index(drop=True)
 
     ds_tr = VideoWindowsDataset(
-        df_tr, path_col=path_col, label_col=args.label_col, timestamp_col=args.timestamp_col, window_id_col=args.window_id_col
+        df_tr,
+        path_col=args.path_col,
+        label_col=args.label_col,
+        timestamp_col=args.timestamp_col,
+        window_id_col=args.window_id_col,
     )
     ds_val = VideoWindowsDataset(
-        df_val, path_col=path_col, label_col=args.label_col, timestamp_col=args.timestamp_col, window_id_col=args.window_id_col
+        df_val,
+        path_col=args.path_col,
+        label_col=args.label_col,
+        timestamp_col=args.timestamp_col,
+        window_id_col=args.window_id_col,
     )
 
     dl_tr = DataLoader(ds_tr, batch_size=args.batch_size, shuffle=True, num_workers=0, collate_fn=collate_windows)
@@ -147,21 +143,17 @@ def main():
         amp=True,
     )
 
-    # Prepare results dir
+    # Results
     results_dir = Path("results")
     ensure_dir(results_dir)
-    prefix = args.prefix or default_prefix(args.pickle, "videos")
+    prefix = args.prefix or default_prefix(pkl_path, "videos")
 
-    # Save model
     torch.save(model.state_dict(), results_dir / f"{prefix}_cnn_lstm.pt")
-    # Save history
     pd.DataFrame({"loss": hist.losses, "acc": hist.accs}).to_csv(results_dir / f"{prefix}_history.csv", index=False)
 
-    # Validation evaluation and probabilities
-    from sklearn.metrics import classification_report
+    # Validation
     model.eval()
-    all_y_true, all_y_pred = [], []
-    all_probs = []
+    all_y_true, all_y_pred, all_probs = [], [], []
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     with torch.no_grad():
         for b in dl_val:
@@ -178,14 +170,18 @@ def main():
         report = classification_report(all_y_true, all_y_pred)
         print("\n=== Validation (Torch CNN+LSTM) ===")
         print(report)
-        # Save report and probabilities
         save_text(report, results_dir / f"{prefix}_val_report.txt")
-        prob_df = pd.DataFrame(probs, columns=[f"class_{i}" for i in range(probs.shape[1])])
-        prob_df.to_csv(results_dir / f"{prefix}_val_proba.csv", index=False)
+        pd.DataFrame(probs, columns=[f"class_{i}" for i in range(probs.shape[1])]).to_csv(
+            results_dir / f"{prefix}_val_proba.csv", index=False
+        )
 
-    # Extract embeddings on full dataset (train+val)
+    # Embeddings + MNLogit
     ds_all = VideoWindowsDataset(
-        df.reset_index(drop=True), path_col=path_col, label_col=args.label_col, timestamp_col=args.timestamp_col, window_id_col=args.window_id_col
+        df.reset_index(drop=True),
+        path_col=args.path_col,
+        label_col=args.label_col,
+        timestamp_col=args.timestamp_col,
+        window_id_col=args.window_id_col,
     )
     dl_all = DataLoader(ds_all, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate_windows)
     embs, labels, meta = extract_embeddings(model, dl_all)
@@ -195,10 +191,8 @@ def main():
     emb_df["timestamp"] = [m[0] for m in meta]
     emb_df["window_id"] = [m[1] for m in meta]
     emb_df["participant"] = [m[2] for m in meta]
-    emb_csv = results_dir / f"{prefix}_embeddings.csv"
-    emb_df.to_csv(emb_csv, index=False)
+    emb_df.to_csv(results_dir / f"{prefix}_embeddings.csv", index=False)
 
-    # Econometric analysis: MNLogit on embeddings (only rows with labels)
     labeled_mask = pd.notna(emb_df["label"]).values
     if labeled_mask.sum() > 0:
         X_proc = emb_df.loc[labeled_mask, [c for c in emb_df.columns if c.startswith("emb_")]].to_numpy(dtype=float)
@@ -214,14 +208,11 @@ def main():
 
     # Save run config
     config = {
-        "pickle": args.pickle,
+        "pickle": str(pkl_path),
         "path_col": args.path_col,
         "label_col": args.label_col,
         "timestamp_col": args.timestamp_col,
         "window_id_col": args.window_id_col,
-        "onedrive_prefix": args.onedrive_prefix,
-        "linux_root": args.linux_root,
-        "map_by_timestamp": args.map_by_timestamp,
         "batch_size": args.batch_size,
         "epochs": args.epochs,
         "lr": args.lr,
@@ -230,7 +221,9 @@ def main():
         "lstm_hidden": args.lstm_hidden,
         "lstm_layers": args.lstm_layers,
         "bidirectional": args.bidirectional,
-        "num_classes": args.num_classes,
+        "num_classes": (args.num_classes if args.num_classes is not None else int(pd.Series(df[args.label_col]).nunique())),
+        "arkoudi": args.arkoudi,
+        "arkoudi_no_norm": args.arkoudi_no_norm,
         "val_split": args.val_split,
         "prefix": prefix,
     }

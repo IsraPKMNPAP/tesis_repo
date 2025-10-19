@@ -109,24 +109,38 @@ Para asegurar la resolución correcta de imports de `src/` y `utils/`, puedes ej
 
 Se incluye un flujo para entrenar modelos CNN+LSTM sobre ventanas de video ya convertidas a tensores de PyTorch por ventana.
 
-- Script: `mains/run_video_models.py`
+- Scripts:
+  - `mains/run_link_video_tensors.py`: enlaza (linkea) las rutas reales en GPU de los `window_*.pt` al pickle crudo y guarda un pickle procesado con una nueva columna (`gpu_tensor_path`).
+  - `mains/run_video_training.py`: entrena el modelo CNN+LSTM leyendo el pickle procesado y utilizando directamente `gpu_tensor_path`.
 - Entrada: un pickle con DataFrame (p. ej. `X_proc_final.pkl`) con columnas
   `participant, timestamp, window, paths, paths_list, paths_list_fixed, delta_t, delta_t_round, is_imputed, session_id, action`.
 - Por ventana, el archivo `.pt` correspondiente (en el GPU) debe contener un diccionario como:
   `{ "frames": Tensor[T,C,H,W], "label": int, "participant": str, "timestamp": str, "window_id": int }`.
 
-Opciones de mapeo de rutas
+Paso 1 — Link de rutas a GPU
+
+- Ejecuta el enlace desde el pickle crudo al procesado con la columna `gpu_tensor_path`:
+  - `python -m mains.run_link_video_tensors --pickle-in "~/projects/tesis_repo/dataset_bicicletas/data/raw/X_proc_final.pkl" --linux-root "/mnt/otra_particion/home/israel_gpu_data/video_tensors" --out-pickle "~/projects/tesis_repo/dataset_bicicletas/data/processed/X_proc_final_linked.pkl"`
+
+- El script escanea `--linux-root` para `window_*.pt` y asocia por `timestamp` si está en los `.pt` (o por orden como respaldo). Añade la columna `gpu_tensor_path` y guarda el pickle en `data/processed`.
+
+Paso 2 — Entrenamiento con el pickle procesado
+
+- Entrena usando la columna `gpu_tensor_path` (sin volver a enlazar rutas):
+  - `python -m mains.run_video_training --pickle "~/projects/tesis_repo/dataset_bicicletas/data/processed/X_proc_final_linked.pkl" --arkoudi`
+
+Opciones alternativas de mapeo de rutas (flujo combinado)
 
 - Reemplazo de prefijo (OneDrive → Linux): usar `--onedrive-prefix` y `--linux-root` si el DataFrame trae rutas Windows y quieres reemplazarlas por el root Linux donde están los `.pt`.
 - Mapeo robusto por `timestamp` u orden a `window_i.pt`: pasar `--linux-root` y `--map-by-timestamp` para escanear los `window_*.pt` en el GPU y asociarlos por timestamp (si existe en los `.pt`) o por orden cronológico como respaldo.
 
 Uso típico (desde `dataset_bicicletas`)
 
-- Mapeo robusto + cabeza Arkoudi (logits = z @ E^T):
-  - `python -m mains.run_video_models --pickle "..\\MODELOS_TORCH\\X_proc_final.pkl" --linux-root "/mnt/otra_particion/home/israel_gpu_data/video_tensors" --map-by-timestamp --arkoudi`
+- Flujo en dos pasos (recomendado y único):
+  1. `python -m mains.run_link_video_tensors --pickle-in "~/projects/tesis_repo/dataset_bicicletas/data/raw/X_proc_final.pkl" --linux-root "/mnt/otra_particion/home/israel_gpu_data/video_tensors" --out-pickle "~/projects/tesis_repo/dataset_bicicletas/data/processed/X_proc_final_linked.pkl"`
+  2. `python -m mains.run_video_training --pickle "~/projects/tesis_repo/dataset_bicicletas/data/processed/X_proc_final_linked.pkl" --arkoudi`
 
-- Reemplazo de prefijo simple (sin escaneo):
-  - `python -m mains.run_video_models --pickle "..\\MODELOS_TORCH\\X_proc_final.pkl" --onedrive-prefix "C:\\Users\\...\\OneDrive..." --linux-root "/mnt/otra_particion/home/israel_gpu_data/video_tensors"`
+
 
 Parámetros clave
 
