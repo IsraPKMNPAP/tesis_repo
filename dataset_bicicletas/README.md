@@ -104,3 +104,40 @@ Para asegurar la resolución correcta de imports de `src/` y `utils/`, puedes ej
 - `python -m mains.run_cleaning --csv-in data/raw/all_data.csv --csv-out data/processed/dataset_bicicletas_clean.csv`
 - `python -m mains.run_features --csv data/processed/dataset_bicicletas_clean.csv --interactive --save utils/feature_sets/exp1.json --print-cmd --no-clean`
 - `python -m mains.run_training --csv data/processed/dataset_bicicletas_clean.csv --no-clean --features-file utils/feature_sets/exp1.json --prefix exp1`
+
+## Modelos de Video por Ventanas (CNN+LSTM)
+
+Se incluye un flujo para entrenar modelos CNN+LSTM sobre ventanas de video ya convertidas a tensores de PyTorch por ventana.
+
+- Script: `mains/run_video_models.py`
+- Entrada: un pickle con DataFrame (p. ej. `X_proc_final.pkl`) con columnas
+  `participant, timestamp, window, paths, paths_list, paths_list_fixed, delta_t, delta_t_round, is_imputed, session_id, action`.
+- Por ventana, el archivo `.pt` correspondiente (en el GPU) debe contener un diccionario como:
+  `{ "frames": Tensor[T,C,H,W], "label": int, "participant": str, "timestamp": str, "window_id": int }`.
+
+Opciones de mapeo de rutas
+
+- Reemplazo de prefijo (OneDrive → Linux): usar `--onedrive-prefix` y `--linux-root` si el DataFrame trae rutas Windows y quieres reemplazarlas por el root Linux donde están los `.pt`.
+- Mapeo robusto por `timestamp` u orden a `window_i.pt`: pasar `--linux-root` y `--map-by-timestamp` para escanear los `window_*.pt` en el GPU y asociarlos por timestamp (si existe en los `.pt`) o por orden cronológico como respaldo.
+
+Uso típico (desde `dataset_bicicletas`)
+
+- Mapeo robusto + cabeza Arkoudi (logits = z @ E^T):
+  - `python -m mains.run_video_models --pickle "..\\MODELOS_TORCH\\X_proc_final.pkl" --linux-root "/mnt/otra_particion/home/israel_gpu_data/video_tensors" --map-by-timestamp --arkoudi`
+
+- Reemplazo de prefijo simple (sin escaneo):
+  - `python -m mains.run_video_models --pickle "..\\MODELOS_TORCH\\X_proc_final.pkl" --onedrive-prefix "C:\\Users\\...\\OneDrive..." --linux-root "/mnt/otra_particion/home/israel_gpu_data/video_tensors"`
+
+Parámetros clave
+
+- `--label-col` (por defecto `action`), `--timestamp-col` (por defecto `timestamp`), `--window-id-col` (por defecto `window`).
+- Hiperparámetros: `--cnn-emb`, `--lstm-hidden`, `--lstm-layers`, `--bidirectional`, `--batch-size`, `--epochs`, `--lr`, `--weight-decay`.
+- Arkoudi: `--arkoudi` activa la cabeza de embeddings de clase (interpretable); `--arkoudi-no-norm` desactiva normalización L2.
+- `--num-classes` se infiere del DataFrame si no se pasa.
+
+Artefactos en `results/`
+
+- `{prefix}_cnn_lstm.pt` (pesos), `{prefix}_history.csv` (entrenamiento), `{prefix}_val_report.txt` y `{prefix}_val_proba.csv` (validación).
+- `{prefix}_embeddings.csv` (embeddings por ventana con `emb_*`, `label`, `timestamp`, `window_id`, `participant`).
+- `{prefix}_mnlogit_embeddings_summary.txt` (MNLogit sobre embeddings; si hay labels disponibles).
+- `{prefix}_config.json` (configuración de la corrida).
