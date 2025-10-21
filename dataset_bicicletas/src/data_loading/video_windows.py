@@ -183,6 +183,7 @@ class VideoWindowsDataset(Dataset):
         timestamp_col: Optional[str] = None,
         window_id_col: Optional[str] = None,
         transform: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
+        prefer_df_label: bool = False,
     ):
         self.df = df.reset_index(drop=True)
         self.path_col = path_col
@@ -190,6 +191,7 @@ class VideoWindowsDataset(Dataset):
         self.timestamp_col = timestamp_col
         self.window_id_col = window_id_col
         self.transform = transform
+        self.prefer_df_label = prefer_df_label
 
         if path_col not in self.df.columns:
             # try fallbacks commonly used
@@ -244,14 +246,17 @@ class VideoWindowsDataset(Dataset):
         if self.transform is not None:
             x = self.transform(x)
 
-        # If no label inside .pt, try dataframe column
-        if y is None and self.label_col and self.label_col in self.df.columns:
-            val = row[self.label_col]
-            if pd.notna(val):
-                try:
-                    y = int(val)
-                except Exception:
-                    y = None
+        # Use DataFrame label if requested or if missing in .pt
+        if self.label_col and self.label_col in self.df.columns:
+            if self.prefer_df_label or y is None:
+                val = row[self.label_col]
+                if pd.notna(val):
+                    try:
+                        y = int(val)
+                    except Exception:
+                        # allow strings if encoder used later, but training expects int
+                        # keep as None to let upstream handle
+                        y = None
 
         if ts is None and self.timestamp_col and self.timestamp_col in self.df.columns:
             ts = row[self.timestamp_col]

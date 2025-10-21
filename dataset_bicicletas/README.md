@@ -145,6 +145,7 @@ Uso típico (desde `dataset_bicicletas`)
 Parámetros clave
 
 - `--label-col` (por defecto `action`), `--timestamp-col` (por defecto `timestamp`), `--window-id-col` (por defecto `window`).
+- `--prefer-df-label` para forzar el uso de la columna de labels del DataFrame (p. ej. `label_proc`) aun si los `.pt` contienen `label`.
 - Hiperparámetros: `--cnn-emb`, `--lstm-hidden`, `--lstm-layers`, `--bidirectional`, `--batch-size`, `--epochs`, `--lr`, `--weight-decay`.
 - Arkoudi: `--arkoudi` activa la cabeza de embeddings de clase (interpretable); `--arkoudi-no-norm` desactiva normalización L2.
 - `--num-classes` se infiere del DataFrame si no se pasa.

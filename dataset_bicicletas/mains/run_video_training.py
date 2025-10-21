@@ -60,6 +60,7 @@ def main():
     )
     ap.add_argument("--path-col", type=str, default="gpu_tensor_path", help="Columna con rutas a .pt")
     ap.add_argument("--label-col", type=str, default="action", help="Columna con label entero")
+    ap.add_argument("--prefer-df-label", action="store_true", help="Forzar uso de la columna de labels del DataFrame incluso si el .pt trae 'label'")
     ap.add_argument("--timestamp-col", type=str, default="timestamp")
     ap.add_argument("--window-id-col", type=str, default="window")
     ap.add_argument("--batch-size", type=int, default=16)
@@ -108,6 +109,7 @@ def main():
         label_col=args.label_col,
         timestamp_col=args.timestamp_col,
         window_id_col=args.window_id_col,
+        prefer_df_label=args.prefer_df_label,
     )
     ds_val = VideoWindowsDataset(
         df_val,
@@ -115,6 +117,7 @@ def main():
         label_col=args.label_col,
         timestamp_col=args.timestamp_col,
         window_id_col=args.window_id_col,
+        prefer_df_label=args.prefer_df_label,
     )
 
     dl_tr = DataLoader(ds_tr, batch_size=args.batch_size, shuffle=True, num_workers=0, collate_fn=collate_windows)
@@ -182,6 +185,7 @@ def main():
         label_col=args.label_col,
         timestamp_col=args.timestamp_col,
         window_id_col=args.window_id_col,
+        prefer_df_label=args.prefer_df_label,
     )
     dl_all = DataLoader(ds_all, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate_windows)
     embs, labels, meta = extract_embeddings(model, dl_all)
