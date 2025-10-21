@@ -158,3 +158,15 @@ Artefactos en `results/`
 - `{prefix}_embeddings.csv` (embeddings por ventana con `emb_*`, `label`, `timestamp`, `window_id`, `participant`).
 - `{prefix}_mnlogit_embeddings_summary.txt` (MNLogit sobre embeddings; si hay labels disponibles).
 - `{prefix}_config.json` (configuración de la corrida).
+
+## Verificación de Insumos (DataFrame y Tensors)
+
+Para inspeccionar rápidamente que el pickle y los `.pt` tengan lo esperado, usa el verificador:
+
+- `python -m utils.verify --pickle "~/projects/tesis_repo/dataset_bicicletas/data/processed/X_proc_final_linked.pkl" --path-col gpu_tensor_path --label-col action_proc --sample-pt 5 --random --show-dtypes`
+
+Qué muestra:
+- Columnas, shape y dtypes del DataFrame.
+- Head de columnas clave (`participant`, `timestamp`, `window`, `gpu_tensor_path`, `action_proc`, etc.).
+- Conteos de labels (soporta strings o ints).
+- Valida existencia de archivos y “probea” algunos `.pt` mostrando: tipo (dict/Tensor), claves, shape de `frames`, `label`, `timestamp`, `window_id`, `participant`.
