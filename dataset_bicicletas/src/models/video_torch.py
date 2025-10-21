@@ -129,12 +129,15 @@ def train_gpu(
     weight_decay: float = 0.0,
     amp: bool = True,
     device: Optional[torch.device] = None,
+    class_weights: Optional[torch.Tensor] = None,
 ):
     device = device or (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
     model = model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
-    criterion = nn.CrossEntropyLoss()
-    scaler = torch.cuda.amp.GradScaler(enabled=amp)
+    if class_weights is not None:
+        class_weights = class_weights.to(device)
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    scaler = torch.amp.GradScaler("cuda", enabled=amp)
 
     best_val_acc = -1.0
     best_state = None
@@ -148,16 +151,24 @@ def train_gpu(
             x = batch.x.to(device)
             y = torch.tensor(batch.y, device=device) if not isinstance(batch.y, torch.Tensor) else batch.y.to(device)
             optimizer.zero_grad(set_to_none=True)
-            with torch.cuda.amp.autocast(enabled=amp):
+            # Mask invalid labels (<0) if present
+            if y.ndim == 0:
+                y = y.unsqueeze(0)
+            mask = y >= 0
+            if mask.sum() == 0:
+                continue
+            with torch.amp.autocast("cuda", enabled=amp):
                 logits, _ = model(x)
-                loss = criterion(logits, y)
+                logits_m = logits[mask]
+                y_m = y[mask]
+                loss = criterion(logits_m, y_m)
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
             running_loss += float(loss.item())
-            pred = logits.argmax(dim=1)
-            correct += int((pred == y).sum().item())
-            total += int(y.numel())
+            pred = logits_m.argmax(dim=1)
+            correct += int((pred == y_m).sum().item())
+            total += int(y_m.numel())
         tr_losses.append(running_loss / max(1, len(train_loader)))
         tr_accs.append(correct / max(1, total))
 
@@ -169,10 +180,17 @@ def train_gpu(
                 for vb in val_loader:
                     vx = vb.x.to(device)
                     vy = torch.tensor(vb.y, device=device) if not isinstance(vb.y, torch.Tensor) else vb.y.to(device)
+                    if vy.ndim == 0:
+                        vy = vy.unsqueeze(0)
+                    vmask = vy >= 0
+                    if vmask.sum() == 0:
+                        continue
                     v_logits, _ = model(vx)
-                    v_pred = v_logits.argmax(dim=1)
-                    v_correct += int((v_pred == vy).sum().item())
-                    v_total += int(vy.numel())
+                    v_logits_m = v_logits[vmask]
+                    vy_m = vy[vmask]
+                    v_pred = v_logits_m.argmax(dim=1)
+                    v_correct += int((v_pred == vy_m).sum().item())
+                    v_total += int(vy_m.numel())
             v_acc = v_correct / max(1, v_total)
             if v_acc > best_val_acc:
                 best_val_acc = v_acc

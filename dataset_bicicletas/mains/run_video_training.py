@@ -61,6 +61,8 @@ def main():
     ap.add_argument("--path-col", type=str, default="gpu_tensor_path", help="Columna con rutas a .pt")
     ap.add_argument("--label-col", type=str, default="action", help="Columna con label entero")
     ap.add_argument("--prefer-df-label", action="store_true", help="Forzar uso de la columna de labels del DataFrame incluso si el .pt trae 'label'")
+    ap.add_argument("--no-default-class-map", action="store_true", help="No aplicar el mapeo por defecto de clases string→int si la columna de labels es string")
+    ap.add_argument("--class-map-json", type=str, default=None, help="Ruta a JSON con mapping de clase→int personalizado")
     ap.add_argument("--timestamp-col", type=str, default="timestamp")
     ap.add_argument("--window-id-col", type=str, default="window")
     ap.add_argument("--batch-size", type=int, default=16)
@@ -75,8 +77,12 @@ def main():
     ap.add_argument("--arkoudi", action="store_true")
     ap.add_argument("--arkoudi-no-norm", action="store_true")
     ap.add_argument("--val-split", type=float, default=0.2)
+    ap.add_argument("--class-weighted", action="store_true", help="Usar pesos de clase inversos a la frecuencia en CrossEntropyLoss")
     ap.add_argument("--prefix", type=str, default=None)
     args = ap.parse_args()
+
+    # Defaults
+    ap.set_defaults(prefer_df_label=True)
 
     pkl_path = Path(os.path.expanduser(args.pickle))
     if not pkl_path.exists():
@@ -103,6 +109,24 @@ def main():
     df_tr = df.iloc[tr_idx].reset_index(drop=True)
     df_val = df.iloc[val_idx].reset_index(drop=True)
 
+    # Build class map
+    default_map = {
+        'accelerate': 0,
+        'brake': 1,
+        'decelerate': 2,
+        'maintain speed': 3,
+        'wait': 4,
+    }
+    class_map = None
+    if args.class_map_json:
+        mp = Path(os.path.expanduser(args.class_map_json))
+        if not mp.exists():
+            raise FileNotFoundError(f"No existe class-map JSON: {mp}")
+        import json as _json
+        class_map = _json.loads(mp.read_text(encoding='utf-8'))
+    elif not args.no_default_class_map:
+        class_map = default_map
+
     ds_tr = VideoWindowsDataset(
         df_tr,
         path_col=args.path_col,
@@ -110,6 +134,7 @@ def main():
         timestamp_col=args.timestamp_col,
         window_id_col=args.window_id_col,
         prefer_df_label=args.prefer_df_label,
+        class_map=class_map,
     )
     ds_val = VideoWindowsDataset(
         df_val,
@@ -118,6 +143,7 @@ def main():
         timestamp_col=args.timestamp_col,
         window_id_col=args.window_id_col,
         prefer_df_label=args.prefer_df_label,
+        class_map=class_map,
     )
 
     dl_tr = DataLoader(ds_tr, batch_size=args.batch_size, shuffle=True, num_workers=0, collate_fn=collate_windows)
@@ -136,6 +162,28 @@ def main():
     )
 
     # Train
+    # Optional class weights
+    class_weights = None
+    if args.class_weighted:
+        # Build label vector from df_tr respecting class_map
+        if class_map is not None and df_tr[args.label_col].dtype == object:
+            y_series = df_tr[args.label_col].map(class_map)
+        else:
+            y_series = pd.to_numeric(df_tr[args.label_col], errors='coerce')
+        y_series = y_series.dropna().astype(int)
+        if args.num_classes is not None:
+            num_classes = args.num_classes
+        else:
+            num_classes = int(pd.Series(df[args.label_col]).nunique())
+        counts = y_series.value_counts().reindex(range(num_classes), fill_value=0)
+        freq = counts.values.astype(float)
+        with np.errstate(divide='ignore'):
+            inv = np.where(freq > 0, 1.0 / freq, 0.0)
+        # normalize to mean 1.0
+        if inv.sum() > 0:
+            inv = inv * (len(inv) / max(1.0, inv.sum()))
+        class_weights = torch.tensor(inv, dtype=torch.float32)
+
     model, hist = train_gpu(
         model=model,
         train_loader=dl_tr,
@@ -144,6 +192,7 @@ def main():
         lr=args.lr,
         weight_decay=args.weight_decay,
         amp=True,
+        class_weights=class_weights,
     )
 
     # Results
@@ -170,7 +219,7 @@ def main():
             all_probs.append(probs)
     if all_probs:
         probs = np.concatenate(all_probs, axis=0)
-        report = classification_report(all_y_true, all_y_pred)
+        report = classification_report(all_y_true, all_y_pred, zero_division=0)
         print("\n=== Validation (Torch CNN+LSTM) ===")
         print(report)
         save_text(report, results_dir / f"{prefix}_val_report.txt")
@@ -186,6 +235,7 @@ def main():
         timestamp_col=args.timestamp_col,
         window_id_col=args.window_id_col,
         prefer_df_label=args.prefer_df_label,
+        class_map=class_map,
     )
     dl_all = DataLoader(ds_all, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate_windows)
     embs, labels, meta = extract_embeddings(model, dl_all)

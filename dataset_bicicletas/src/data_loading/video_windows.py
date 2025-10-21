@@ -94,7 +94,7 @@ def map_by_timestamp_or_order(
     probe = files[:: max(1, len(files) // 20) ]  # ~20 samples
     for p in probe:
         try:
-            obj = torch.load(p, map_location="cpu")
+            obj = torch.load(p, map_location="cpu", weights_only=False)
             ts: Optional[str] = None
             if isinstance(obj, dict):
                 ts = obj.get("timestamp") or obj.get("ts")
@@ -113,7 +113,7 @@ def map_by_timestamp_or_order(
         ts_to_path: Dict[str, Path] = {}
         for p in files:
             try:
-                obj = torch.load(p, map_location="cpu")
+                obj = torch.load(p, map_location="cpu", weights_only=False)
                 ts = None
                 if isinstance(obj, dict):
                     ts = obj.get("timestamp") or obj.get("ts")
@@ -183,7 +183,8 @@ class VideoWindowsDataset(Dataset):
         timestamp_col: Optional[str] = None,
         window_id_col: Optional[str] = None,
         transform: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
-        prefer_df_label: bool = False,
+        prefer_df_label: bool = True,
+        class_map: Optional[Dict[str, int]] = None,
     ):
         self.df = df.reset_index(drop=True)
         self.path_col = path_col
@@ -192,6 +193,7 @@ class VideoWindowsDataset(Dataset):
         self.window_id_col = window_id_col
         self.transform = transform
         self.prefer_df_label = prefer_df_label
+        self.class_map = class_map
 
         if path_col not in self.df.columns:
             # try fallbacks commonly used
@@ -210,7 +212,7 @@ class VideoWindowsDataset(Dataset):
     def __getitem__(self, idx: int) -> WindowSample:
         row = self.df.iloc[idx]
         p = Path(str(row[self.path_col]))
-        obj = torch.load(p, map_location="cpu")
+        obj = torch.load(p, map_location="cpu", weights_only=False)
         x: torch.Tensor
         y: Optional[int] = None
         ts: Optional[str] = None
@@ -251,12 +253,14 @@ class VideoWindowsDataset(Dataset):
             if self.prefer_df_label or y is None:
                 val = row[self.label_col]
                 if pd.notna(val):
-                    try:
-                        y = int(val)
-                    except Exception:
-                        # allow strings if encoder used later, but training expects int
-                        # keep as None to let upstream handle
-                        y = None
+                    # Map strings if a class_map is provided
+                    if isinstance(val, str) and self.class_map is not None:
+                        y = self.class_map.get(val)
+                    else:
+                        try:
+                            y = int(val)
+                        except Exception:
+                            y = None
 
         if ts is None and self.timestamp_col and self.timestamp_col in self.df.columns:
             ts = row[self.timestamp_col]

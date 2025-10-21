@@ -138,14 +138,16 @@ Uso típico (desde `dataset_bicicletas`)
 
 - Flujo en dos pasos (recomendado y único):
   1. `python -m mains.run_link_video_tensors --pickle-in "~/projects/tesis_repo/dataset_bicicletas/data/raw/X_proc_final.pkl" --linux-root "/mnt/otra_particion/home/israel_gpu_data/video_tensors" --out-pickle "~/projects/tesis_repo/dataset_bicicletas/data/processed/X_proc_final_linked.pkl"`
-  2. `python -m mains.run_video_training --pickle "~/projects/tesis_repo/dataset_bicicletas/data/processed/X_proc_final_linked.pkl" --arkoudi`
+  2. `python -m mains.run_video_training --pickle "~/projects/tesis_repo/dataset_bicicletas/data/processed/X_proc_final_linked.pkl" --label-col label_proc --prefer-df-label`
 
 
 
 Parámetros clave
 
 - `--label-col` (por defecto `action`), `--timestamp-col` (por defecto `timestamp`), `--window-id-col` (por defecto `window`).
-- `--prefer-df-label` para forzar el uso de la columna de labels del DataFrame (p. ej. `label_proc`) aun si los `.pt` contienen `label`.
+- `--prefer-df-label` (por defecto activo) para usar siempre el label del DataFrame (p. ej. `label_proc`) e ignorar el `label` dentro de los `.pt`.
+- `--no-default-class-map` desactiva el mapeo string→int por defecto: `{'accelerate':0,'brake':1,'decelerate':2,'maintain speed':3,'wait':4}`. `--class-map-json` permite pasar un JSON con tu propio mapping.
+- `--class-weighted` usa pesos de clase inversos a la frecuencia durante el entrenamiento (CrossEntropy con `weight`).
 - Hiperparámetros: `--cnn-emb`, `--lstm-hidden`, `--lstm-layers`, `--bidirectional`, `--batch-size`, `--epochs`, `--lr`, `--weight-decay`.
 - Arkoudi: `--arkoudi` activa la cabeza de embeddings de clase (interpretable); `--arkoudi-no-norm` desactiva normalización L2.
 - `--num-classes` se infiere del DataFrame si no se pasa.
