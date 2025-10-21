@@ -97,9 +97,18 @@ def check_paths_and_probe_tensors(
         if isinstance(obj, dict):
             keys = list(obj.keys())
             print("Type: dict | Keys:", keys)
-            frames = obj.get("frames") or obj.get("x")
+
+            # Evita evaluar tensores como booleanos
+            if "frames" in obj:
+                frames = obj["frames"]
+            elif "x" in obj:
+                frames = obj["x"]
+            else:
+                frames = None
+
             if isinstance(frames, torch.Tensor):
                 print("frames shape:", tuple(frames.shape), "dtype:", frames.dtype)
+
             lbl = obj.get("label") or obj.get("y")
             if isinstance(lbl, torch.Tensor):
                 try:
