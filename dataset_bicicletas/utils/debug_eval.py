@@ -25,15 +25,34 @@ def class_balance_report(y_true: Iterable[int], y_pred: Iterable[int], num_class
 
 def logits_stats(logits: np.ndarray, sample_rows: int = 5):
     # logits: [N, C]
+    arr = np.asarray(logits, dtype=float)
+    finite_mask = np.isfinite(arr)
+    nan_count = int(np.isnan(arr).sum())
+    inf_count = int(np.isinf(arr).sum())
+    total = int(arr.size)
+    if arr.ndim == 2:
+        per_class_mean = np.nanmean(arr, axis=0).tolist()
+        per_class_std = np.nanstd(arr, axis=0).tolist()
+    else:
+        per_class_mean = None
+        per_class_std = None
+    overall_mean = float(np.nanmean(arr))
+    overall_std = float(np.nanstd(arr))
+    finite_vals = arr[finite_mask]
+    min_val = float(np.nanmin(finite_vals)) if finite_vals.size else float('nan')
+    max_val = float(np.nanmax(finite_vals)) if finite_vals.size else float('nan')
     stats = {
-        "shape": list(logits.shape),
-        "per_class_mean": logits.mean(axis=0).tolist() if logits.ndim == 2 else None,
-        "per_class_std": logits.std(axis=0).tolist() if logits.ndim == 2 else None,
-        "overall_mean": float(logits.mean()),
-        "overall_std": float(logits.std()),
-        "min": float(logits.min()),
-        "max": float(logits.max()),
-        "sample": logits[:sample_rows].tolist(),
+        "shape": list(arr.shape),
+        "per_class_mean": per_class_mean,
+        "per_class_std": per_class_std,
+        "overall_mean": overall_mean,
+        "overall_std": overall_std,
+        "min": min_val,
+        "max": max_val,
+        "nan_count": nan_count,
+        "inf_count": inf_count,
+        "finite_fraction": float(finite_vals.size / max(1, total)),
+        "sample": arr[:sample_rows].tolist(),
     }
     return stats
 
@@ -46,4 +65,3 @@ def print_debug_summary(y_true, y_pred, logits: Optional[np.ndarray] = None, num
         ls = logits_stats(logits)
         print("\n=== Logits Stats ===")
         print(json.dumps(ls, indent=2))
-

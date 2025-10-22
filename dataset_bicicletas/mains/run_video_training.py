@@ -240,7 +240,7 @@ def main():
 
     # Validation
     model.eval()
-    all_y_true, all_y_pred, all_probs = [], [], []
+    all_y_true, all_y_pred, all_probs, all_logits = [], [], [], []
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     with torch.no_grad():
         for b in dl_val:
@@ -248,16 +248,18 @@ def main():
             y = b.y.to(device)
             logits, _ = model(x)
             probs = torch.softmax(logits, dim=1).cpu().numpy()
+            logits_np = logits.detach().cpu().numpy()
             pred = logits.argmax(dim=1)
             all_y_true.extend(y.cpu().numpy().tolist())
             all_y_pred.extend(pred.cpu().numpy().tolist())
             all_probs.append(probs)
+            all_logits.append(logits_np)
     # Debug appendix: class balance and logits stats
     if args.debug_eval and all_probs:
         try:
             from utils.debug_eval import print_debug_summary
-            logits_np = np.concatenate(all_probs, axis=0)
-            print_debug_summary(all_y_true, all_y_pred, logits=logits_np, num_classes=probs.shape[1])
+            logits_full = np.concatenate(all_logits, axis=0)
+            print_debug_summary(all_y_true, all_y_pred, logits=logits_full, num_classes=probs.shape[1])
         except Exception as e:
             print("[WARN] Debug eval failed:", e)
     if all_probs:
