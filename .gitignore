@@ -3,3 +3,4 @@
 *.rar
 __pycache__/
 .env
+.pkl
