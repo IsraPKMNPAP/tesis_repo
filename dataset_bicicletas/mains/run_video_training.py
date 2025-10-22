@@ -85,7 +85,7 @@ def main():
     ap.add_argument("--window-id-col", type=str, default="window")
     ap.add_argument("--batch-size", type=int, default=16)
     ap.add_argument("--epochs", type=int, default=20)
-    ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--weight-decay", type=float, default=1e-4)
     ap.add_argument("--cnn-emb", type=int, default=128)
     ap.add_argument("--lstm-hidden", type=int, default=128)
@@ -96,6 +96,13 @@ def main():
     ap.add_argument("--arkoudi-no-norm", action="store_true")
     ap.add_argument("--val-split", type=float, default=0.2)
     ap.add_argument("--class-weighted", action="store_true", help="Usar pesos de clase inversos a la frecuencia en CrossEntropyLoss")
+    ap.add_argument("--scheduler", type=str, default=None, choices=[None, "step", "cosine", "plateau"], help="Scheduler de LR")
+    ap.add_argument("--step-size", type=int, default=5, help="Step size para StepLR")
+    ap.add_argument("--gamma", type=float, default=0.5, help="Gamma para StepLR")
+    ap.add_argument("--t-max", type=int, default=None, help="T_max para CosineAnnealing (por defecto = epochs)")
+    ap.add_argument("--plateau-patience", type=int, default=3, help="Paciencia para ReduceLROnPlateau")
+    ap.add_argument("--plateau-factor", type=float, default=0.5, help="Factor para ReduceLROnPlateau")
+    ap.add_argument("--debug-eval", action="store_true", help="Imprimir diagnósticos de logits y balance de clases en validación")
     ap.add_argument("--prefix", type=str, default=None)
     # Defaults before parsing to ensure effect with store_true
     ap.set_defaults(prefer_df_label=True)
@@ -201,6 +208,15 @@ def main():
             inv = inv * (len(inv) / max(1.0, inv.sum()))
         class_weights = torch.tensor(inv, dtype=torch.float32)
 
+    sched_kwargs = {}
+    if args.scheduler == "step":
+        sched_kwargs = {"step_size": args.step_size, "gamma": args.gamma}
+    elif args.scheduler == "cosine":
+        if args.t_max is not None:
+            sched_kwargs = {"t_max": args.t_max}
+    elif args.scheduler == "plateau":
+        sched_kwargs = {"patience": args.plateau_patience, "factor": args.plateau_factor}
+
     model, hist = train_gpu(
         model=model,
         train_loader=dl_tr,
@@ -210,6 +226,8 @@ def main():
         weight_decay=args.weight_decay,
         amp=True,
         class_weights=class_weights,
+        scheduler=args.scheduler,
+        scheduler_kwargs=sched_kwargs,
     )
 
     # Results
@@ -234,6 +252,14 @@ def main():
             all_y_true.extend(y.cpu().numpy().tolist())
             all_y_pred.extend(pred.cpu().numpy().tolist())
             all_probs.append(probs)
+    # Debug appendix: class balance and logits stats
+    if args.debug_eval and all_probs:
+        try:
+            from utils.debug_eval import print_debug_summary
+            logits_np = np.concatenate(all_probs, axis=0)
+            print_debug_summary(all_y_true, all_y_pred, logits=logits_np, num_classes=probs.shape[1])
+        except Exception as e:
+            print("[WARN] Debug eval failed:", e)
     if all_probs:
         probs = np.concatenate(all_probs, axis=0)
         report = classification_report(all_y_true, all_y_pred, zero_division=0)

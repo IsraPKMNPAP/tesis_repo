@@ -130,6 +130,8 @@ def train_gpu(
     amp: bool = True,
     device: Optional[torch.device] = None,
     class_weights: Optional[torch.Tensor] = None,
+    scheduler: Optional[str] = None,
+    scheduler_kwargs: Optional[dict] = None,
 ):
     device = device or (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
     model = model.to(device)
@@ -138,6 +140,23 @@ def train_gpu(
         class_weights = class_weights.to(device)
     criterion = nn.CrossEntropyLoss(weight=class_weights)
     scaler = torch.amp.GradScaler("cuda", enabled=amp)
+
+    # Scheduler setup
+    sched = None
+    scheduler_kwargs = scheduler_kwargs or {}
+    if scheduler:
+        s = scheduler.lower()
+        if s == "step":
+            step_size = int(scheduler_kwargs.get("step_size", 5))
+            gamma = float(scheduler_kwargs.get("gamma", 0.5))
+            sched = torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
+        elif s == "cosine":
+            tmax = int(scheduler_kwargs.get("t_max", epochs))
+            sched = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=tmax)
+        elif s == "plateau":
+            patience = int(scheduler_kwargs.get("patience", 3))
+            factor = float(scheduler_kwargs.get("factor", 0.5))
+            sched = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", patience=patience, factor=factor, verbose=False)
 
     best_val_acc = -1.0
     best_state = None
@@ -195,6 +214,12 @@ def train_gpu(
             if v_acc > best_val_acc:
                 best_val_acc = v_acc
                 best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+        # Step scheduler
+        if sched is not None:
+            if isinstance(sched, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                sched.step(best_val_acc if val_loader is not None else tr_accs[-1])
+            else:
+                sched.step()
 
     if best_state is not None:
         model.load_state_dict(best_state)
