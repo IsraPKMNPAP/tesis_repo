@@ -23,9 +23,27 @@ from utils.results_io import ensure_dir, default_prefix, save_text
 
 def collate_windows(batch):
     xs, ys, ts, wids, parts = [], [], [], [], []
+    default_map = {
+        'accelerate': 0,
+        'brake': 1,
+        'decelerate': 2,
+        'maintain speed': 3,
+        'wait': 4,
+    }
+    def _coerce_label(v):
+        if v is None:
+            return -1
+        try:
+            if isinstance(v, str):
+                return int(default_map.get(v, -1))
+            if isinstance(v, torch.Tensor):
+                return int(v.item())
+            return int(v)
+        except Exception:
+            return -1
     for b in batch:
         xs.append(b.x)
-        ys.append(-1 if b.y is None else int(b.y))
+        ys.append(_coerce_label(b.y))
         ts.append(b.timestamp)
         wids.append(b.window_id)
         parts.append(b.participant)
@@ -79,10 +97,9 @@ def main():
     ap.add_argument("--val-split", type=float, default=0.2)
     ap.add_argument("--class-weighted", action="store_true", help="Usar pesos de clase inversos a la frecuencia en CrossEntropyLoss")
     ap.add_argument("--prefix", type=str, default=None)
-    args = ap.parse_args()
-
-    # Defaults
+    # Defaults before parsing to ensure effect with store_true
     ap.set_defaults(prefer_df_label=True)
+    args = ap.parse_args()
 
     pkl_path = Path(os.path.expanduser(args.pickle))
     if not pkl_path.exists():
