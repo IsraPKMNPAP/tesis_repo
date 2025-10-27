@@ -73,6 +73,7 @@ class VideoCNNLSTM(nn.Module):
         num_classes: int = 3,
         arkoudi: bool = False,
         arkoudi_normalize: bool = True,
+        dropout: float = 0.0,
     ):
         super().__init__()
         self.cnn = SmallCNN(in_channels=in_channels, emb_dim=cnn_emb_dim)
@@ -82,8 +83,10 @@ class VideoCNNLSTM(nn.Module):
             num_layers=lstm_layers,
             batch_first=True,
             bidirectional=bidirectional,
+            dropout=(dropout if lstm_layers > 1 else 0.0),
         )
         head_in = lstm_hidden * (2 if bidirectional else 1)
+        self.dropout = nn.Dropout(dropout) if dropout and dropout > 0 else nn.Identity()
         if arkoudi:
             self.head = ArkoudiHead(head_in, num_classes, normalize=arkoudi_normalize)
         else:
@@ -109,7 +112,7 @@ class VideoCNNLSTM(nn.Module):
         out, (hn, cn) = self.lstm(f)  # out: [B, T, H]
         # Take last time-step hidden state
         z = out[:, -1, :]
-        logits = self.head(z)
+        logits = self.head(self.dropout(z))
         return logits, z  # also return embedding for extraction
 
 
@@ -132,13 +135,15 @@ def train_gpu(
     class_weights: Optional[torch.Tensor] = None,
     scheduler: Optional[str] = None,
     scheduler_kwargs: Optional[dict] = None,
+    grad_clip: Optional[float] = None,
+    label_smoothing: float = 0.0,
 ):
     device = device or (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
     model = model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     if class_weights is not None:
         class_weights = class_weights.to(device)
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=label_smoothing)
     scaler = torch.amp.GradScaler("cuda", enabled=amp)
 
     # Scheduler setup
@@ -182,6 +187,9 @@ def train_gpu(
                 y_m = y[mask]
                 loss = criterion(logits_m, y_m)
             scaler.scale(loss).backward()
+            if grad_clip is not None:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float(grad_clip))
             scaler.step(optimizer)
             scaler.update()
             running_loss += float(loss.item())

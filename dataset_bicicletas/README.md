@@ -72,14 +72,13 @@ Recomendación: ejecutar los comandos situándote dentro de la carpeta `dataset_
   - `--label`: columna objetivo (por defecto `action`).
   - `--no-clean`: usa el CSV tal cual (recomendado con `data/processed/...`).
   - `--mnlogit` y `--torch`: activan los modelos opcionales.
-  - `--prefix`: prefijo manual para artefactos en `results/`. Si lo omites, se autogenera con timestamp + cantidad de features + hash corto.
-- Artefactos que se guardan en `results/`:
-  - `{prefix}_config.json`: configuración de la corrida (csv, features, flags).
-  - `{prefix}_baseline_report.txt`: `classification_report` del test.
-  - `{prefix}_baseline_proba.csv`: probabilidades por clase en el test.
-  - `{prefix}_baseline_model.pkl`: pipeline sklearn (pickle con joblib).
-  - Si `--mnlogit`: `{prefix}_mnlogit_summary.txt`.
-  - Si `--torch`: `{prefix}_torch_model.pt` y `{prefix}_torch_history.csv` (pérdida y accuracy por época).
+- Artefactos que se guardan en `results/` (nuevo esquema de nombres):
+  - Formato: `Modelo-Artifact-Hash.ext`.
+  - Para baseline (LogReg):
+    - `LogReg-config-<hash>.json`, `LogReg-eval_report-<hash>.txt`, `LogReg-eval_proba-<hash>.csv`, `LogReg-model-<hash>.pkl`.
+  - Si `--mnlogit`: `MNLogit-summary-<hash>.txt`.
+  - Si `--torch`: `TorchEmbed-model-<hash>.pt` y `TorchEmbed-history-<hash>.csv`.
+  - Cada corrida agrega una entrada en `results/run_index.txt` con el `hash`, `model`, comando y configuración.
 
 ## Ejemplos Adicionales
 
@@ -152,12 +151,39 @@ Parámetros clave
 - Arkoudi: `--arkoudi` activa la cabeza de embeddings de clase (interpretable); `--arkoudi-no-norm` desactiva normalización L2.
 - `--num-classes` se infiere del DataFrame si no se pasa.
 
-Artefactos en `results/`
+Artefactos en `results/` (nuevo esquema)
 
-- `{prefix}_cnn_lstm.pt` (pesos), `{prefix}_history.csv` (entrenamiento), `{prefix}_val_report.txt` y `{prefix}_val_proba.csv` (validación).
-- `{prefix}_embeddings.csv` (embeddings por ventana con `emb_*`, `label`, `timestamp`, `window_id`, `participant`).
-- `{prefix}_mnlogit_embeddings_summary.txt` (MNLogit sobre embeddings; si hay labels disponibles).
-- `{prefix}_config.json` (configuración de la corrida).
+- Para CNN+LSTM (videos):
+  - `CNNLSTM-model-<hash>.pt`, `CNNLSTM-history-<hash>.csv`, `CNNLSTM-eval_report-<hash>.txt`, `CNNLSTM-eval_proba-<hash>.csv`.
+  - `CNNLSTM-embeddings-<hash>.csv` (embeddings por ventana con `emb_*`, `label`, `timestamp`, `window_id`, `participant`).
+  - `CNNLSTM-mnlogit_summary-<hash>.txt` (MNLogit sobre embeddings; si hay labels disponibles).
+- `CNNLSTM-config-<hash>.json` (configuración de la corrida) y una entrada en `results/run_index.txt`.
+
+## Backbones Visuales + LSTM (CLIP/ViT)
+
+Entrena modelos que extraen embeddings por frame con CLIP o ViT y modelan la secuencia con LSTM.
+
+- Script: `mains/run_video_backbones.py`
+- Entrada: pickle procesado (ver paso de link) con `gpu_tensor_path` y labels (`action` o `action_proc`).
+
+Uso típico:
+- CLIP finetune (congelado por defecto), LSTM y Arkoudi, coseno con scheduler coseno:
+  - `python -m mains.run_video_backbones --pickle "~/projects/tesis_repo/dataset_bicicletas/data/processed/X_proc_final_linked.pkl" --label-col action_proc --backbone clip --backbone-name ViT-B-16 --arkoudi --scheduler cosine --epochs 30 --lr 1e-4`
+- ViT (torchvision vit_b_16), LSTM bidireccional con pesos de clase:
+  - `python -m mains.run_video_backbones --pickle "~/projects/.../X_proc_final_linked.pkl" --label-col action_proc --backbone vit --backbone-name vit_b_16 --bidirectional --class-weighted --epochs 30 --lr 1e-4`
+
+Flags principales:
+- `--backbone {vit,clip}` y `--backbone-name` (vit_b_16 o ViT-B-16 para CLIP).
+- `--backbone-trainable` para permitir fine-tuning; por defecto congelado.
+- `--backbone-unfreeze-last N` para descongelar únicamente los últimos N bloques del transformador (recomendado 1–2 al comenzar).
+- `--target-size` (por defecto 224) para reescalar frames antes del backbone.
+- `--lstm-hidden`, `--lstm-layers`, `--bidirectional`, `--dropout` para regularización en LSTM/salida.
+- `--arkoudi` / `--arkoudi-no-norm`.
+- Entrenamiento: `--batch-size`, `--epochs`, `--lr` (por defecto 1e-4), `--weight-decay`, `--class-weighted`, `--scheduler {step,cosine,plateau}` y parámetros asociados.
+- Debug: `--debug-eval` imprime balance de clases y stats de logits.
+
+Requisitos adicionales:
+- Se añadieron `torchvision`, `timm` y `open-clip-torch` al `requirements.txt` para ViT/CLIP. Instala builds acordes a tu CUDA según la guía oficial de PyTorch.
 
 ## Verificación de Insumos (DataFrame y Tensors)
 
@@ -170,3 +196,9 @@ Qué muestra:
 - Head de columnas clave (`participant`, `timestamp`, `window`, `gpu_tensor_path`, `action_proc`, etc.).
 - Conteos de labels (soporta strings o ints).
 - Valida existencia de archivos y “probea” algunos `.pt` mostrando: tipo (dict/Tensor), claves, shape de `frames`, `label`, `timestamp`, `window_id`, `participant`.
+Recomendaciones de fine-tuning y LR
+
+- Backbones congelados (solo LSTM/cabeza): `--lr` en 1e-4 a 3e-4 suele funcionar bien.
+- Descongelando últimos 1–2 bloques (`--backbone-unfreeze-last 1` o `2`): usa LR más bajo, p. ej. 5e-5 a 1e-5, y `--scheduler cosine` o `plateau`.
+- Regularización: `--dropout` 0.1–0.3, `--class-weighted` para desbalance, `--weight-decay` 1e-4–1e-3.
+- Estabilidad: considera `--grad-clip 1.0` (ya activado por defecto en backbones) y `--label-smoothing 0.05` (activado en backbones).

@@ -22,11 +22,13 @@ from src.features.prepare import (
 )
 from src.models.baseline import train_and_evaluate
 from utils.results_io import (
-    default_prefix,
     ensure_dir,
     save_model_pickle,
     save_probs,
     save_text,
+    compute_run_hash,
+    artifact_name,
+    register_run,
 )
 from utils.features import feature_hash
 
@@ -84,35 +86,37 @@ def main():
         with np.printoptions(precision=4, suppress=True):
             print("Probabilidades primeras 5 observaciones:\n", probs[:5])
 
-    # Guardado de resultados baseline
-    # Construir prefijo si no se pasa: incluye recuento y hash corto de features
-    auto_prefix = f"{default_prefix(args.csv, args.label)}_{len(args.features)}f_{feature_hash(args.features)}"
-    prefix = args.prefix or auto_prefix
+    # Guardado de resultados baseline con nuevo esquema
     results_dir = Path("results")
     ensure_dir(results_dir)
+    model_name = "LogReg"
     # Guardar config de corrida
-    config = {
+    base_config = {
         "csv": args.csv,
         "features": list(args.features),
         "label": args.label,
         "mnlogit": args.mnlogit,
         "torch": args.torch,
         "no_clean": args.no_clean,
-        "prefix": prefix,
     }
-    (results_dir / f"{prefix}_config.json").write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
+    run_hash = compute_run_hash(base_config, sys.argv, model=model_name)
+    (results_dir / artifact_name(model_name, "config", run_hash, "json")).write_text(
+        json.dumps(base_config, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
     # Reporte
-    save_text(report, results_dir / f"{prefix}_baseline_report.txt")
+    save_text(report, results_dir / artifact_name(model_name, "eval_report", run_hash, "txt"))
     # Probabilidades
     classes = getattr(pipe.named_steps["classifier"], "classes_", [])
     save_probs(
         probs=probs,
         classes=classes,
-        out_path=results_dir / f"{prefix}_baseline_proba.csv",
+        out_path=results_dir / artifact_name(model_name, "eval_proba", run_hash, "csv"),
         index=getattr(y_test, "index", None),
     )
     # Modelo (pipeline entero)
-    save_model_pickle(pipe, results_dir / f"{prefix}_baseline_model.pkl")
+    save_model_pickle(pipe, results_dir / artifact_name(model_name, "model", run_hash, "pkl"))
+    # Index entry
+    register_run(results_dir, run_hash, model_name, cmd=" ".join(sys.argv), config=base_config)
 
     # MNLogit opcional
     if args.mnlogit:
@@ -124,7 +128,10 @@ def main():
         res = fit_mnlogit(X_train_proc, y_train_enc)
         summary = res.summary().as_text()
         print(summary)
-        save_text(summary, results_dir / f"{prefix}_mnlogit_summary.txt")
+        save_text(
+            summary,
+            results_dir / artifact_name("MNLogit", "summary", compute_run_hash(base_config, sys.argv, model="MNLogit"), "txt"),
+        )
 
     # Torch opcional
     if args.torch:
@@ -148,9 +155,12 @@ def main():
             f"Entrenado por {hist.epochs} épocas. Última pérdida={hist.losses[-1]:.4f}, Acc={hist.accs[-1]:.3f}"
         )
         # Guardado del modelo e historial
-        torch.save(model.state_dict(), results_dir / f"{prefix}_torch_model.pt")
+        torch_model_name = "TorchEmbed"
+        torch_hash = compute_run_hash(base_config, sys.argv, model=torch_model_name)
+        torch.save(model.state_dict(), results_dir / artifact_name(torch_model_name, "model", torch_hash, "pt"))
         hist_df = pd.DataFrame({"loss": hist.losses, "acc": hist.accs})
-        hist_df.to_csv(results_dir / f"{prefix}_torch_history.csv", index=False)
+        hist_df.to_csv(results_dir / artifact_name(torch_model_name, "history", torch_hash, "csv"), index=False)
+        register_run(results_dir, torch_hash, torch_model_name, cmd=" ".join(sys.argv), config=base_config)
 
 
 if __name__ == "__main__":
