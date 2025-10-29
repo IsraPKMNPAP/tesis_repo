@@ -42,6 +42,83 @@ def _copy_row_with_new_ts(row: pd.Series, ts_col: str, new_ts) -> pd.Series:
     return r
 
 
+def _ensure_paths_column(
+    df_csv: pd.DataFrame,
+    raw_csv_path: Optional[Path],
+    timestamp_col: str,
+    participant_col: str,
+    paths_col: str = "paths",
+) -> pd.DataFrame:
+    """Ensure 'paths' exists; if missing, fetch from raw CSV by (participant, timestamp), then drop nulls."""
+    if paths_col in df_csv.columns:
+        out = df_csv.copy()
+    else:
+        if raw_csv_path is None or not raw_csv_path.exists():
+            raise FileNotFoundError(
+                "No 'paths' in clean CSV and raw CSV not found to import it"
+            )
+        df_raw = pd.read_csv(raw_csv_path)
+        if timestamp_col not in df_raw.columns:
+            raise KeyError(
+                f"Raw CSV lacks timestamp column '{timestamp_col}' required to merge 'paths'"
+            )
+        df_raw = _to_dt(df_raw, timestamp_col)
+        cols = [participant_col, timestamp_col]
+        if paths_col not in df_raw.columns:
+            raise KeyError("Raw CSV lacks 'paths' column")
+        df_paths = df_raw[cols + [paths_col]].drop_duplicates(cols)
+        out = df_csv.merge(df_paths, on=cols, how="left")
+    before = len(out)
+    out = out[~out[paths_col].isna()].reset_index(drop=True)
+    after = len(out)
+    print(f"[paths] before={before} after_dropna={after}")
+    return out
+
+
+def fill_missing_windows(
+    df: pd.DataFrame,
+    timestamp_col: str = "timestamp",
+    participant_col: str = "participant",
+    imputed_col: str = "is_imputed",
+    min_gap: int = 5,
+    max_gap: int = 120,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Fill temporal gaps per participant by repeating last valid row; returns (df_filled, large_gaps)."""
+    df = df.sort_values(by=[participant_col, timestamp_col]).reset_index(drop=True)
+    rows: List[pd.Series] = []
+    large_gaps: List[Dict] = []
+
+    for pid, sub in df.groupby(participant_col):
+        sub = sub.reset_index(drop=True)
+        prev_row: Optional[pd.Series] = None
+        for _, row in sub.iterrows():
+            if prev_row is not None:
+                delta = (row[timestamp_col] - prev_row[timestamp_col]).total_seconds()
+                if delta > min_gap and delta <= max_gap:
+                    n_missing = int(delta // min_gap) - 1
+                    for i in range(n_missing):
+                        fake = prev_row.copy()
+                        fake[timestamp_col] = prev_row[timestamp_col] + pd.Timedelta(seconds=min_gap * (i + 1))
+                        fake[imputed_col] = True
+                        rows.append(fake)
+                elif delta > max_gap:
+                    large_gaps.append(
+                        {
+                            "participant": pid,
+                            "prev_timestamp": prev_row[timestamp_col],
+                            "curr_timestamp": row[timestamp_col],
+                            "delta": delta,
+                        }
+                    )
+            row = row.copy()
+            row[imputed_col] = False
+            rows.append(row)
+            prev_row = row
+    df_filled = pd.DataFrame(rows).reset_index(drop=True)
+    large_gaps_df = pd.DataFrame(large_gaps)
+    return df_filled, large_gaps_df
+
+
 @dataclass
 class AlignReport:
     added_rows: int
@@ -239,6 +316,9 @@ def main():
     ap.add_argument("--session-id-col", type=str, default="session_id")
     ap.add_argument("--imputed-col", type=str, default="is_imputed")
     ap.add_argument("--expected-step-seconds", type=int, default=5)
+    ap.add_argument("--raw-csv", type=str, default="data/raw/all_data.csv", help="raw CSV to fetch 'paths' if missing")
+    ap.add_argument("--paths-col", type=str, default="paths")
+    ap.add_argument("--max-gap", type=int, default=120, help="max gap (s) to fill with imputed windows")
     ap.add_argument("--strict", action="store_true", help="Fallar si hay violaciones o faltantes importantes")
     args = ap.parse_args()
 
@@ -255,8 +335,38 @@ def main():
     df_csv = pd.read_csv(csv_path)
     df_ref = pd.read_pickle(ref_path)
 
-    df_aligned, rep = align_csv_to_anchor(
+    print(f"[load] csv.shape={df_csv.shape}")
+    print(f"[load] ref.shape={df_ref.shape}")
+
+    # Timestamps to datetime before merges/fills
+    df_csv = _to_dt(df_csv, args.timestamp_col)
+    df_ref = _to_dt(df_ref, args.timestamp_col)
+    print(f"[to_datetime] csv.shape={df_csv.shape}")
+
+    # Ensure 'paths' column and drop nulls
+    raw_csv_path = _expand(args.raw_csv) if args.raw_csv else None
+    df_csv = _ensure_paths_column(
         df_csv,
+        raw_csv_path=raw_csv_path,
+        timestamp_col=args.timestamp_col,
+        participant_col=args.participant_col,
+        paths_col=args.paths_col,
+    )
+    print(f"[paths_ready] csv.shape={df_csv.shape}")
+
+    # Fill temporal gaps per participant using 5s step up to max_gap
+    df_csv_filled, large_gaps_df = fill_missing_windows(
+        df_csv,
+        timestamp_col=args.timestamp_col,
+        participant_col=args.participant_col,
+        imputed_col=args.imputed_col,
+        min_gap=args.expected_step_seconds,
+        max_gap=args.max_gap,
+    )
+    print(f"[fill_missing_windows] csv.shape={df_csv_filled.shape} | large_gaps={len(large_gaps_df)}")
+
+    df_aligned, rep = align_csv_to_anchor(
+        df_csv_filled,
         df_ref,
         timestamp_col=args.timestamp_col,
         participant_col=args.participant_col,
@@ -264,6 +374,7 @@ def main():
         imputed_col=args.imputed_col,
         expected_step_seconds=args.expected_step_seconds,
     )
+    print(f"[anchor_align] csv.shape={df_aligned.shape}")
 
     # Report
     print("=== Align Report ===")
@@ -291,4 +402,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
