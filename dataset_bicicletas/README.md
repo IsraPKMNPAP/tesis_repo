@@ -198,6 +198,45 @@ Qué muestra:
 - Valida existencia de archivos y “probea” algunos `.pt` mostrando: tipo (dict/Tensor), claves, shape de `frames`, `label`, `timestamp`, `window_id`, `participant`.
 Recomendaciones de fine-tuning y LR
 
+## Pipeline Multimodal (Tabular + Video)
+
+Esta primera iteración integra datos tabulares y ventanas de video en un espacio latente compartido usando un VAE. Requiere contar con el join multimodal (pickle) que une por `timestamp` las filas tabulares con las rutas `gpu_tensor_path` de los tensores de video.
+
+Preparación del dataset multimodal
+
+- Generar el join por timestamp (si no existe ya):
+  - `python mains/run_join_modalities.py --csv-in data/processed/dataset_bicicletas_clean_aligned.csv --pkl-in data/processed/X_proc_final_linked.pkl --out data/processed/multimodal_join.pkl --how one-to-one`
+
+Entrenamiento del VAE multimodal
+
+- Determinista (fusión temprana y reconstrucción de embeddings por modalidad):
+  - `python mains/run_multimodal_vae_train.py --pkl data/processed/multimodal_join.pkl --features-file utils/feature_sets/exp1.json --label-col action --batch-size 8 --epochs 20 --lr 1e-4 --deterministic`
+
+- Variacional (con término KL y annealing):
+  - `python mains/run_multimodal_vae_train.py --pkl data/processed/multimodal_join.pkl --features-file utils/feature_sets/exp1.json --label-col action --batch-size 8 --epochs 20 --lr 1e-4 --w-kl 1.0 --kl-anneal-steps 10000`
+
+Detalles
+
+- Dataloader: `src/data_loading/multimodal.py` combina tabulares (`x_tab`) con video (`x_vid`) reutilizando `VideoWindowsDataset` para cargar los tensores `.pt` por ventana (10 frames ≈ 5s). Por fila del pickle multimodal, hay exactamente una ventana de video.
+- Preprocesamiento tabular: se aplica `StandardScaler` a numéricas y `OneHotEncoder` a categóricas siguiendo `src/features/prepare.py::build_preprocessor`. El preprocesador ajustado se guarda en `results/MMVAE-preprocessor-*.pkl`.
+- Modelo: `src/models/mm_vae.py`
+  - Encoders por modalidad (MLP para tabular; backbone ViT/CLIP+LSTM para video) → fusión temprana → latente compartido `z`.
+  - Decoders por modalidad para reconstruir embeddings intermedios (no reconstruye píxeles ni features brutas, solo los embeddings de cada encoder).
+  - Cabeza de clasificación logística (`ArkoudiHead`) sobre `z`.
+- Script: `mains/run_multimodal_vae_train.py` divide train/val, entrena end-to-end y guarda artefactos en `results/` (`MMVAE_Det-*` o `MMVAE_Var-*`).
+
+Embeddings para análisis econométrico
+
+- Tras el entrenamiento, se guardan los embeddings finales por fila en `results/MMVAE_*/embeddings-*.csv` (prefijo depende del modo determinista/variacional):
+  - Determinista: columnas `z_0, z_1, ...` más `label`, `timestamp`, `window_id`, `participant`.
+  - Variacional: además de `z_*`, se agregan `mu_*` y `std_*` (desviación estándar derivada de `logvar`) para muestrear embeddings o usarlos como predictores con incertidumbre.
+
+Notas
+
+- Si no pasas `--features`/`--features-file`, se seleccionan automáticamente columnas numéricas excluyendo `gpu_tensor_path`, `timestamp`, `window`, `participant`, `session_id`, y la columna de label.
+- Los labels string se convierten a enteros internamente. El número de clases se infiere del DataFrame.
+- El backbone visual por defecto es ViT con LSTM (congelado); puedes editar `video_kwargs` en el script si deseas cambiarlo.
+
 - Backbones congelados (solo LSTM/cabeza): `--lr` en 1e-4 a 3e-4 suele funcionar bien.
 - Descongelando últimos 1–2 bloques (`--backbone-unfreeze-last 1` o `2`): usa LR más bajo, p. ej. 5e-5 a 1e-5, y `--scheduler cosine` o `plateau`.
 - Regularización: `--dropout` 0.1–0.3, `--class-weighted` para desbalance, `--weight-decay` 1e-4–1e-3.
