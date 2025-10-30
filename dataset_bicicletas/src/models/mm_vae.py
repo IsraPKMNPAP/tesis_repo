@@ -29,10 +29,11 @@ class TabularEncoder(nn.Module):
 
 
 class VideoEncoderWrapper(nn.Module):
-    def __init__(self, backbone: Optional[nn.Module] = None, **backbone_kwargs):
+    def __init__(self, backbone_model: Optional[nn.Module] = None, **backbone_kwargs):
         super().__init__()
-        if backbone is not None:
-            self.backbone = backbone
+        # Note: `backbone_model` avoids clashing with FrameBackboneLSTM's `backbone` kwarg
+        if backbone_model is not None:
+            self.backbone = backbone_model
         else:
             self.backbone = FrameBackboneLSTM(**backbone_kwargs)
 
@@ -61,7 +62,7 @@ class DeterministicMMVAE(nn.Module):
     ):
         super().__init__()
         self.tab_enc = TabularEncoder(tab_in_dim, tab_emb_dim, dropout=dropout)
-        self.vid_enc = VideoEncoderWrapper(backbone=vid_backbone, **(video_kwargs or {}))
+        self.vid_enc = VideoEncoderWrapper(backbone_model=vid_backbone, **(video_kwargs or {}))
 
         vid_emb_dim = self.vid_enc.output_dim()
         fuse_in = tab_emb_dim + vid_emb_dim
@@ -216,4 +217,3 @@ class VariationalMMVAE(DeterministicMMVAE):
         kl_w = self._kl_weight(step)
         total = w_rec_tab * l_rec_tab + w_rec_vid * l_rec_vid + w_cls * l_cls + w_kl * kl_w * kl
         return total, {"rec_tab": l_rec_tab.item(), "rec_vid": l_rec_vid.item(), "cls": l_cls.item(), "kl": kl.item(), "kl_w": kl_w}
-
