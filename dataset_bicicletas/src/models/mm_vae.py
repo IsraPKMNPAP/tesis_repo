@@ -59,6 +59,7 @@ class DeterministicMMVAE(nn.Module):
         dropout: float = 0.0,
         video_kwargs: Optional[dict] = None,
         classifier_arkoudi: bool = True,
+        fuse_dropout: float = 0.0,
     ):
         super().__init__()
         self.tab_enc = TabularEncoder(tab_in_dim, tab_emb_dim, dropout=dropout)
@@ -66,10 +67,12 @@ class DeterministicMMVAE(nn.Module):
 
         vid_emb_dim = self.vid_enc.output_dim()
         fuse_in = tab_emb_dim + vid_emb_dim
+        fuse_hidden = max(shared_dim * 2, fuse_in // 2 + 1)
         self.fuse = nn.Sequential(
-            nn.Linear(fuse_in, max(shared_dim * 2, fuse_in // 2 + 1)),
+            nn.Linear(fuse_in, fuse_hidden),
             nn.ReLU(inplace=True),
-            nn.Linear(max(shared_dim * 2, fuse_in // 2 + 1), shared_dim),
+            nn.Dropout(p=fuse_dropout) if fuse_dropout and fuse_dropout > 0 else nn.Identity(),
+            nn.Linear(fuse_hidden, shared_dim),
         )
 
         self.dec_tab = nn.Sequential(
@@ -123,12 +126,13 @@ class DeterministicMMVAE(nn.Module):
         w_rec_tab: float = 1.0,
         w_rec_vid: float = 1.0,
         w_cls: float = 1.0,
+        label_smoothing: float = 0.0,
     ) -> Tuple[torch.Tensor, dict]:
         l_rec_tab = F.mse_loss(out["rec_tab"], out["z_tab"])
         l_rec_vid = F.mse_loss(out["rec_vid"], out["z_vid"])
         l_cls = torch.tensor(0.0, device=out["z"].device)
         if y is not None:
-            l_cls = F.cross_entropy(out["logits"], y)
+            l_cls = F.cross_entropy(out["logits"], y, label_smoothing=float(label_smoothing))
         total = w_rec_tab * l_rec_tab + w_rec_vid * l_rec_vid + w_cls * l_cls
         return total, {"rec_tab": l_rec_tab.item(), "rec_vid": l_rec_vid.item(), "cls": l_cls.item()}
 
@@ -147,6 +151,7 @@ class VariationalMMVAE(DeterministicMMVAE):
         kl_anneal_start: float = 0.0,
         kl_anneal_end: float = 1.0,
         kl_anneal_steps: int = 1000,
+        fuse_dropout: float = 0.0,
     ):
         super().__init__(
             tab_in_dim=tab_in_dim,
@@ -157,6 +162,7 @@ class VariationalMMVAE(DeterministicMMVAE):
             dropout=dropout,
             video_kwargs=video_kwargs,
             classifier_arkoudi=classifier_arkoudi,
+            fuse_dropout=fuse_dropout,
         )
         enc_out = self.fuse[0].in_features  # concat size
         self.q_mu = nn.Linear(enc_out, shared_dim)
@@ -206,12 +212,13 @@ class VariationalMMVAE(DeterministicMMVAE):
         w_cls: float = 1.0,
         w_kl: float = 1.0,
         step: int = 0,
+        label_smoothing: float = 0.0,
     ) -> Tuple[torch.Tensor, dict]:
         l_rec_tab = F.mse_loss(out["rec_tab"], out["z_tab"])
         l_rec_vid = F.mse_loss(out["rec_vid"], out["z_vid"])
         l_cls = torch.tensor(0.0, device=out["z"].device)
         if y is not None:
-            l_cls = F.cross_entropy(out["logits"], y)
+            l_cls = F.cross_entropy(out["logits"], y, label_smoothing=float(label_smoothing))
         mu, logvar = out["mu"], out["logvar"]
         kl = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
         kl_w = self._kl_weight(step)

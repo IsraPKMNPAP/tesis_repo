@@ -97,6 +97,27 @@ def main():
     ap.add_argument("--w-kl", type=float, default=1.0)
     ap.add_argument("--kl-anneal-steps", type=int, default=1000)
     ap.add_argument("--save-embeddings", action="store_true")
+    # Regularización/opt
+    ap.add_argument("--grad-clip", type=float, default=1.0)
+    ap.add_argument("--label-smoothing", type=float, default=0.0)
+    ap.add_argument("--scheduler", type=str, default=None, choices=[None, "step", "cosine", "plateau"], help="Scheduler de LR")
+    ap.add_argument("--step-size", type=int, default=5)
+    ap.add_argument("--gamma", type=float, default=0.5)
+    ap.add_argument("--t-max", type=int, default=None)
+    ap.add_argument("--plateau-patience", type=int, default=3)
+    ap.add_argument("--plateau-factor", type=float, default=0.5)
+    # Video backbone fine-tuning controls
+    ap.add_argument("--video-backbone", type=str, default="vit", choices=["vit", "clip"])
+    ap.add_argument("--video-name", type=str, default="vit_b_16")
+    ap.add_argument("--video-trainable", action="store_true")
+    ap.add_argument("--video-unfreeze-last", type=int, default=0)
+    ap.add_argument("--video-target-size", type=int, default=224)
+    ap.add_argument("--video-lstm-hidden", type=int, default=256)
+    ap.add_argument("--video-lstm-layers", type=int, default=1)
+    ap.add_argument("--video-bidirectional", action="store_true")
+    ap.add_argument("--video-dropout", type=float, default=0.0)
+    # Fuse dropout
+    ap.add_argument("--fuse-dropout", type=float, default=0.1)
     args = ap.parse_args()
 
     pkl_path = Path(args.pkl)
@@ -184,7 +205,18 @@ def main():
 
     # Model
     tab_in_dim = ds_tr.X_tab_array.shape[1]
-    video_kwargs = dict(backbone="vit", backbone_name="vit_b_16", backbone_trainable=False, lstm_hidden=256, num_classes=num_classes)
+    video_kwargs = dict(
+        backbone=args.video_backbone,
+        backbone_name=args.video_name,
+        backbone_trainable=args.video_trainable,
+        unfreeze_last_n=args.video_unfreeze_last,
+        target_size=args.video_target_size,
+        lstm_hidden=args.video_lstm_hidden,
+        lstm_layers=args.video_lstm_layers,
+        bidirectional=args.video_bidirectional,
+        dropout=args.video_dropout,
+        num_classes=num_classes,
+    )
     if args.deterministic:
         model = DeterministicMMVAE(
             tab_in_dim=tab_in_dim,
@@ -194,6 +226,7 @@ def main():
             dropout=args.dropout,
             video_kwargs=video_kwargs,
             classifier_arkoudi=True,
+            fuse_dropout=args.fuse_dropout,
         )
     else:
         model = VariationalMMVAE(
@@ -205,14 +238,26 @@ def main():
             video_kwargs=video_kwargs,
             classifier_arkoudi=True,
             kl_anneal_steps=args.kl_anneal_steps,
+            fuse_dropout=args.fuse_dropout,
         )
 
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     model = model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    # Scheduler
+    sched = None
+    if args.scheduler == "step":
+        sched = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.step_size, gamma=args.gamma)
+    elif args.scheduler == "cosine":
+        tmax = args.t_max if args.t_max is not None else args.epochs
+        sched = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=tmax)
+    elif args.scheduler == "plateau":
+        sched = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", patience=args.plateau_patience, factor=args.plateau_factor)
 
     history = {"loss": [], "acc": []}
     global_step = 0
+    best_val_acc = -1.0
+    best_state = None
     for epoch in range(args.epochs):
         model.train()
         tr_loss, tr_total, tr_correct = 0.0, 0, 0
@@ -223,11 +268,12 @@ def main():
             optimizer.zero_grad(set_to_none=True)
             out = model(x_tab, x_vid)
             if isinstance(model, VariationalMMVAE):
-                loss, logs = model.loss(out, y=y, w_rec_tab=args.w_rec_tab, w_rec_vid=args.w_rec_vid, w_cls=args.w_cls, w_kl=args.w_kl, step=global_step)
+                loss, logs = model.loss(out, y=y, w_rec_tab=args.w_rec_tab, w_rec_vid=args.w_rec_vid, w_cls=args.w_cls, w_kl=args.w_kl, step=global_step, label_smoothing=args.label_smoothing)
             else:
-                loss, logs = model.loss(out, y=y, w_rec_tab=args.w_rec_tab, w_rec_vid=args.w_rec_vid, w_cls=args.w_cls)
+                loss, logs = model.loss(out, y=y, w_rec_tab=args.w_rec_tab, w_rec_vid=args.w_rec_vid, w_cls=args.w_cls, label_smoothing=args.label_smoothing)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            if args.grad_clip is not None:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float(args.grad_clip))
             optimizer.step()
             tr_loss += float(loss.item())
             pred = out["logits"].argmax(dim=1)
@@ -254,7 +300,21 @@ def main():
                 v_correct += int((pred == y).sum().item())
                 v_total += int(y.numel())
         val_acc = v_correct / max(1, v_total)
+        # Scheduler step
+        if sched is not None:
+            if isinstance(sched, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                sched.step(val_acc)
+            else:
+                sched.step()
+        # Track best
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
         print(f"Epoch {epoch+1}/{args.epochs} | train_loss={history['loss'][-1]:.4f} | train_acc={tr_acc:.3f} | val_acc={val_acc:.3f}")
+
+    # Restore best model
+    if best_state is not None:
+        model.load_state_dict(best_state)
 
     # Results
     results_dir = Path("results")
