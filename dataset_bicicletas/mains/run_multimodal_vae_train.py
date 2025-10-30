@@ -71,9 +71,14 @@ def split_train_val(df: pd.DataFrame, label_col: str, val_split: float = 0.2, se
 def main():
     ap = argparse.ArgumentParser(description="Train Multimodal VAE (tabular + video) end-to-end")
     ap.add_argument("--pkl", type=str, default="data/processed/multimodal_join.pkl", help="Ruta al pickle multimodal")
-    ap.add_argument("--label-col", type=str, default="action")
+    ap.add_argument("--label-col", type=str, default="action_proc")
     ap.add_argument("--features", nargs="*", default=None, help="Columnas tabulares a usar")
-    ap.add_argument("--features-file", type=str, default=None, help="Archivo con lista de features (json o txt)")
+    ap.add_argument(
+        "--features-file",
+        type=str,
+        default="utils/feature_sets/exp1.json",
+        help="Archivo con lista de features (json o txt)",
+    )
     ap.add_argument("--path-col", type=str, default="gpu_tensor_path")
     ap.add_argument("--timestamp-col", type=str, default="timestamp")
     ap.add_argument("--window-id-col", type=str, default="window")
@@ -99,7 +104,7 @@ def main():
         raise FileNotFoundError(f"No existe el pickle multimodal: {pkl_path}")
     df = pd.read_pickle(pkl_path).reset_index(drop=True)
 
-    # Resolve features
+    # Resolve features (prioriza --features-file, por defecto utils/feature_sets/exp1.json)
     tab_cols = args.features
     if args.features_file:
         loaded = load_features_file(args.features_file)
@@ -109,12 +114,21 @@ def main():
         # Heuristic: drop known non-tabular columns
         drop_cols = {args.path_col, args.label_col, args.timestamp_col, args.window_id_col, 'participant', 'session_id'}
         tab_cols = [c for c in df.columns if c not in drop_cols and pd.api.types.is_numeric_dtype(df[c])]
+    # Intersect with available columns to be safe
+    tab_cols = [c for c in tab_cols if c in df.columns]
 
-    # Optional label coercion
+    # Label mapping (usar action_proc por defecto; mapear strings si aparecen)
+    default_class_map = {
+        'accelerate': 0,
+        'brake': 1,
+        'decelerate': 2,
+        'maintain speed': 3,
+        'wait': 4,
+    }
+    if args.label_col not in df.columns:
+        raise KeyError(f"No se encontró la columna de etiqueta '{args.label_col}' en el pickle multimodal")
     if df[args.label_col].dtype == object:
-        classes = sorted(df[args.label_col].dropna().unique().tolist())
-        class_to_idx = {c: i for i, c in enumerate(classes)}
-        df[args.label_col] = df[args.label_col].map(class_to_idx)
+        df[args.label_col] = df[args.label_col].map(default_class_map)
     num_classes = int(pd.Series(df[args.label_col]).nunique())
 
     # Split
@@ -151,6 +165,7 @@ def main():
         timestamp_col=args.timestamp_col,
         window_id_col=args.window_id_col,
         prefer_df_label=True,
+        class_map=default_class_map,
     )
     ds_val = MultimodalDataset(
         df_val,
@@ -161,6 +176,7 @@ def main():
         timestamp_col=args.timestamp_col,
         window_id_col=args.window_id_col,
         prefer_df_label=True,
+        class_map=default_class_map,
     )
 
     dl_tr = DataLoader(ds_tr, batch_size=args.batch_size, shuffle=True, num_workers=0, collate_fn=collate_multimodal)
@@ -265,6 +281,8 @@ def main():
     run_hash = compute_run_hash(cfg, sys.argv, model=model_name)
     torch.save(model.state_dict(), results_dir / artifact_name(model_name, "model", run_hash, "pt"))
     pd.DataFrame(history).to_csv(results_dir / artifact_name(model_name, "history", run_hash, "csv"), index=False)
+    # Save preprocessor tied to this run as well
+    save_model_pickle(preprocessor, results_dir / artifact_name(model_name, "preprocessor", run_hash, "pkl"))
 
     # Validation report + Guardado de embeddings
     if len(df_val) > 0:
@@ -306,6 +324,7 @@ def main():
         timestamp_col=args.timestamp_col,
         window_id_col=args.window_id_col,
         prefer_df_label=True,
+        class_map=default_class_map,
     )
     dl_all = DataLoader(ds_all, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate_multimodal)
     model.eval()

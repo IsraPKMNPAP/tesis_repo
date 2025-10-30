@@ -210,10 +210,10 @@ Preparación del dataset multimodal
 Entrenamiento del VAE multimodal
 
 - Determinista (fusión temprana y reconstrucción de embeddings por modalidad):
-  - `python mains/run_multimodal_vae_train.py --pkl data/processed/multimodal_join.pkl --features-file utils/feature_sets/exp1.json --label-col action --batch-size 8 --epochs 20 --lr 1e-4 --deterministic`
+  - `python mains/run_multimodal_vae_train.py --pkl data/processed/multimodal_join.pkl --features-file utils/feature_sets/exp1.json --label-col action_proc --batch-size 8 --epochs 20 --lr 1e-4 --deterministic`
 
 - Variacional (con término KL y annealing):
-  - `python mains/run_multimodal_vae_train.py --pkl data/processed/multimodal_join.pkl --features-file utils/feature_sets/exp1.json --label-col action --batch-size 8 --epochs 20 --lr 1e-4 --w-kl 1.0 --kl-anneal-steps 10000`
+  - `python mains/run_multimodal_vae_train.py --pkl data/processed/multimodal_join.pkl --features-file utils/feature_sets/exp1.json --label-col action_proc --batch-size 8 --epochs 20 --lr 1e-4 --w-kl 1.0 --kl-anneal-steps 10000`
 
 Detalles
 
@@ -224,6 +224,7 @@ Detalles
   - Decoders por modalidad para reconstruir embeddings intermedios (no reconstruye píxeles ni features brutas, solo los embeddings de cada encoder).
   - Cabeza de clasificación logística (`ArkoudiHead`) sobre `z`.
 - Script: `mains/run_multimodal_vae_train.py` divide train/val, entrena end-to-end y guarda artefactos en `results/` (`MMVAE_Det-*` o `MMVAE_Var-*`).
+  - Usa por defecto `utils/feature_sets/exp1.json` para las columnas tabulares y `action_proc` como etiqueta; si los labels aparecen como strings, se mapean vía `{'accelerate':0,'brake':1,'decelerate':2,'maintain speed':3,'wait':4}`.
 
 Embeddings para análisis econométrico
 
