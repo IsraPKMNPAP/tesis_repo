@@ -209,7 +209,7 @@ def main():
         backbone=args.video_backbone,
         backbone_name=args.video_name,
         backbone_trainable=args.video_trainable,
-        unfreeze_last_n=args.video_unfreeze_last,
+        backbone_unfreeze_last=args.video_unfreeze_last,
         target_size=args.video_target_size,
         lstm_hidden=args.video_lstm_hidden,
         lstm_layers=args.video_lstm_layers,
