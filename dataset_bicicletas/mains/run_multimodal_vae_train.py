@@ -106,6 +106,9 @@ def main():
     ap.add_argument("--t-max", type=int, default=None)
     ap.add_argument("--plateau-patience", type=int, default=3)
     ap.add_argument("--plateau-factor", type=float, default=0.5)
+    # Early stopping por estabilidad de val_acc
+    ap.add_argument("--early-stop-patience", type=int, default=3, help="Corta si en las últimas N epochs la val_acc varía <= delta")
+    ap.add_argument("--early-stop-delta", type=float, default=0.02, help="Umbral de variación de val_acc para early stop")
     # Video backbone fine-tuning controls
     ap.add_argument("--video-backbone", type=str, default="vit", choices=["vit", "clip"])
     ap.add_argument("--video-name", type=str, default="vit_b_16")
@@ -258,6 +261,7 @@ def main():
     global_step = 0
     best_val_acc = -1.0
     best_state = None
+    val_hist = []
     for epoch in range(args.epochs):
         model.train()
         tr_loss, tr_total, tr_correct = 0.0, 0, 0
@@ -300,6 +304,7 @@ def main():
                 v_correct += int((pred == y).sum().item())
                 v_total += int(y.numel())
         val_acc = v_correct / max(1, v_total)
+        val_hist.append(val_acc)
         # Scheduler step
         if sched is not None:
             if isinstance(sched, torch.optim.lr_scheduler.ReduceLROnPlateau):
@@ -311,6 +316,13 @@ def main():
             best_val_acc = val_acc
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
         print(f"Epoch {epoch+1}/{args.epochs} | train_loss={history['loss'][-1]:.4f} | train_acc={tr_acc:.3f} | val_acc={val_acc:.3f}")
+
+        # Early stopping: si en las últimas N epochs la variación <= delta
+        if len(val_hist) >= int(args.early_stop_patience):
+            window = val_hist[-int(args.early_stop_patience):]
+            if (max(window) - min(window)) <= float(args.early_stop_delta):
+                print(f"Early stop: val_acc estable en ±{args.early_stop_delta} durante {args.early_stop_patience} epochs.")
+                break
 
     # Restore best model
     if best_state is not None:
@@ -403,18 +415,25 @@ def main():
             ts_all.extend(b.timestamp)
             wids_all.extend(b.window_id)
             parts_all.extend(b.participant)
-    emb_df = pd.DataFrame(np.concatenate(zs, axis=0), columns=[f"z_{i}" for i in range(np.concatenate(zs, axis=0).shape[1])])
-    emb_df["label"] = ys_all
-    emb_df["timestamp"] = ts_all
-    emb_df["window_id"] = wids_all
-    emb_df["participant"] = parts_all
+    z_mat = np.concatenate(zs, axis=0)
+    z_cols = [f"z_{i}" for i in range(z_mat.shape[1])]
+    base_df = pd.DataFrame(z_mat, columns=z_cols)
+    meta_df = pd.DataFrame({
+        "label": ys_all,
+        "timestamp": ts_all,
+        "window_id": wids_all,
+        "participant": parts_all,
+    })
+    concat_list = [base_df, meta_df]
     if mus:
         mu_mat = np.concatenate(mus, axis=0)
         lv_mat = np.concatenate(logvars, axis=0) if logvars else np.zeros_like(mu_mat)
         std_mat = np.exp(0.5 * lv_mat)
-        for i in range(mu_mat.shape[1]):
-            emb_df[f"mu_{i}"] = mu_mat[:, i]
-            emb_df[f"std_{i}"] = std_mat[:, i]
+        mu_df = pd.DataFrame(mu_mat, columns=[f"mu_{i}" for i in range(mu_mat.shape[1])])
+        std_df = pd.DataFrame(std_mat, columns=[f"std_{i}" for i in range(std_mat.shape[1])])
+        concat_list.insert(1, mu_df)
+        concat_list.insert(2, std_df)
+    emb_df = pd.concat(concat_list, axis=1)
     emb_df.to_csv(results_dir / artifact_name(model_name, "embeddings", run_hash, "csv"), index=False)
 
     # Save run config
