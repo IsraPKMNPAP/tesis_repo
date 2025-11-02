@@ -60,10 +60,15 @@ class DeterministicMMVAE(nn.Module):
         video_kwargs: Optional[dict] = None,
         classifier_arkoudi: bool = True,
         fuse_dropout: float = 0.0,
+        proj_dim: int = 128,
+        contrastive_temp: float = 0.07,
+        modality_dropout_p: float = 0.0,
     ):
         super().__init__()
         self.tab_enc = TabularEncoder(tab_in_dim, tab_emb_dim, dropout=dropout)
         self.vid_enc = VideoEncoderWrapper(backbone_model=vid_backbone, **(video_kwargs or {}))
+        self.modality_dropout_p = float(modality_dropout_p)
+        self.contrastive_temp = float(contrastive_temp)
 
         vid_emb_dim = self.vid_enc.output_dim()
         fuse_in = tab_emb_dim + vid_emb_dim
@@ -74,6 +79,10 @@ class DeterministicMMVAE(nn.Module):
             nn.Dropout(p=fuse_dropout) if fuse_dropout and fuse_dropout > 0 else nn.Identity(),
             nn.Linear(fuse_hidden, shared_dim),
         )
+
+        # Projection heads for alignment/contrastive losses (optional use)
+        self.proj_tab = nn.Linear(tab_emb_dim, proj_dim)
+        self.proj_vid = nn.Linear(vid_emb_dim, proj_dim)
 
         self.dec_tab = nn.Sequential(
             nn.Linear(shared_dim, max(tab_emb_dim, shared_dim)),
@@ -96,8 +105,22 @@ class DeterministicMMVAE(nn.Module):
         z_vid = self.vid_enc(x_vid)
         return z_tab, z_vid
 
+    def _apply_modality_dropout(self, z_tab: torch.Tensor, z_vid: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        if self.modality_dropout_p <= 0 or not self.training:
+            return z_tab, z_vid
+        B = z_tab.size(0)
+        device = z_tab.device
+        keep_tab = (torch.rand(B, 1, device=device) > self.modality_dropout_p).float()
+        keep_vid = (torch.rand(B, 1, device=device) > self.modality_dropout_p).float()
+        # Ensure at least one modality per sample
+        none_keep = ((keep_tab + keep_vid) == 0)
+        if none_keep.any():
+            keep_tab[none_keep] = 1.0
+        return z_tab * keep_tab, z_vid * keep_vid
+
     def fuse_modalities(self, z_tab: torch.Tensor, z_vid: torch.Tensor) -> torch.Tensor:
-        z = torch.cat([z_tab, z_vid], dim=-1)
+        z_tab_d, z_vid_d = self._apply_modality_dropout(z_tab, z_vid)
+        z = torch.cat([z_tab_d, z_vid_d], dim=-1)
         return self.fuse(z)
 
     def decode_modalities(self, z_shared: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -107,17 +130,32 @@ class DeterministicMMVAE(nn.Module):
 
     def forward(self, x_tab: torch.Tensor, x_vid: torch.Tensor):
         z_tab, z_vid = self.encode_modalities(x_tab, x_vid)
+        # Projections for optional alignment/contrastive
+        p_tab = F.normalize(self.proj_tab(z_tab), p=2, dim=-1)
+        p_vid = F.normalize(self.proj_vid(z_vid), p=2, dim=-1)
         z_shared = self.fuse_modalities(z_tab, z_vid)
         rec_tab, rec_vid = self.decode_modalities(z_shared)
         logits = self.classifier(z_shared)
         return {
             "z_tab": z_tab,
             "z_vid": z_vid,
+            "p_tab": p_tab,
+            "p_vid": p_vid,
             "z": z_shared,
             "rec_tab": rec_tab,
             "rec_vid": rec_vid,
             "logits": logits,
         }
+
+    def _contrastive_loss(self, p1: torch.Tensor, p2: torch.Tensor, temperature: float) -> torch.Tensor:
+        B = p1.size(0)
+        if B <= 1:
+            return torch.tensor(0.0, device=p1.device)
+        logits = p1 @ p2.t() / max(1e-6, float(temperature))
+        labels = torch.arange(B, device=p1.device)
+        loss12 = F.cross_entropy(logits, labels)
+        loss21 = F.cross_entropy(logits.t(), labels)
+        return 0.5 * (loss12 + loss21)
 
     def loss(
         self,
@@ -127,14 +165,25 @@ class DeterministicMMVAE(nn.Module):
         w_rec_vid: float = 1.0,
         w_cls: float = 1.0,
         label_smoothing: float = 0.0,
+        w_align: float = 0.0,
+        w_contrastive: float = 0.0,
     ) -> Tuple[torch.Tensor, dict]:
         l_rec_tab = F.mse_loss(out["rec_tab"], out["z_tab"])
         l_rec_vid = F.mse_loss(out["rec_vid"], out["z_vid"])
         l_cls = torch.tensor(0.0, device=out["z"].device)
         if y is not None:
             l_cls = F.cross_entropy(out["logits"], y, label_smoothing=float(label_smoothing))
-        total = w_rec_tab * l_rec_tab + w_rec_vid * l_rec_vid + w_cls * l_cls
-        return total, {"rec_tab": l_rec_tab.item(), "rec_vid": l_rec_vid.item(), "cls": l_cls.item()}
+        # Alignment (cosine) between modalities
+        l_align = torch.tensor(0.0, device=out["z"].device)
+        if float(w_align) > 0:
+            cos = F.cosine_similarity(out["p_tab"], out["p_vid"], dim=-1)
+            l_align = 1.0 - cos.mean()
+        # Contrastive (symmetric InfoNCE)
+        l_con = torch.tensor(0.0, device=out["z"].device)
+        if float(w_contrastive) > 0:
+            l_con = self._contrastive_loss(out["p_tab"], out["p_vid"], self.contrastive_temp)
+        total = w_rec_tab * l_rec_tab + w_rec_vid * l_rec_vid + w_cls * l_cls + float(w_align) * l_align + float(w_contrastive) * l_con
+        return total, {"rec_tab": l_rec_tab.item(), "rec_vid": l_rec_vid.item(), "cls": l_cls.item(), "align": l_align.item() if isinstance(l_align, torch.Tensor) else 0.0, "con": l_con.item() if isinstance(l_con, torch.Tensor) else 0.0}
 
 
 class VariationalMMVAE(DeterministicMMVAE):
@@ -152,6 +201,9 @@ class VariationalMMVAE(DeterministicMMVAE):
         kl_anneal_end: float = 1.0,
         kl_anneal_steps: int = 1000,
         fuse_dropout: float = 0.0,
+        proj_dim: int = 128,
+        contrastive_temp: float = 0.07,
+        modality_dropout_p: float = 0.0,
     ):
         super().__init__(
             tab_in_dim=tab_in_dim,
@@ -163,6 +215,9 @@ class VariationalMMVAE(DeterministicMMVAE):
             video_kwargs=video_kwargs,
             classifier_arkoudi=classifier_arkoudi,
             fuse_dropout=fuse_dropout,
+            proj_dim=proj_dim,
+            contrastive_temp=contrastive_temp,
+            modality_dropout_p=modality_dropout_p,
         )
         enc_out = self.fuse[0].in_features  # concat size
         self.q_mu = nn.Linear(enc_out, shared_dim)
@@ -213,6 +268,8 @@ class VariationalMMVAE(DeterministicMMVAE):
         w_kl: float = 1.0,
         step: int = 0,
         label_smoothing: float = 0.0,
+        w_align: float = 0.0,
+        w_contrastive: float = 0.0,
     ) -> Tuple[torch.Tensor, dict]:
         l_rec_tab = F.mse_loss(out["rec_tab"], out["z_tab"])
         l_rec_vid = F.mse_loss(out["rec_vid"], out["z_vid"])
@@ -222,5 +279,28 @@ class VariationalMMVAE(DeterministicMMVAE):
         mu, logvar = out["mu"], out["logvar"]
         kl = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
         kl_w = self._kl_weight(step)
-        total = w_rec_tab * l_rec_tab + w_rec_vid * l_rec_vid + w_cls * l_cls + w_kl * kl_w * kl
-        return total, {"rec_tab": l_rec_tab.item(), "rec_vid": l_rec_vid.item(), "cls": l_cls.item(), "kl": kl.item(), "kl_w": kl_w}
+        # Alignment and contrastive
+        l_align = torch.tensor(0.0, device=out["z"].device)
+        if float(w_align) > 0:
+            cos = F.cosine_similarity(out["p_tab"], out["p_vid"], dim=-1)
+            l_align = 1.0 - cos.mean()
+        l_con = torch.tensor(0.0, device=out["z"].device)
+        if float(w_contrastive) > 0:
+            l_con = self._contrastive_loss(out["p_tab"], out["p_vid"], self.contrastive_temp)
+        total = (
+            w_rec_tab * l_rec_tab
+            + w_rec_vid * l_rec_vid
+            + w_cls * l_cls
+            + w_kl * kl_w * kl
+            + float(w_align) * l_align
+            + float(w_contrastive) * l_con
+        )
+        return total, {
+            "rec_tab": l_rec_tab.item(),
+            "rec_vid": l_rec_vid.item(),
+            "cls": l_cls.item(),
+            "kl": kl.item(),
+            "kl_w": kl_w,
+            "align": l_align.item() if isinstance(l_align, torch.Tensor) else 0.0,
+            "con": l_con.item() if isinstance(l_con, torch.Tensor) else 0.0,
+        }

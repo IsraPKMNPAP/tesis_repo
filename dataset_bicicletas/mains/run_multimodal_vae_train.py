@@ -121,6 +121,12 @@ def main():
     ap.add_argument("--video-dropout", type=float, default=0.0)
     # Fuse dropout
     ap.add_argument("--fuse-dropout", type=float, default=0.1)
+    # Multimodal alignment/contrastive options
+    ap.add_argument("--w-align", type=float, default=0.0, help="Peso de pérdida de alineación coseno entre modalidades")
+    ap.add_argument("--w-contrastive", type=float, default=0.0, help="Peso de pérdida contrastiva (InfoNCE) entre modalidades")
+    ap.add_argument("--contrastive-temp", type=float, default=0.07, help="Temperatura para InfoNCE")
+    ap.add_argument("--proj-dim", type=int, default=128, help="Dimensión de proyección para pérdidas de alineación/contrastiva")
+    ap.add_argument("--modality-dropout", type=float, default=0.0, help="Probabilidad de apagar una modalidad por muestra en la fusión")
     args = ap.parse_args()
 
     pkl_path = Path(args.pkl)
@@ -230,6 +236,9 @@ def main():
             video_kwargs=video_kwargs,
             classifier_arkoudi=True,
             fuse_dropout=args.fuse_dropout,
+            proj_dim=args.proj_dim,
+            contrastive_temp=args.contrastive_temp,
+            modality_dropout_p=args.modality_dropout,
         )
     else:
         model = VariationalMMVAE(
@@ -242,6 +251,9 @@ def main():
             classifier_arkoudi=True,
             kl_anneal_steps=args.kl_anneal_steps,
             fuse_dropout=args.fuse_dropout,
+            proj_dim=args.proj_dim,
+            contrastive_temp=args.contrastive_temp,
+            modality_dropout_p=args.modality_dropout,
         )
 
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
@@ -272,9 +284,9 @@ def main():
             optimizer.zero_grad(set_to_none=True)
             out = model(x_tab, x_vid)
             if isinstance(model, VariationalMMVAE):
-                loss, logs = model.loss(out, y=y, w_rec_tab=args.w_rec_tab, w_rec_vid=args.w_rec_vid, w_cls=args.w_cls, w_kl=args.w_kl, step=global_step, label_smoothing=args.label_smoothing)
+                loss, logs = model.loss(out, y=y, w_rec_tab=args.w_rec_tab, w_rec_vid=args.w_rec_vid, w_cls=args.w_cls, w_kl=args.w_kl, step=global_step, label_smoothing=args.label_smoothing, w_align=args.w_align, w_contrastive=args.w_contrastive)
             else:
-                loss, logs = model.loss(out, y=y, w_rec_tab=args.w_rec_tab, w_rec_vid=args.w_rec_vid, w_cls=args.w_cls, label_smoothing=args.label_smoothing)
+                loss, logs = model.loss(out, y=y, w_rec_tab=args.w_rec_tab, w_rec_vid=args.w_rec_vid, w_cls=args.w_cls, label_smoothing=args.label_smoothing, w_align=args.w_align, w_contrastive=args.w_contrastive)
             loss.backward()
             if args.grad_clip is not None:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float(args.grad_clip))
