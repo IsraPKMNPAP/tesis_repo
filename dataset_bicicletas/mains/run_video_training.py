@@ -17,6 +17,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.data_loading.video_windows import VideoWindowsDataset
 from src.models.video_torch import VideoCNNLSTM, train_gpu, extract_embeddings
+from src.models.video_backbone_lstm import FrameBackboneLSTM
 from src.models.econ import fit_mnlogit
 from utils.results_io import (
     ensure_dir,
@@ -75,7 +76,7 @@ def collate_windows(batch):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Train CNN+LSTM on linked video window tensors (processed pickle)")
+    ap = argparse.ArgumentParser(description="Train unimodal video models on linked window tensors (.pt)")
     ap.add_argument(
         "--pickle",
         type=str,
@@ -101,6 +102,14 @@ def main():
     ap.add_argument("--arkoudi", action="store_true")
     ap.add_argument("--arkoudi-no-norm", action="store_true")
     ap.add_argument("--dropout", type=float, default=0.0, help="Dropout en LSTM/salida (0-1)")
+    # Architecture selection
+    ap.add_argument("--arch", type=str, default="cnn_lstm", choices=["cnn_lstm", "frame_lstm"], help="Arquitectura: CNN+LSTM simple o FrameBackbone(L/CLIP)+LSTM")
+    # ViT/CLIP backbone options (for --arch frame_lstm)
+    ap.add_argument("--backbone", type=str, default="vit", choices=["vit", "clip"], help="Backbone de frames (vit/clip)")
+    ap.add_argument("--backbone-name", type=str, default="vit_b_16", help="Nombre del modelo de frames (ej. vit_b_16 o RN50 para CLIP)")
+    ap.add_argument("--backbone-trainable", action="store_true", help="Permitir fine-tuning del backbone de frames")
+    ap.add_argument("--backbone-unfreeze-last", type=int, default=0, help="Descongelar ultimos N bloques del backbone")
+    ap.add_argument("--target-size", type=int, default=224, help="Tamaño de entrada para el backbone de frames")
     ap.add_argument("--val-split", type=float, default=0.2)
     ap.add_argument("--class-weighted", action="store_true", help="Usar pesos de clase inversos a la frecuencia en CrossEntropyLoss")
     ap.add_argument("--scheduler", type=str, default=None, choices=[None, "step", "cosine", "plateau"], help="Scheduler de LR")
@@ -183,17 +192,34 @@ def main():
     dl_val = DataLoader(ds_val, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate_windows)
 
     # Model
-    model = VideoCNNLSTM(
-        in_channels=ds_tr[0].x.shape[-3] if ds_tr[0].x.dim() >= 3 else 3,
-        cnn_emb_dim=args.cnn_emb,
-        lstm_hidden=args.lstm_hidden,
-        lstm_layers=args.lstm_layers,
-        bidirectional=args.bidirectional,
-        num_classes=(args.num_classes if args.num_classes is not None else int(pd.Series(df[args.label_col]).nunique())),
-        arkoudi=args.arkoudi,
-        arkoudi_normalize=(not args.arkoudi_no_norm),
-        dropout=args.dropout,
-    )
+    num_classes = (args.num_classes if args.num_classes is not None else int(pd.Series(df[args.label_col]).nunique()))
+    if args.arch == "frame_lstm":
+        model = FrameBackboneLSTM(
+            backbone=args.backbone,
+            backbone_name=args.backbone_name,
+            backbone_trainable=args.backbone_trainable,
+            backbone_unfreeze_last=args.backbone_unfreeze_last,
+            target_size=args.target_size,
+            lstm_hidden=args.lstm_hidden,
+            lstm_layers=args.lstm_layers,
+            bidirectional=args.bidirectional,
+            num_classes=num_classes,
+            arkoudi=args.arkoudi,
+            arkoudi_normalize=(not args.arkoudi_no_norm),
+            dropout=args.dropout,
+        )
+    else:
+        model = VideoCNNLSTM(
+            in_channels=ds_tr[0].x.shape[-3] if ds_tr[0].x.dim() >= 3 else 3,
+            cnn_emb_dim=args.cnn_emb,
+            lstm_hidden=args.lstm_hidden,
+            lstm_layers=args.lstm_layers,
+            bidirectional=args.bidirectional,
+            num_classes=num_classes,
+            arkoudi=args.arkoudi,
+            arkoudi_normalize=(not args.arkoudi_no_norm),
+            dropout=args.dropout,
+        )
 
     # Train
     # Optional class weights
@@ -245,7 +271,7 @@ def main():
     # Results
     results_dir = Path("results")
     ensure_dir(results_dir)
-    model_name = "CNNLSTM"
+    model_name = ("FrameLSTM" if args.arch == "frame_lstm" else "CNNLSTM")
     # Build config to log and hash
     config = {
         "pickle": str(pkl_path),
@@ -261,12 +287,18 @@ def main():
         "lstm_hidden": args.lstm_hidden,
         "lstm_layers": args.lstm_layers,
         "bidirectional": args.bidirectional,
-        "num_classes": (args.num_classes if args.num_classes is not None else int(pd.Series(df[args.label_col]).nunique())),
+        "num_classes": num_classes,
         "arkoudi": args.arkoudi,
         "arkoudi_no_norm": args.arkoudi_no_norm,
         "val_split": args.val_split,
         "class_weighted": args.class_weighted,
         "scheduler": args.scheduler,
+        "arch": args.arch,
+        "backbone": args.backbone,
+        "backbone_name": args.backbone_name,
+        "backbone_trainable": args.backbone_trainable,
+        "backbone_unfreeze_last": args.backbone_unfreeze_last,
+        "target_size": args.target_size,
     }
     run_hash = compute_run_hash(config, sys.argv, model=model_name)
     # Save weights and history with new naming

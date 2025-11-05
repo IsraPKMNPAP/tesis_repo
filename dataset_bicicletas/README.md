@@ -1,244 +1,90 @@
-# Dataset Bicicletas — Guía de Uso
+# Dataset Bicicletas – Guia de Uso (Comandos Primero)
 
-Este módulo organiza el flujo de trabajo para limpiar datos, seleccionar atributos (features) y entrenar modelos (baseline con scikit‑learn, econométricos con statsmodels y un modelo simple en PyTorch).
+Esta guia lista primero los comandos de ejecucion, con opciones y defaults, para reproducir desde los modelos unimodales hasta el pipeline multimodal. Debajo quedan detalles y notas.
+
+Recomendacion: situarse dentro de `dataset_bicicletas` antes de ejecutar.
+
+## Rutas y Atajos
+- Tabular limpio: `data/processed/dataset_bicicletas_clean.csv`
+- Pickle video linkeado: `data/processed/X_proc_final_linked.pkl`
+- Join multimodal: `data/processed/multimodal_join.pkl`
+- Conjunto de features (tabular): `utils/feature_sets/exp1.json`
+- Etiqueta recomendada: `action_proc`
+
+## Comandos Clave (Modelos y Pipelines)
+
+- Limpieza tabular basica
+  - `python mains/run_cleaning.py --csv-in data/raw/all_data.csv --csv-out data/processed/dataset_bicicletas_clean.csv`
+
+- Seleccion de features (tabular)
+  - `python mains/run_features.py --csv data/processed/dataset_bicicletas_clean.csv --base  --add  --remove  --page-size 10 --interactive --save utils/feature_sets/exp1.json --print-cmd --label action --no-clean --mnlogit --torch`
+
+- Baseline (tabular, sklearn) + opcionales (MNLogit/Torch)
+  - `python mains/run_training.py --csv data/processed/dataset_bicicletas_clean.csv --features-file utils/feature_sets/exp1.json --label action --mnlogit --torch --no-clean --prefix baseline_exp`
+  - Flags y defaults: `--features` (lista) | `--features-file` | `--label action` | `--mnlogit` | `--torch` | `--no-clean` | `--prefix None`
+
+- Linkeo de tensores de video a pickle (GPU)
+  - `python mains/run_link_video_tensors.py --pickle-in data/raw/X_proc_final.pkl --linux-root /mnt/otra_particion/home/israel_gpu_data/video_tensors --timestamp-col timestamp --out-pickle data/processed/X_proc_final_linked.pkl --out-column gpu_tensor_path`
+
+- Verificacion de pickle de video
+  - `python utils/verify.py --pickle data/processed/X_proc_final_linked.pkl --path-col gpu_tensor_path --label-col action --timestamp-col timestamp --window-id-col window --head 5 --show-dtypes --sample-pt 3 --random`
+
+- Alineacion tabular → ancla de video (relleno huecos + sesiones + paths)
+  - `python src/data_cleaning/align_to_video_anchor.py --csv-in data/processed/dataset_bicicletas_clean.csv --pkl-ref data/processed/X_proc_final_linked.pkl --csv-out data/processed/dataset_bicicletas_clean_aligned.csv --timestamp-col timestamp --participant-col participant --session-id-col session_id --imputed-col is_imputed --expected-step-seconds 5 --raw-csv data/raw/all_data.csv --paths-col paths --max-gap 120`
+
+- Revision post-alineacion
+  - `python mains/run_review_alignment.py --csv-aligned data/processed/dataset_bicicletas_clean_aligned.csv --pkl-ref data/processed/X_proc_final_linked.pkl --timestamp-col timestamp --participant-col participant --session-id-col session_id --imputed-col is_imputed --expected-step-seconds 5`
+
+- Join multimodal por timestamp (para VAE)
+  - `python mains/run_join_modalities.py --csv-in data/processed/dataset_bicicletas_clean_aligned.csv --pkl-in data/processed/X_proc_final_linked.pkl --timestamp-col timestamp --out data/processed/multimodal_join.pkl --how one-to-one --suffixes _csv _vid`
+
+- Entrenamiento unimodal video (CNN/LSTM)
+  - `python mains/run_video_training.py --pickle data/processed/X_proc_final_linked.pkl --path-col gpu_tensor_path --label-col action --prefer-df-label --timestamp-col timestamp --window-id-col window --batch-size 16 --epochs 20 --lr 1e-4 --weight-decay 1e-4 --cnn-emb 128 --lstm-hidden 128 --lstm-layers 1 --bidirectional --num-classes 5 --arkoudi --dropout 0.0 --val-split 0.2 --class-weighted --scheduler step --step-size 5 --gamma 0.5 --t-max 20 --plateau-patience 3 --plateau-factor 0.5`
+  - ViT/CLIP + LSTM (fine-tuning opcional):
+    - `python mains/run_video_training.py --pickle data/processed/X_proc_final_linked.pkl --path-col gpu_tensor_path --label-col action --prefer-df-label --timestamp-col timestamp --window-id-col window --batch-size 16 --epochs 20 --lr 1e-4 --weight-decay 1e-4 --lstm-hidden 256 --lstm-layers 1 --bidirectional --num-classes 5 --arkoudi --dropout 0.0 --val-split 0.2 --scheduler cosine --arch frame_lstm --backbone vit --backbone-name vit_b_16 --backbone-trainable --backbone-unfreeze-last 1 --target-size 224`
+    - Para CLIP: reemplaza `--backbone vit --backbone-name vit_b_16` por `--backbone clip --backbone-name RN50` (u otro nombre soportado). 
+
+- Entrenamiento multimodal (VAE determinista/variacional)
+  - Determinista (ejemplo):
+    - `python mains/run_multimodal_vae_train.py --pkl data/processed/multimodal_join.pkl --features-file utils/feature_sets/exp1.json --label-col action_proc --batch-size 16 --epochs 20 --lr 1e-4 --deterministic --fuse-dropout 0.2 --label-smoothing 0.05 --scheduler cosine --weight-decay 2e-4 --w-align 0.1 --w-contrastive 0.1 --contrastive-temp 0.07 --proj-dim 128 --modality-dropout 0.1 --grad-clip 1.0 --early-stop-patience 3 --early-stop-delta 0.02 --video-backbone vit --video-name vit_b_16 --video-target-size 224 --video-lstm-hidden 256 --video-lstm-layers 1 --video-bidirectional --video-dropout 0.0 --video-trainable --video-unfreeze-last 0 --val-split 0.2`
+  - Variacional (añadir KL):
+    - `python mains/run_multimodal_vae_train.py --pkl data/processed/multimodal_join.pkl --features-file utils/feature_sets/exp1.json --label-col action_proc --batch-size 16 --epochs 20 --lr 1e-4 --w-kl 1.0 --kl-anneal-steps 10000 --fuse-dropout 0.2 --label-smoothing 0.05 --scheduler cosine --weight-decay 2e-4 --w-align 0.1 --w-contrastive 0.1 --contrastive-temp 0.07 --proj-dim 128 --modality-dropout 0.1 --grad-clip 1.0 --early-stop-patience 3 --early-stop-delta 0.02 --video-backbone vit --video-name vit_b_16 --video-target-size 224 --video-lstm-hidden 256 --video-lstm-layers 1 --video-bidirectional --video-dropout 0.0 --video-trainable --video-unfreeze-last 0 --val-split 0.2`
+
+- Artefactos (ambos VAE)
+  - Modelo: `results/MMVAE_*‑model‑<hash>.pt`
+  - Preprocesador tabular: `results/MMVAE_*‑preprocessor‑<hash>.pkl`
+  - History: `results/*‑history‑<hash>.csv`
+  - Reporte y probabilidades: `results/*‑eval_report‑<hash>.txt`, `results/*‑eval_proba‑<hash>.csv`
+  - Embeddings: `results/*‑embeddings‑<hash>.csv` con `z_*` (+ `mu_*`/`std_*` en variacional) y metadata
 
 ## Requisitos
 
 - Python 3.10+ (probado con 3.11)
-- Instalar dependencias (desde la raíz del repo o dentro de `dataset_bicicletas`):
+- Instalar dependencias:
   - `pip install -r dataset_bicicletas/requirements.txt`
-  - Nota: `torch` es opcional. Si tu entorno GPU requiere una build específica, instala PyTorch según su guía oficial para tu CUDA/cuDNN.
+  - Nota: `torch` depende de tu GPU/CUDA; instala segun guia oficial.
 
-Recomendación: ejecutar los comandos situándote dentro de la carpeta `dataset_bicicletas` para rutas simples.
+## Flujo Rapido
 
-## Flujo Rápido
-
-1) Limpiar CSV crudo y guardar el procesado
-- `python mains/run_cleaning.py --csv-in data/raw/all_data.csv --csv-out data/processed/dataset_bicicletas_clean.csv`
-
-2) Explorar columnas y seleccionar features
-- Interactivo con guardado y comando sugerido:
-  - `python mains/run_features.py --csv data/processed/dataset_bicicletas_clean.csv --interactive --save utils/feature_sets/exp1.json --print-cmd --no-clean`
-- No interactivo (add/remove + guardado):
-  - `python mains/run_features.py --csv data/processed/dataset_bicicletas_clean.csv --add hr sdnn --remove mean_scr --save utils/feature_sets/exp2.json --print-cmd --no-clean`
-
-3) Entrenar modelos con la selección (baseline siempre; MNLogit/Torch opcionales)
-- Baseline con CSV procesado y sin volver a limpiar:
-  - `python mains/run_training.py --csv data/processed/dataset_bicicletas_clean.csv --no-clean --features-file utils/feature_sets/exp1.json --prefix exp1`
-- Agregando MNLogit:
-  - `python mains/run_training.py --csv data/processed/dataset_bicicletas_clean.csv --no-clean --features-file utils/feature_sets/exp1.json --mnlogit --prefix exp1`
-- Agregando Torch:
-  - `python mains/run_training.py --csv data/processed/dataset_bicicletas_clean.csv --no-clean --features-file utils/feature_sets/exp1.json --torch --prefix exp1`
+1) Limpiar CSV crudo y guardar procesado.
+2) Seleccionar features (o usar `utils/feature_sets/exp1.json`).
+3) Entrenar baseline / MNLogit / Torch (tabular).
+4) Linkear tensores de video y verificar.
+5) Alinear CSV al ancla de video y revisar.
+6) Hacer join multimodal por timestamp.
+7) Entrenar VAE multimodal (determinista o variacional).
 
 ## Carpetas y Rol
 
 - `data/`
-  - `raw/`: CSVs crudos de entrada (ej. `all_data.csv`).
-  - `processed/`: CSVs limpios (ej. `dataset_bicicletas_clean.csv`).
-- `mains/`: Ejecutables CLI para el flujo end‑to‑end.
-  - `run_cleaning.py`: limpia un CSV de entrada y guarda el procesado.
-  - `run_features.py`: lista columnas, permite armar una selección (interactiva o por flags) y guardar a archivo.
-  - `run_training.py`: entrena baseline y, opcionalmente, MNLogit y/o Torch; guarda resultados.
-- `src/`: Código modular reutilizable.
-  - `data_cleaning/cleaning.py`: funciones de limpieza (timestamps, binarias, categorías, `fillna(0)`).
-  - `data_loading/load.py`: lectura de CSV (ruta obligatoria, falla explícitamente si no existe).
-  - `features/prepare.py`: `features_labels`, split train/test, `build_preprocessor`, codificación de labels.
-  - `models/`
-    - `baseline.py`: pipeline sklearn (escala + one‑hot + `LogisticRegression`).
-    - `econ.py`: `MNLogit` (statsmodels) sobre features preprocesados (y labels codificados).
-    - `embeddings.py`: modelo lineal simple estilo “embedding” con entrenamiento básico en PyTorch.
-- `utils/`
-  - `features.py`: utilidades para columnas y features (paginado, add/remove con preservación de orden, hash corto, guardar/cargar listas de features a `.json`/`.txt`).
-  - `results_io.py`: utilidades para guardar resultados (`.txt`, probabilidades a `.csv`) y modelos (pickle `.pkl`, `state_dict` de PyTorch `.pt`).
+  - `raw/`: datos crudos (ej. `all_data.csv`).
+  - `processed/`: intermedios limpios y pickles.
+- `mains/`: ejecutables CLI del flujo.
+- `src/`: codigo modular (cleaning, loading, features, models).
+- `utils/`: utilidades para features y resultados.
 
-## Detalles de los Mains
+## Notas y Consejos
 
-### `mains/run_cleaning.py`
-- Uso: `python mains/run_cleaning.py --csv-in <ruta_in> --csv-out <ruta_out>`
-- Lee el CSV de entrada, aplica `limpiar_dataset` y guarda el resultado.
-
-### `mains/run_features.py`
-- Uso básico: `python mains/run_features.py --csv <ruta_csv> [--interactive] [--add ...] [--remove ...] [--save <archivo>] [--print-cmd]`
-- Imprime columnas paginadas (por defecto 10 por bloque). `--page-size` cambia el tamaño.
-- Modo interactivo: comandos `add col1,col2`, `remove col3`, `show`, `done`.
-- `--save` guarda la selección en `.json` o `.txt` (preferible `.json`).
-- `--print-cmd` imprime un comando sugerido para `run_training` (prioriza `--features-file` si guardaste la selección).
-
-### `mains/run_training.py`
-- Uso típico con CSV ya procesado: `--no-clean` para omitir limpieza.
-- Flags principales:
-  - `--csv`: ruta al CSV (requerido).
-  - `--features` o `--features-file`: lista de features (inline o desde archivo).
-  - `--label`: columna objetivo (por defecto `action`).
-  - `--no-clean`: usa el CSV tal cual (recomendado con `data/processed/...`).
-  - `--mnlogit` y `--torch`: activan los modelos opcionales.
-- Artefactos que se guardan en `results/` (nuevo esquema de nombres):
-  - Formato: `Modelo-Artifact-Hash.ext`.
-  - Para baseline (LogReg):
-    - `LogReg-config-<hash>.json`, `LogReg-eval_report-<hash>.txt`, `LogReg-eval_proba-<hash>.csv`, `LogReg-model-<hash>.pkl`.
-  - Si `--mnlogit`: `MNLogit-summary-<hash>.txt`.
-  - Si `--torch`: `TorchEmbed-model-<hash>.pt` y `TorchEmbed-history-<hash>.csv`.
-  - Cada corrida agrega una entrada en `results/run_index.txt` con el `hash`, `model`, comando y configuración.
-
-## Ejemplos Adicionales
-
-- Entrenar solo baseline con selección inline:
-  - `python mains/run_training.py --csv data/processed/dataset_bicicletas_clean.csv --no-clean --features mean_scl hr sdnn`
-- Listar columnas paginadas sin interacción:
-  - `python mains/run_features.py --csv data/processed/dataset_bicicletas_clean.csv --page-size 20`
-- Construir selección a partir de la totalidad removiendo algunas y guardar:
-  - `python mains/run_features.py --csv data/processed/dataset_bicicletas_clean.csv --remove timestamp participant --save utils/feature_sets/exp_remove_time.json --print-cmd --no-clean`
-
-## Notas y Buenas Prácticas
-
-- Ejecuta los mains desde la carpeta `dataset_bicicletas` para que las rutas relativas funcionen tal cual en los ejemplos.
-- Para CSV procesado, usa `--no-clean` en `run_training` para evitar reprocesar.
-- Si instalas PyTorch con CUDA específica, puedes omitir `torch` del `requirements.txt` y hacer la instalación manual según tu GPU.
-- Las utilidades de features mantienen el orden original de las columnas y generan un hash corto útil para etiquetar experimentos.
-
-### Ejecutar como módulo (recomendado)
-
-Para asegurar la resolución correcta de imports de `src/` y `utils/`, puedes ejecutar los scripts como módulos desde la carpeta `dataset_bicicletas`:
-
-- `python -m mains.run_cleaning --csv-in data/raw/all_data.csv --csv-out data/processed/dataset_bicicletas_clean.csv`
-- `python -m mains.run_features --csv data/processed/dataset_bicicletas_clean.csv --interactive --save utils/feature_sets/exp1.json --print-cmd --no-clean`
-- `python -m mains.run_training --csv data/processed/dataset_bicicletas_clean.csv --no-clean --features-file utils/feature_sets/exp1.json --prefix exp1`
-
-## Modelos de Video por Ventanas (CNN+LSTM)
-
-Se incluye un flujo para entrenar modelos CNN+LSTM sobre ventanas de video ya convertidas a tensores de PyTorch por ventana.
-
-- Scripts:
-  - `mains/run_link_video_tensors.py`: enlaza (linkea) las rutas reales en GPU de los `window_*.pt` al pickle crudo y guarda un pickle procesado con una nueva columna (`gpu_tensor_path`).
-  - `mains/run_video_training.py`: entrena el modelo CNN+LSTM leyendo el pickle procesado y utilizando directamente `gpu_tensor_path`.
-- Entrada: un pickle con DataFrame (p. ej. `X_proc_final.pkl`) con columnas
-  `participant, timestamp, window, paths, paths_list, paths_list_fixed, delta_t, delta_t_round, is_imputed, session_id, action`.
-- Por ventana, el archivo `.pt` correspondiente (en el GPU) debe contener un diccionario como:
-  `{ "frames": Tensor[T,C,H,W], "label": int, "participant": str, "timestamp": str, "window_id": int }`.
-
-Paso 1 — Link de rutas a GPU
-
-- Ejecuta el enlace desde el pickle crudo al procesado con la columna `gpu_tensor_path`:
-  - `python -m mains.run_link_video_tensors --pickle-in "~/projects/tesis_repo/dataset_bicicletas/data/raw/X_proc_final.pkl" --linux-root "/mnt/otra_particion/home/israel_gpu_data/video_tensors" --out-pickle "~/projects/tesis_repo/dataset_bicicletas/data/processed/X_proc_final_linked.pkl"`
-
-- El script escanea `--linux-root` para `window_*.pt` y asocia por `timestamp` si está en los `.pt` (o por orden como respaldo). Añade la columna `gpu_tensor_path` y guarda el pickle en `data/processed`.
-
-Paso 2 — Entrenamiento con el pickle procesado
-
-- Entrena usando la columna `gpu_tensor_path` (sin volver a enlazar rutas):
-  - `python -m mains.run_video_training --pickle "~/projects/tesis_repo/dataset_bicicletas/data/processed/X_proc_final_linked.pkl" --arkoudi`
-
-Opciones alternativas de mapeo de rutas (flujo combinado)
-
-- Reemplazo de prefijo (OneDrive → Linux): usar `--onedrive-prefix` y `--linux-root` si el DataFrame trae rutas Windows y quieres reemplazarlas por el root Linux donde están los `.pt`.
-- Mapeo robusto por `timestamp` u orden a `window_i.pt`: pasar `--linux-root` y `--map-by-timestamp` para escanear los `window_*.pt` en el GPU y asociarlos por timestamp (si existe en los `.pt`) o por orden cronológico como respaldo.
-
-Uso típico (desde `dataset_bicicletas`)
-
-- Flujo en dos pasos (recomendado y único):
-  1. `python -m mains.run_link_video_tensors --pickle-in "~/projects/tesis_repo/dataset_bicicletas/data/raw/X_proc_final.pkl" --linux-root "/mnt/otra_particion/home/israel_gpu_data/video_tensors" --out-pickle "~/projects/tesis_repo/dataset_bicicletas/data/processed/X_proc_final_linked.pkl"`
-  2. `python -m mains.run_video_training --pickle "~/projects/tesis_repo/dataset_bicicletas/data/processed/X_proc_final_linked.pkl" --label-col label_proc --prefer-df-label`
-
-
-
-Parámetros clave
-
-- `--label-col` (por defecto `action`), `--timestamp-col` (por defecto `timestamp`), `--window-id-col` (por defecto `window`).
-- `--prefer-df-label` (por defecto activo) para usar siempre el label del DataFrame (p. ej. `label_proc`) e ignorar el `label` dentro de los `.pt`.
-- `--no-default-class-map` desactiva el mapeo string→int por defecto: `{'accelerate':0,'brake':1,'decelerate':2,'maintain speed':3,'wait':4}`. `--class-map-json` permite pasar un JSON con tu propio mapping.
-- `--class-weighted` usa pesos de clase inversos a la frecuencia durante el entrenamiento (CrossEntropy con `weight`).
-- Hiperparámetros: `--cnn-emb`, `--lstm-hidden`, `--lstm-layers`, `--bidirectional`, `--batch-size`, `--epochs`, `--lr`, `--weight-decay`.
-- Arkoudi: `--arkoudi` activa la cabeza de embeddings de clase (interpretable); `--arkoudi-no-norm` desactiva normalización L2.
-- `--num-classes` se infiere del DataFrame si no se pasa.
-
-Artefactos en `results/` (nuevo esquema)
-
-- Para CNN+LSTM (videos):
-  - `CNNLSTM-model-<hash>.pt`, `CNNLSTM-history-<hash>.csv`, `CNNLSTM-eval_report-<hash>.txt`, `CNNLSTM-eval_proba-<hash>.csv`.
-  - `CNNLSTM-embeddings-<hash>.csv` (embeddings por ventana con `emb_*`, `label`, `timestamp`, `window_id`, `participant`).
-  - `CNNLSTM-mnlogit_summary-<hash>.txt` (MNLogit sobre embeddings; si hay labels disponibles).
-- `CNNLSTM-config-<hash>.json` (configuración de la corrida) y una entrada en `results/run_index.txt`.
-
-## Backbones Visuales + LSTM (CLIP/ViT)
-
-Entrena modelos que extraen embeddings por frame con CLIP o ViT y modelan la secuencia con LSTM.
-
-- Script: `mains/run_video_backbones.py`
-- Entrada: pickle procesado (ver paso de link) con `gpu_tensor_path` y labels (`action` o `action_proc`).
-
-Uso típico:
-- CLIP finetune (congelado por defecto), LSTM y Arkoudi, coseno con scheduler coseno:
-  - `python -m mains.run_video_backbones --pickle "~/projects/tesis_repo/dataset_bicicletas/data/processed/X_proc_final_linked.pkl" --label-col action_proc --backbone clip --backbone-name ViT-B-16 --arkoudi --scheduler cosine --epochs 30 --lr 1e-4`
-- ViT (torchvision vit_b_16), LSTM bidireccional con pesos de clase:
-  - `python -m mains.run_video_backbones --pickle "~/projects/.../X_proc_final_linked.pkl" --label-col action_proc --backbone vit --backbone-name vit_b_16 --bidirectional --class-weighted --epochs 30 --lr 1e-4`
-
-Flags principales:
-- `--backbone {vit,clip}` y `--backbone-name` (vit_b_16 o ViT-B-16 para CLIP).
-- `--backbone-trainable` para permitir fine-tuning; por defecto congelado.
-- `--backbone-unfreeze-last N` para descongelar únicamente los últimos N bloques del transformador (recomendado 1–2 al comenzar).
-- `--target-size` (por defecto 224) para reescalar frames antes del backbone.
-- `--lstm-hidden`, `--lstm-layers`, `--bidirectional`, `--dropout` para regularización en LSTM/salida.
-- `--arkoudi` / `--arkoudi-no-norm`.
-- Entrenamiento: `--batch-size`, `--epochs`, `--lr` (por defecto 1e-4), `--weight-decay`, `--class-weighted`, `--scheduler {step,cosine,plateau}` y parámetros asociados.
-- Debug: `--debug-eval` imprime balance de clases y stats de logits.
-
-Requisitos adicionales:
-- Se añadieron `torchvision`, `timm` y `open-clip-torch` al `requirements.txt` para ViT/CLIP. Instala builds acordes a tu CUDA según la guía oficial de PyTorch.
-
-## Verificación de Insumos (DataFrame y Tensors)
-
-Para inspeccionar rápidamente que el pickle y los `.pt` tengan lo esperado, usa el verificador:
-
-- `python -m utils.verify --pickle "~/projects/tesis_repo/dataset_bicicletas/data/processed/X_proc_final_linked.pkl" --path-col gpu_tensor_path --label-col action_proc --sample-pt 5 --random --show-dtypes`
-
-Qué muestra:
-- Columnas, shape y dtypes del DataFrame.
-- Head de columnas clave (`participant`, `timestamp`, `window`, `gpu_tensor_path`, `action_proc`, etc.).
-- Conteos de labels (soporta strings o ints).
-- Valida existencia de archivos y “probea” algunos `.pt` mostrando: tipo (dict/Tensor), claves, shape de `frames`, `label`, `timestamp`, `window_id`, `participant`.
-Recomendaciones de fine-tuning y LR
-
-## Pipeline Multimodal (Tabular + Video)
-
-Esta primera iteración integra datos tabulares y ventanas de video en un espacio latente compartido usando un VAE. Requiere contar con el join multimodal (pickle) que une por `timestamp` las filas tabulares con las rutas `gpu_tensor_path` de los tensores de video.
-
-Preparación del dataset multimodal
-
-- Generar el join por timestamp (si no existe ya):
-  - `python mains/run_join_modalities.py --csv-in data/processed/dataset_bicicletas_clean_aligned.csv --pkl-in data/processed/X_proc_final_linked.pkl --out data/processed/multimodal_join.pkl --how one-to-one`
-
-Entrenamiento del VAE multimodal
-
-- Determinista (fusión temprana y reconstrucción de embeddings por modalidad):
-  - `python mains/run_multimodal_vae_train.py --pkl data/processed/multimodal_join.pkl --features-file utils/feature_sets/exp1.json --label-col action_proc --batch-size 8 --epochs 20 --lr 1e-4 --deterministic`
-
-- Variacional (con término KL y annealing):
-  - `python mains/run_multimodal_vae_train.py --pkl data/processed/multimodal_join.pkl --features-file utils/feature_sets/exp1.json --label-col action_proc --batch-size 8 --epochs 20 --lr 1e-4 --w-kl 1.0 --kl-anneal-steps 10000`
-
-Detalles
-
-- Dataloader: `src/data_loading/multimodal.py` combina tabulares (`x_tab`) con video (`x_vid`) reutilizando `VideoWindowsDataset` para cargar los tensores `.pt` por ventana (10 frames ≈ 5s). Por fila del pickle multimodal, hay exactamente una ventana de video.
-- Preprocesamiento tabular: se aplica `StandardScaler` a numéricas y `OneHotEncoder` a categóricas siguiendo `src/features/prepare.py::build_preprocessor`. El preprocesador ajustado se guarda en `results/MMVAE-preprocessor-*.pkl`.
-- Modelo: `src/models/mm_vae.py`
-  - Encoders por modalidad (MLP para tabular; backbone ViT/CLIP+LSTM para video) → fusión temprana → latente compartido `z`.
-  - Decoders por modalidad para reconstruir embeddings intermedios (no reconstruye píxeles ni features brutas, solo los embeddings de cada encoder).
-  - Cabeza de clasificación logística (`ArkoudiHead`) sobre `z`.
-- Script: `mains/run_multimodal_vae_train.py` divide train/val, entrena end-to-end y guarda artefactos en `results/` (`MMVAE_Det-*` o `MMVAE_Var-*`).
-  - Usa por defecto `utils/feature_sets/exp1.json` para las columnas tabulares y `action_proc` como etiqueta; si los labels aparecen como strings, se mapean vía `{'accelerate':0,'brake':1,'decelerate':2,'maintain speed':3,'wait':4}`.
-
-Embeddings para análisis econométrico
-
-- Tras el entrenamiento, se guardan los embeddings finales por fila en `results/MMVAE_*/embeddings-*.csv` (prefijo depende del modo determinista/variacional):
-  - Determinista: columnas `z_0, z_1, ...` más `label`, `timestamp`, `window_id`, `participant`.
-  - Variacional: además de `z_*`, se agregan `mu_*` y `std_*` (desviación estándar derivada de `logvar`) para muestrear embeddings o usarlos como predictores con incertidumbre.
-
-Notas
-
-- Si no pasas `--features`/`--features-file`, se seleccionan automáticamente columnas numéricas excluyendo `gpu_tensor_path`, `timestamp`, `window`, `participant`, `session_id`, y la columna de label.
-- Los labels string se convierten a enteros internamente. El número de clases se infiere del DataFrame.
-- El backbone visual por defecto es ViT con LSTM (congelado); puedes editar `video_kwargs` en el script si deseas cambiarlo.
-
-- Backbones congelados (solo LSTM/cabeza): `--lr` en 1e-4 a 3e-4 suele funcionar bien.
-- Descongelando últimos 1–2 bloques (`--backbone-unfreeze-last 1` o `2`): usa LR más bajo, p. ej. 5e-5 a 1e-5, y `--scheduler cosine` o `plateau`.
-- Regularización: `--dropout` 0.1–0.3, `--class-weighted` para desbalance, `--weight-decay` 1e-4–1e-3.
-- Estabilidad: considera `--grad-clip 1.0` (ya activado por defecto en backbones) y `--label-smoothing 0.05` (activado en backbones).
+- Etiquetas: usar `action_proc` cuando exista; si aparecen strings, los mapeos se aplican internamente.
+- Preprocesamiento tabular: StandardScaler + OneHot; el preprocessor entrenado se guarda junto al modelo para inferencia reproducible.
+- Multimodal: el VAE guarda embeddings (`z_*`) y, en variacional, `mu_*`/`std_*` para analisis econometrico.
