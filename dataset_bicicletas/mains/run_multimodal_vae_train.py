@@ -127,6 +127,17 @@ def main():
     ap.add_argument("--contrastive-temp", type=float, default=0.07, help="Temperatura para InfoNCE")
     ap.add_argument("--proj-dim", type=int, default=128, help="Dimensión de proyección para pérdidas de alineación/contrastiva")
     ap.add_argument("--modality-dropout", type=float, default=0.0, help="Probabilidad de apagar una modalidad por muestra en la fusión")
+    # Modality toggles (unimodal evaluation)
+    ap.add_argument("--use-tabular", action="store_true", help="Usar modalidad tabular en entrenamiento/validación")
+    ap.add_argument("--use-video", action="store_true", help="Usar modalidad video en entrenamiento/validación")
+    # Overfit mode for debugging
+    ap.add_argument("--overfit-batches", type=int, default=0, help="Si >0, sobreajustar a los primeros N minibatches")
+    # Class weighting
+    ap.add_argument("--class-weighted", action="store_true", help="CrossEntropy con pesos inversos a la frecuencia de clase")
+    # Warmup
+    ap.add_argument("--warmup-epochs", type=int, default=0, help="Epochs iniciales con warmup")
+    ap.add_argument("--warmup-modality", type=str, default="both", choices=["both", "tabular", "video"], help="Modalidad activa durante warmup")
+    ap.add_argument("--warmup-disable-contrastive", action="store_true", help="Desactivar alineación/contrastiva durante warmup")
     args = ap.parse_args()
 
     pkl_path = Path(args.pkl)
@@ -212,6 +223,22 @@ def main():
     dl_tr = DataLoader(ds_tr, batch_size=args.batch_size, shuffle=True, num_workers=0, collate_fn=collate_multimodal)
     dl_val = DataLoader(ds_val, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate_multimodal)
 
+    # Set defaults for modality usage: if none specified, use both
+    use_tab_default = args.use_tabular or (not args.use_tabular and not args.use_video)
+    use_vid_default = args.use_video or (not args.use_tabular and not args.use_video)
+
+    # Class weights
+    class_weights_tensor = None
+    if args.class_weighted:
+        y_series = df_tr[args.label_col].dropna().astype(int)
+        num_classes = int(pd.Series(df[args.label_col]).nunique())
+        counts = y_series.value_counts().reindex(range(num_classes), fill_value=0).values.astype(float)
+        with np.errstate(divide='ignore'):
+            inv = np.where(counts > 0, 1.0 / counts, 0.0)
+        if inv.sum() > 0:
+            inv = inv * (len(inv) / max(1.0, inv.sum()))
+        class_weights_tensor = torch.tensor(inv, dtype=torch.float32)
+
     # Model
     tab_in_dim = ds_tr.X_tab_array.shape[1]
     video_kwargs = dict(
@@ -274,19 +301,58 @@ def main():
     best_val_acc = -1.0
     best_state = None
     val_hist = []
+    # Overfit batches setup
+    overfit_batches = []
+    if args.overfit_batches and args.overfit_batches > 0:
+        for i, b in enumerate(dl_tr):
+            overfit_batches.append(b)
+            if len(overfit_batches) >= args.overfit_batches:
+                break
+    
+    epoch_metrics = []
     for epoch in range(args.epochs):
         model.train()
         tr_loss, tr_total, tr_correct = 0.0, 0, 0
-        for b in dl_tr:
+        tr_align, tr_con, tr_cls, tr_rec_tab, tr_rec_vid, tr_kl, tr_batches = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0
+        train_iter = overfit_batches if overfit_batches else dl_tr
+        for b in train_iter:
             x_tab = b.x_tab.to(device)
             x_vid = b.x_vid.to(device)
             y = b.y.to(device)
+
+            # Warmup and modality toggles
+            use_tab = use_tab_default
+            use_vid = use_vid_default
+            if epoch < int(args.warmup_epochs):
+                if args.warmup_modality == "tabular":
+                    use_tab, use_vid = True, False
+                elif args.warmup_modality == "video":
+                    use_tab, use_vid = False, True
+            if not use_tab and not use_vid:
+                raise SystemExit("Debe estar activa al menos una modalidad (tabular o video)")
+
             optimizer.zero_grad(set_to_none=True)
+            # Apply modality masks by zeroing inputs of disabled modality
+            if not use_tab:
+                x_tab = torch.zeros_like(x_tab)
+            if not use_vid:
+                x_vid = torch.zeros_like(x_vid)
             out = model(x_tab, x_vid)
             if isinstance(model, VariationalMMVAE):
-                loss, logs = model.loss(out, y=y, w_rec_tab=args.w_rec_tab, w_rec_vid=args.w_rec_vid, w_cls=args.w_cls, w_kl=args.w_kl, step=global_step, label_smoothing=args.label_smoothing, w_align=args.w_align, w_contrastive=args.w_contrastive)
+                w_align = 0.0 if (args.warmup_disable_contrastive and epoch < int(args.warmup_epochs)) else args.w_align
+                w_con = 0.0 if (args.warmup_disable_contrastive and epoch < int(args.warmup_epochs)) else args.w_contrastive
+                # Disable recon losses for masked modalities
+                w_rec_tab = args.w_rec_tab if use_tab else 0.0
+                w_rec_vid = args.w_rec_vid if use_vid else 0.0
+                cw = class_weights_tensor.to(device) if class_weights_tensor is not None else None
+                loss, logs = model.loss(out, y=y, w_rec_tab=w_rec_tab, w_rec_vid=w_rec_vid, w_cls=args.w_cls, w_kl=args.w_kl, step=global_step, label_smoothing=args.label_smoothing, w_align=w_align, w_contrastive=w_con, class_weights=cw)
             else:
-                loss, logs = model.loss(out, y=y, w_rec_tab=args.w_rec_tab, w_rec_vid=args.w_rec_vid, w_cls=args.w_cls, label_smoothing=args.label_smoothing, w_align=args.w_align, w_contrastive=args.w_contrastive)
+                w_align = 0.0 if (args.warmup_disable_contrastive and epoch < int(args.warmup_epochs)) else args.w_align
+                w_con = 0.0 if (args.warmup_disable_contrastive and epoch < int(args.warmup_epochs)) else args.w_contrastive
+                w_rec_tab = args.w_rec_tab if use_tab else 0.0
+                w_rec_vid = args.w_rec_vid if use_vid else 0.0
+                cw = class_weights_tensor.to(device) if class_weights_tensor is not None else None
+                loss, logs = model.loss(out, y=y, w_rec_tab=w_rec_tab, w_rec_vid=w_rec_vid, w_cls=args.w_cls, label_smoothing=args.label_smoothing, w_align=w_align, w_contrastive=w_con, class_weights=cw)
             loss.backward()
             if args.grad_clip is not None:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float(args.grad_clip))
@@ -295,6 +361,13 @@ def main():
             pred = out["logits"].argmax(dim=1)
             tr_correct += int((pred == y).sum().item())
             tr_total += int(y.numel())
+            tr_align += float(logs.get("align", 0.0))
+            tr_con += float(logs.get("con", 0.0))
+            tr_cls += float(logs.get("cls", 0.0))
+            tr_rec_tab += float(logs.get("rec_tab", 0.0))
+            tr_rec_vid += float(logs.get("rec_vid", 0.0))
+            tr_kl += float(logs.get("kl", 0.0))
+            tr_batches += 1
             global_step += 1
         tr_acc = tr_correct / max(1, tr_total)
         history["loss"].append(tr_loss / max(1, len(dl_tr)))
@@ -309,6 +382,11 @@ def main():
                 x_tab = b.x_tab.to(device)
                 x_vid = b.x_vid.to(device)
                 y = b.y.to(device)
+                # Use the default (non-warmup) modality toggles for validation
+                if not use_tab_default:
+                    x_tab = torch.zeros_like(x_tab)
+                if not use_vid_default:
+                    x_vid = torch.zeros_like(x_vid)
                 out = model(x_tab, x_vid)
                 logits = out["logits"]
                 v_probs.append(torch.softmax(logits, dim=1).cpu().numpy())
@@ -327,7 +405,28 @@ def main():
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-        print(f"Epoch {epoch+1}/{args.epochs} | train_loss={history['loss'][-1]:.4f} | train_acc={tr_acc:.3f} | val_acc={val_acc:.3f}")
+        # Aggregate aux losses and lr
+        avg_align = (tr_align / max(1, tr_batches))
+        avg_con = (tr_con / max(1, tr_batches))
+        avg_cls = (tr_cls / max(1, tr_batches))
+        avg_rec_tab = (tr_rec_tab / max(1, tr_batches))
+        avg_rec_vid = (tr_rec_vid / max(1, tr_batches))
+        avg_kl = (tr_kl / max(1, tr_batches))
+        cur_lr = optimizer.param_groups[0]["lr"]
+        epoch_metrics.append({
+            "epoch": epoch + 1,
+            "train_loss": history['loss'][-1],
+            "train_acc": tr_acc,
+            "val_acc": val_acc,
+            "align_loss": avg_align,
+            "contrastive_loss": avg_con,
+            "cls_loss": avg_cls,
+            "rec_tab_loss": avg_rec_tab,
+            "rec_vid_loss": avg_rec_vid,
+            "kl_loss": avg_kl,
+            "lr": cur_lr,
+        })
+        print(f"Epoch {epoch+1}/{args.epochs} | train_loss={history['loss'][-1]:.4f} | train_acc={tr_acc:.3f} | val_acc={val_acc:.3f} | align={avg_align:.3f} | con={avg_con:.3f} | lr={cur_lr:.2e}")
 
         # Early stopping: si en las últimas N epochs la variación <= delta
         if len(val_hist) >= int(args.early_stop_patience):
@@ -365,6 +464,8 @@ def main():
     run_hash = compute_run_hash(cfg, sys.argv, model=model_name)
     torch.save(model.state_dict(), results_dir / artifact_name(model_name, "model", run_hash, "pt"))
     pd.DataFrame(history).to_csv(results_dir / artifact_name(model_name, "history", run_hash, "csv"), index=False)
+    if epoch_metrics:
+        pd.DataFrame(epoch_metrics).to_csv(results_dir / artifact_name(model_name, "metrics", run_hash, "csv"), index=False)
     # Save preprocessor tied to this run as well
     save_model_pickle(preprocessor, results_dir / artifact_name(model_name, "preprocessor", run_hash, "pkl"))
 
