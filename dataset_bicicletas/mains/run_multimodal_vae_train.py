@@ -18,6 +18,9 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.data_loading.multimodal import MultimodalDataset, collate_multimodal
 from src.models.mm_vae import DeterministicMMVAE, VariationalMMVAE
 from src.features.prepare import build_preprocessor
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import StandardScaler, OneHotEncoder, RobustScaler
+from sklearn.metrics import confusion_matrix
 from src.data_cleaning.cleaning import categorias_a_str, convertir_a_categorico
 from utils.results_io import (
     ensure_dir,
@@ -112,8 +115,8 @@ def main():
     # Video backbone fine-tuning controls
     ap.add_argument("--video-backbone", type=str, default="vit", choices=["vit", "clip"])
     ap.add_argument("--video-name", type=str, default="vit_b_16")
-    ap.add_argument("--video-trainable", action="store_true")
-    ap.add_argument("--video-unfreeze-last", type=int, default=0)
+    ap.add_argument("--video-trainable", action="store_true", default=True)
+    ap.add_argument("--video-unfreeze-last", type=int, default=1)
     ap.add_argument("--video-target-size", type=int, default=224)
     ap.add_argument("--video-lstm-hidden", type=int, default=256)
     ap.add_argument("--video-lstm-layers", type=int, default=1)
@@ -121,6 +124,12 @@ def main():
     ap.add_argument("--video-dropout", type=float, default=0.0)
     # Fuse dropout
     ap.add_argument("--fuse-dropout", type=float, default=0.1)
+    # Fusion mode
+    ap.add_argument("--fusion", type=str, default="early", choices=["early", "late"], help="Tipo de fusion: early o late")
+    ap.add_argument("--late-alpha", type=float, default=0.5, help="Peso de logits_tab en late fusion (0-1)")
+    # Normalizacion
+    ap.add_argument("--tabular-scaler", type=str, default="robust", choices=["standard", "robust"], help="Scaler para tabular")
+    ap.add_argument("--video-norm", type=str, default="imagenet", choices=["imagenet", "per_channel", "none"], help="Normalizacion para video")
     # Multimodal alignment/contrastive options
     ap.add_argument("--w-align", type=float, default=0.0, help="Peso de pérdida de alineación coseno entre modalidades")
     ap.add_argument("--w-contrastive", type=float, default=0.0, help="Peso de pérdida contrastiva (InfoNCE) entre modalidades")
@@ -133,7 +142,7 @@ def main():
     # Overfit mode for debugging
     ap.add_argument("--overfit-batches", type=int, default=0, help="Si >0, sobreajustar a los primeros N minibatches")
     # Class weighting
-    ap.add_argument("--class-weighted", action="store_true", help="CrossEntropy con pesos inversos a la frecuencia de clase")
+    ap.add_argument("--class-weighted", action="store_true", default=True, help="CrossEntropy con pesos inversos a la frecuencia de clase")
     # Warmup
     ap.add_argument("--warmup-epochs", type=int, default=0, help="Epochs iniciales con warmup")
     ap.add_argument("--warmup-modality", type=str, default="both", choices=["both", "tabular", "video"], help="Modalidad activa durante warmup")
@@ -181,7 +190,16 @@ def main():
     # Convertir objetos a categorías para que OneHotEncoder las procese
     X_tr_prep = convertir_a_categorico(categorias_a_str(X_tr_raw))
     X_val_prep = convertir_a_categorico(categorias_a_str(X_val_raw))
-    preprocessor, numeric, categorical = build_preprocessor(X_tr_prep)
+    # Build preprocessor with chosen scaler
+    numeric = X_tr_prep.select_dtypes(include=["int64", "float64", "int32", "float32"]).columns.tolist()
+    categorical = X_tr_prep.select_dtypes(include=["category"]).columns.tolist()
+    scaler_cls = RobustScaler if args.tabular_scaler == "robust" else StandardScaler
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ("num", scaler_cls(), numeric),
+            ("cat", OneHotEncoder(handle_unknown="ignore"), categorical),
+        ]
+    )
     X_tr_mat = preprocessor.fit_transform(X_tr_prep)
     X_val_mat = preprocessor.transform(X_val_prep)
 
@@ -197,6 +215,26 @@ def main():
     save_model_pickle(preprocessor, results_dir / artifact_name("MMVAE", "preprocessor", pre_hash, "pkl"))
 
     # Datasets / loaders
+    # Video normalization transform
+    def _video_transform(x: torch.Tensor) -> torch.Tensor:
+        if args.video_norm == "none":
+            return x
+        if x.dim() == 3:
+            x = x.unsqueeze(0)
+        if args.video_norm == "imagenet":
+            mean = torch.tensor([0.485, 0.456, 0.406], dtype=x.dtype, device=x.device).view(1,3,1,1)
+            std = torch.tensor([0.229, 0.224, 0.225], dtype=x.dtype, device=x.device).view(1,3,1,1)
+            if x.size(1) == 3:
+                x = (x - mean) / std
+            return x if x.size(0) > 1 else x.squeeze(0)
+        if args.video_norm == "per_channel":
+            eps = 1e-6
+            mean = x.mean(dim=(0,2,3), keepdim=True)
+            std = x.std(dim=(0,2,3), keepdim=True)
+            x = (x - mean) / (std + eps)
+            return x if x.size(0) > 1 else x.squeeze(0)
+        return x
+
     ds_tr = MultimodalDataset(
         df_tr,
         tab_columns=tab_cols,
@@ -207,6 +245,7 @@ def main():
         window_id_col=args.window_id_col,
         prefer_df_label=True,
         class_map=default_class_map,
+        video_transform=_video_transform,
     )
     ds_val = MultimodalDataset(
         df_val,
@@ -218,6 +257,7 @@ def main():
         window_id_col=args.window_id_col,
         prefer_df_label=True,
         class_map=default_class_map,
+        video_transform=_video_transform,
     )
 
     dl_tr = DataLoader(ds_tr, batch_size=args.batch_size, shuffle=True, num_workers=0, collate_fn=collate_multimodal)
@@ -266,6 +306,8 @@ def main():
             proj_dim=args.proj_dim,
             contrastive_temp=args.contrastive_temp,
             modality_dropout_p=args.modality_dropout,
+            fusion_type=args.fusion,
+            late_alpha=args.late_alpha,
         )
     else:
         model = VariationalMMVAE(
@@ -281,6 +323,8 @@ def main():
             proj_dim=args.proj_dim,
             contrastive_temp=args.contrastive_temp,
             modality_dropout_p=args.modality_dropout,
+            fusion_type=args.fusion,
+            late_alpha=args.late_alpha,
         )
 
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
@@ -338,6 +382,13 @@ def main():
             if not use_vid:
                 x_vid = torch.zeros_like(x_vid)
             out = model(x_tab, x_vid)
+            # Label smoothing active only after warmup
+            ls_now = args.label_smoothing if epoch >= int(args.warmup_epochs) else 0.0
+            # Temporarily disable modality dropout during warmup
+            orig_moddrop = getattr(model, 'modality_dropout_p', 0.0)
+            if epoch < int(args.warmup_epochs):
+                setattr(model, 'modality_dropout_p', 0.0)
+
             if isinstance(model, VariationalMMVAE):
                 w_align = 0.0 if (args.warmup_disable_contrastive and epoch < int(args.warmup_epochs)) else args.w_align
                 w_con = 0.0 if (args.warmup_disable_contrastive and epoch < int(args.warmup_epochs)) else args.w_contrastive
@@ -345,18 +396,21 @@ def main():
                 w_rec_tab = args.w_rec_tab if use_tab else 0.0
                 w_rec_vid = args.w_rec_vid if use_vid else 0.0
                 cw = class_weights_tensor.to(device) if class_weights_tensor is not None else None
-                loss, logs = model.loss(out, y=y, w_rec_tab=w_rec_tab, w_rec_vid=w_rec_vid, w_cls=args.w_cls, w_kl=args.w_kl, step=global_step, label_smoothing=args.label_smoothing, w_align=w_align, w_contrastive=w_con, class_weights=cw)
+                loss, logs = model.loss(out, y=y, w_rec_tab=w_rec_tab, w_rec_vid=w_rec_vid, w_cls=args.w_cls, w_kl=args.w_kl, step=global_step, label_smoothing=ls_now, w_align=w_align, w_contrastive=w_con, class_weights=cw)
             else:
                 w_align = 0.0 if (args.warmup_disable_contrastive and epoch < int(args.warmup_epochs)) else args.w_align
                 w_con = 0.0 if (args.warmup_disable_contrastive and epoch < int(args.warmup_epochs)) else args.w_contrastive
                 w_rec_tab = args.w_rec_tab if use_tab else 0.0
                 w_rec_vid = args.w_rec_vid if use_vid else 0.0
                 cw = class_weights_tensor.to(device) if class_weights_tensor is not None else None
-                loss, logs = model.loss(out, y=y, w_rec_tab=w_rec_tab, w_rec_vid=w_rec_vid, w_cls=args.w_cls, label_smoothing=args.label_smoothing, w_align=w_align, w_contrastive=w_con, class_weights=cw)
+                loss, logs = model.loss(out, y=y, w_rec_tab=w_rec_tab, w_rec_vid=w_rec_vid, w_cls=args.w_cls, label_smoothing=ls_now, w_align=w_align, w_contrastive=w_con, class_weights=cw)
             loss.backward()
             if args.grad_clip is not None:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float(args.grad_clip))
             optimizer.step()
+            # Restore modality dropout after step
+            if epoch < int(args.warmup_epochs):
+                setattr(model, 'modality_dropout_p', orig_moddrop)
             tr_loss += float(loss.item())
             pred = out["logits"].argmax(dim=1)
             tr_correct += int((pred == y).sum().item())
@@ -469,7 +523,7 @@ def main():
     # Save preprocessor tied to this run as well
     save_model_pickle(preprocessor, results_dir / artifact_name(model_name, "preprocessor", run_hash, "pkl"))
 
-    # Validation report + Guardado de embeddings
+    # Validation report + Confusion matrix + Guardado de embeddings
     if len(df_val) > 0:
         # Re-run validation to gather predictions
         all_true, all_pred, all_probs = [], [], []
@@ -495,6 +549,12 @@ def main():
             pd.DataFrame(probs, columns=[f"class_{i}" for i in range(probs.shape[1])]).to_csv(
                 results_dir / artifact_name(model_name, "eval_proba", run_hash, "csv"), index=False
             )
+        # Confusion matrix
+        try:
+            cm = confusion_matrix(all_true, all_pred)
+            pd.DataFrame(cm).to_csv(results_dir / artifact_name(model_name, "confusion_matrix", run_hash, "csv"), index=False)
+        except Exception as e:
+            save_text(f"confusion_matrix failed: {e}", results_dir / artifact_name(model_name, "confusion_matrix_error", run_hash, "txt"))
 
     # Extraer y guardar embeddings finales (para análisis econométrico)
     X_all_raw = df[tab_cols].copy()

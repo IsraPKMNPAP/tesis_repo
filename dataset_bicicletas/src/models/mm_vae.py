@@ -63,12 +63,16 @@ class DeterministicMMVAE(nn.Module):
         proj_dim: int = 128,
         contrastive_temp: float = 0.07,
         modality_dropout_p: float = 0.0,
+        fusion_type: str = "early",  # "early" or "late"
+        late_alpha: float = 0.5,
     ):
         super().__init__()
         self.tab_enc = TabularEncoder(tab_in_dim, tab_emb_dim, dropout=dropout)
         self.vid_enc = VideoEncoderWrapper(backbone_model=vid_backbone, **(video_kwargs or {}))
         self.modality_dropout_p = float(modality_dropout_p)
         self.contrastive_temp = float(contrastive_temp)
+        self.fusion_type = fusion_type
+        self.late_alpha = float(late_alpha)
 
         vid_emb_dim = self.vid_enc.output_dim()
         fuse_in = tab_emb_dim + vid_emb_dim
@@ -95,10 +99,15 @@ class DeterministicMMVAE(nn.Module):
             nn.Linear(max(vid_emb_dim, shared_dim), vid_emb_dim),
         )
 
+        # Classification heads: shared (early fusion) and per‑modality (late fusion)
         if classifier_arkoudi:
             self.classifier = ArkoudiHead(shared_dim, num_classes, normalize=True)
+            self.cls_tab = ArkoudiHead(tab_emb_dim, num_classes, normalize=True)
+            self.cls_vid = ArkoudiHead(vid_emb_dim, num_classes, normalize=True)
         else:
             self.classifier = nn.Linear(shared_dim, num_classes)
+            self.cls_tab = nn.Linear(tab_emb_dim, num_classes)
+            self.cls_vid = nn.Linear(vid_emb_dim, num_classes)
 
     def encode_modalities(self, x_tab: torch.Tensor, x_vid: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         z_tab = self.tab_enc(x_tab)
@@ -135,7 +144,15 @@ class DeterministicMMVAE(nn.Module):
         p_vid = F.normalize(self.proj_vid(z_vid), p=2, dim=-1)
         z_shared = self.fuse_modalities(z_tab, z_vid)
         rec_tab, rec_vid = self.decode_modalities(z_shared)
-        logits = self.classifier(z_shared)
+        # logits according to fusion type
+        if self.fusion_type == "late":
+            logits_tab = self.cls_tab(z_tab)
+            logits_vid = self.cls_vid(z_vid)
+            logits = self.late_alpha * logits_tab + (1.0 - self.late_alpha) * logits_vid
+        else:
+            logits_tab = self.cls_tab(z_tab)
+            logits_vid = self.cls_vid(z_vid)
+            logits = self.classifier(z_shared)
         return {
             "z_tab": z_tab,
             "z_vid": z_vid,
@@ -145,6 +162,8 @@ class DeterministicMMVAE(nn.Module):
             "rec_tab": rec_tab,
             "rec_vid": rec_vid,
             "logits": logits,
+            "logits_tab": logits_tab,
+            "logits_vid": logits_vid,
         }
 
     def _contrastive_loss(self, p1: torch.Tensor, p2: torch.Tensor, temperature: float) -> torch.Tensor:

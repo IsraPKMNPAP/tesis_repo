@@ -32,6 +32,7 @@ class MultimodalDataset(Dataset):
         window_id_col: Optional[str] = "window",
         prefer_df_label: bool = True,
         class_map: Optional[dict] = None,
+        video_transform: Optional[callable] = None,
     ):
         self.df = df.reset_index(drop=True)
         self.tab_columns = list(tab_columns)
@@ -44,7 +45,7 @@ class MultimodalDataset(Dataset):
             label_col=label_col,
             timestamp_col=timestamp_col,
             window_id_col=window_id_col,
-            transform=None,
+            transform=video_transform,
             prefer_df_label=prefer_df_label,
             class_map=class_map,
         )
