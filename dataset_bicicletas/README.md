@@ -38,6 +38,15 @@ Recomendacion: situarse dentro de `dataset_bicicletas` antes de ejecutar.
 - Join multimodal por timestamp (para VAE)
   - `python mains/run_join_modalities.py --csv-in data/processed/dataset_bicicletas_clean_aligned.csv --pkl-in data/processed/X_proc_final_linked.pkl --timestamp-col timestamp --out data/processed/multimodal_join.pkl --how one-to-one --suffixes _csv _vid`
 
+- Gestión de audios crudos (renombrado + validación)
+  - Renombrar archivos `Copia de final_audio_PXX.wav` a `raw_audio_PXX.wav`:  
+    `python utils/rename_audio_files.py --audio-root /mnt/otra_particion/home/israel_gpu_data/audio_data_raw/audio_participantes_validos --dry-run`
+  - Validar cobertura temporal de audios vs. `X_vid_aud.pkl`:  
+    `python src/data_cleaning/validate_audio_segments.py --pickle /mnt/otra_particion/home/israel_gpu_data/audio_data_raw/X_vid_aud.pkl --audio-root /mnt/otra_particion/home/israel_gpu_data/audio_data_raw/audio_participantes_validos --out-csv data/processed/audio_segments_validation.csv --out-json data/processed/audio_segments_validation.json --fail-on-error`
+
+- Entrenamiento unimodal audio (CNN/logit baseline)
+  - `python mains/run_audio_training.py --pickle /mnt/otra_particion/home/israel_gpu_data/audio_data_raw/X_vid_aud.pkl --audio-root /mnt/otra_particion/home/israel_gpu_data/audio_data_raw/audio_participantes_validos --results-prefix AudioCNN_v1 --class-weighted --epochs 30 --batch-size 16`
+
 - Entrenamiento unimodal video (CNN/LSTM)
   - `python mains/run_video_training.py --pickle data/processed/X_proc_final_linked.pkl --path-col gpu_tensor_path --label-col action --prefer-df-label --timestamp-col timestamp --window-id-col window --batch-size 16 --epochs 20 --lr 1e-4 --weight-decay 1e-4 --cnn-emb 128 --lstm-hidden 128 --lstm-layers 1 --bidirectional --num-classes 5 --arkoudi --dropout 0.0 --val-split 0.2 --class-weighted --scheduler step --step-size 5 --gamma 0.5 --t-max 20 --plateau-patience 3 --plateau-factor 0.5`
   - ViT/CLIP + LSTM (fine-tuning opcional):
@@ -69,10 +78,11 @@ Recomendacion: situarse dentro de `dataset_bicicletas` antes de ejecutar.
 1) Limpiar CSV crudo y guardar procesado.
 2) Seleccionar features (o usar `utils/feature_sets/exp1.json`).
 3) Entrenar baseline / MNLogit / Torch (tabular).
-4) Linkear tensores de video y verificar.
-5) Alinear CSV al ancla de video y revisar.
-6) Hacer join multimodal por timestamp.
-7) Entrenar VAE multimodal (determinista o variacional).
+4) Preparar audios (renombrar + validar) y entrenar baseline audio si aplica.
+5) Linkear tensores de video y verificar.
+6) Alinear CSV al ancla de video y revisar.
+7) Hacer join multimodal por timestamp.
+8) Entrenar VAE multimodal (determinista o variacional).
 
 ## Carpetas y Rol
 

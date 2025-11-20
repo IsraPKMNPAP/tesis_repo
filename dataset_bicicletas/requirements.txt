@@ -6,3 +6,5 @@ torch>=2.0
 torchvision>=0.15
 timm>=0.9
 open-clip-torch>=2.24
+torchaudio>=2.1
+soundfile>=0.12
