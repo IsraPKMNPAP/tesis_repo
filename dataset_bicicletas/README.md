@@ -43,6 +43,8 @@ Recomendacion: situarse dentro de `dataset_bicicletas` antes de ejecutar.
     `python utils/rename_audio_files.py --audio-root /mnt/otra_particion/home/israel_gpu_data/audio_data_raw/audio_participantes_validos --dry-run`
   - Validar cobertura temporal de audios vs. `X_vid_aud.pkl`:  
     `python src/data_cleaning/validate_audio_segments.py --pickle /mnt/otra_particion/home/israel_gpu_data/audio_data_raw/X_vid_aud.pkl --audio-root /mnt/otra_particion/home/israel_gpu_data/audio_data_raw/audio_participantes_validos --out-csv data/processed/audio_segments_validation.csv --out-json data/processed/audio_segments_validation.json --fail-on-error`
+  - Parchear desincronías (pad de audios y session_id desde video):  
+    `python src/data_cleaning/patch_audio_mismatches.py --audio-pickle /mnt/otra_particion/home/israel_gpu_data/audio_data_raw/X_vid_aud.pkl --audio-root /mnt/otra_particion/home/israel_gpu_data/audio_data_raw/audio_participantes_validos --video-pickle data/processed/X_proc_final_linked.pkl --participants-pad P14 P27 --out-pickle data/processed/X_vid_aud_patched.pkl`
 
 - Entrenamiento unimodal audio (CNN/logit baseline)
   - `python mains/run_audio_training.py --pickle /mnt/otra_particion/home/israel_gpu_data/audio_data_raw/X_vid_aud.pkl --audio-root /mnt/otra_particion/home/israel_gpu_data/audio_data_raw/audio_participantes_validos --results-prefix AudioCNN_v1 --class-weighted --epochs 30 --batch-size 16`
