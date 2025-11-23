@@ -30,6 +30,21 @@ def to_seconds(series: pd.Series) -> pd.Series:
         raise ValueError("No se pudo convertir timestamps a segundos.")
 
 
+def detect_sessions_by_gap(
+    ts_seconds: pd.Series, gap_threshold: float, min_len: int = 1
+) -> pd.Series:
+    """Genera IDs de sesión cuando hay saltos mayores al umbral."""
+    ts_sorted = ts_seconds.reset_index(drop=True)
+    diffs = ts_sorted.diff().fillna(0.0)
+    session_ids = [0]
+    current = 0
+    for d in diffs.iloc[1:]:
+        if d > gap_threshold:
+            current += 1
+        session_ids.append(current)
+    return pd.Series(session_ids, index=ts_seconds.index, name="session_detected")
+
+
 def rebase_participant(
     df: pd.DataFrame,
     participant: str,
@@ -39,36 +54,51 @@ def rebase_participant(
     window_seconds: float,
     new_start_col: str,
     new_timestamp_col: str,
+    auto_session: bool,
+    gap_threshold: float,
 ) -> pd.DataFrame:
     part_df = df[df["__participant_key__"] == participant].copy()
-    sessions = sorted(part_df[session_col].fillna(0).astype(int).unique())
+    # Determinar sesiones: usar columna si existe y no es todo NaN; si no, autogenerar por gaps
+    if session_col in part_df.columns and part_df[session_col].notna().any():
+        sessions_series = part_df[session_col].fillna(method="ffill").fillna(method="bfill").astype(int)
+    elif auto_session:
+        ts_seconds = to_seconds(part_df[timestamp_col])
+        sessions_series = detect_sessions_by_gap(ts_seconds, gap_threshold=gap_threshold)
+    else:
+        sessions_series = pd.Series(0, index=part_df.index)
+
+    part_df["__session_id__"] = sessions_series
+    sessions = sorted(part_df["__session_id__"].astype(int).unique())
 
     cumulative_offset = 0.0
     ts_offset = 0.0
-    rebased_starts: List[float] = []
-    rebased_ts: List[float] = []
+    rebased_starts: Dict[int, List[float]] = {}
+    rebased_ts: Dict[int, List[float]] = {}
 
     for s in sessions:
-        sess_df = part_df[part_df[session_col].fillna(0).astype(int) == s].copy()
-        sess_df = sess_df.sort_values(by=timestamp_col)
+        sess_df = part_df[part_df["__session_id__"] == s].copy().sort_values(by=timestamp_col)
         starts = sess_df[start_col].astype(float).to_numpy()
         ts_seconds = to_seconds(sess_df[timestamp_col])
 
-        # Rebase dentro de la sesión
         base_start = starts.min()
         base_ts = ts_seconds.min()
         rebased_sess_starts = (starts - base_start) + cumulative_offset
         rebased_sess_ts = (ts_seconds - base_ts) + ts_offset
 
-        rebased_starts.extend(rebased_sess_starts.tolist())
-        rebased_ts.extend(rebased_sess_ts.tolist())
+        rebased_starts[s] = rebased_sess_starts.tolist()
+        rebased_ts[s] = rebased_sess_ts.tolist()
 
-        # Actualizar offsets acumulados: asumimos que la sesión dura hasta el último start + window
         cumulative_offset = rebased_sess_starts.max() + window_seconds
         ts_offset = rebased_sess_ts.max() + window_seconds
 
-    part_df[new_start_col] = rebased_starts
-    part_df[new_timestamp_col] = rebased_ts
+    # Escribir de nuevo con el mismo orden original
+    part_df[new_start_col] = np.nan
+    part_df[new_timestamp_col] = np.nan
+    for s in sessions:
+        idx = part_df[part_df["__session_id__"] == s].sort_values(by=timestamp_col).index
+        part_df.loc[idx, new_start_col] = rebased_starts[s]
+        part_df.loc[idx, new_timestamp_col] = rebased_ts[s]
+
     return part_df
 
 
@@ -86,6 +116,8 @@ def main() -> None:
     parser.add_argument("--start-col", default="audio_segment_start")
     parser.add_argument("--timestamp-col", default="timestamp")
     parser.add_argument("--window-seconds", type=float, default=5.0)
+    parser.add_argument("--auto-session", action="store_true", help="Detecta sesiones por huecos grandes si session_id no está disponible.")
+    parser.add_argument("--gap-threshold", type=float, default=30.0, help="Umbral de segundos para detectar nueva sesión cuando auto-session está activo.")
     parser.add_argument(
         "--participants",
         nargs="+",
@@ -123,6 +155,8 @@ def main() -> None:
             window_seconds=args.window_seconds,
             new_start_col=args.new_start_col,
             new_timestamp_col=args.new_timestamp_col,
+            auto_session=args.auto_session,
+            gap_threshold=args.gap_threshold,
         )
         rebased_chunks.append(chunk)
         print(f"[rebase] {p}: {len(chunk)} filas procesadas.")
