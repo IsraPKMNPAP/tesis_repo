@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 import pandas as pd
+import numpy as np
 import torchaudio
 
 
@@ -58,12 +59,14 @@ def audio_metadata(path: Path) -> Dict[str, float]:
 
 
 def check_steps(values: pd.Series, expected: float, tol: float) -> Tuple[bool, List[float]]:
+    """Revisa que los saltos sigan el paso esperado (con tolerancia absoluta)."""
     if values.empty:
         return True, []
     diffs = values.sort_values().diff().dropna().astype(float)
     if diffs.empty:
         return True, []
-    off = diffs[(diffs - expected).abs() > tol]
+    close = np.isclose(diffs, expected, atol=tol, rtol=1e-6)
+    off = diffs[~close]
     return off.empty, off.tolist()
 
 
