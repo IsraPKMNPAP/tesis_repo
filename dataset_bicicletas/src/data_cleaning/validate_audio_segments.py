@@ -74,6 +74,7 @@ def main() -> None:
     parser.add_argument("--participant-col", default="participant")
     parser.add_argument("--timestamp-col", default="timestamp")
     parser.add_argument("--start-col", default="audio_segment_start")
+    parser.add_argument("--session-col", default=None, help="Columna de sesión; los saltos entre sesiones no cuentan como violaciones.")
     parser.add_argument("--label-col", default="action_proc")
     parser.add_argument("--window-seconds", type=float, default=5.0)
     parser.add_argument("--tolerance", type=float, default=0.25)
@@ -114,24 +115,51 @@ def main() -> None:
             violations.append(str(exc))
             continue
 
-        starts = group[args.start_col].astype(float).sort_values()
-        max_start = float(starts.max())
+        starts_all = group[args.start_col].astype(float)
+        max_start = float(starts_all.max())
         required = max_start + args.window_seconds
         coverage_ok = meta["duration_seconds"] + args.tolerance >= required
 
-        start_ok, start_off = check_steps(starts, args.window_seconds, args.tolerance)
+        # Revisar pasos dentro de cada sesión; ignorar saltos entre sesiones
+        start_ok, start_off = True, []
         ts_ok, ts_off = True, []
         ts_span = None
-        if args.timestamp_col in group.columns:
-            timestamps = pd.to_datetime(group[args.timestamp_col], errors="coerce")
-            if timestamps.notna().all():
-                ts_seconds = (timestamps - timestamps.min()).dt.total_seconds()
-                ts_span = float(ts_seconds.max() + args.window_seconds)
-                ts_ok, ts_off = check_steps(ts_seconds, args.window_seconds, args.tolerance)
+
+        sessions = [None]
+        if args.session_col and args.session_col in group.columns:
+            sessions = sorted(group[args.session_col].dropna().unique().tolist())
+            if not sessions:
+                sessions = [None]
+        else:
+            sessions = [None]
+
+        for sess in sessions:
+            if sess is None:
+                sub = group
             else:
-                ts_values = group[args.timestamp_col].astype(float)
-                ts_span = float(ts_values.max() - ts_values.min() + args.window_seconds)
-                ts_ok, ts_off = check_steps(ts_values, args.window_seconds, args.tolerance)
+                sub = group[group[args.session_col] == sess]
+            if sub.empty:
+                continue
+
+            starts = sub[args.start_col].astype(float).sort_values()
+            s_ok, s_off = check_steps(starts, args.window_seconds, args.tolerance)
+            if not s_ok:
+                start_ok = False
+                start_off.extend(s_off)
+
+            if args.timestamp_col in sub.columns:
+                timestamps = pd.to_datetime(sub[args.timestamp_col], errors="coerce")
+                if timestamps.notna().all():
+                    ts_seconds = (timestamps - timestamps.min()).dt.total_seconds()
+                    ts_span = float(ts_seconds.max() + args.window_seconds)
+                    t_ok, t_off = check_steps(ts_seconds, args.window_seconds, args.tolerance)
+                else:
+                    ts_values = sub[args.timestamp_col].astype(float)
+                    ts_span = float(ts_values.max() - ts_values.min() + args.window_seconds)
+                    t_ok, t_off = check_steps(ts_values, args.window_seconds, args.tolerance)
+                if not t_ok:
+                    ts_ok = False
+                    ts_off.extend(t_off)
 
         ok = coverage_ok and start_ok and ts_ok
         metadata_rows.append(
