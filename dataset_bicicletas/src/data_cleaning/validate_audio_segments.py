@@ -35,11 +35,15 @@ def format_participant(value, prefix: str, zero_pad: int) -> str:
     raise ValueError(f"No se pudo normalizar participante: {value}")
 
 
-def resolve_audio_path(root: Path, template: str, participant_token: str) -> Path:
-    path = root / template.format(participant=participant_token)
-    if not path.exists():
-        raise FileNotFoundError(f"No existe el audio para {participant_token}: {path}")
-    return path
+def resolve_audio_path(root: Path, templates: List[str], participant_token: str) -> Path:
+    for tmpl in templates:
+        path = root / tmpl.format(participant=participant_token)
+        if path.exists():
+            return path
+    raise FileNotFoundError(
+        f"No existe el audio para {participant_token}. Probados: "
+        + ", ".join(str(root / tmpl.format(participant=participant_token)) for tmpl in templates)
+    )
 
 
 def audio_metadata(path: Path) -> Dict[str, float]:
@@ -74,6 +78,11 @@ def main() -> None:
     parser.add_argument("--window-seconds", type=float, default=5.0)
     parser.add_argument("--tolerance", type=float, default=0.25)
     parser.add_argument("--filename-template", default="raw_audio_{participant}.wav")
+    parser.add_argument(
+        "--fallback-template",
+        default=None,
+        help="Plantilla alternativa a probar si no se encuentra la principal (ej: raw_audio_{participant}_patched.wav).",
+    )
     parser.add_argument("--participant-prefix", default="P")
     parser.add_argument("--participant-zero-pad", type=int, default=2)
     parser.add_argument("--out-csv", default="data/processed/audio_segments_validation.csv")
@@ -90,6 +99,8 @@ def main() -> None:
     metadata_rows: List[Dict[str, object]] = []
     violations: List[str] = []
 
+    templates = [args.filename_template] + ([args.fallback_template] if args.fallback_template else [])
+
     for participant, group in table.groupby(args.participant_col):
         try:
             token = format_participant(participant, args.participant_prefix, args.participant_zero_pad)
@@ -97,7 +108,7 @@ def main() -> None:
             violations.append(f"{participant}: {exc}")
             continue
         try:
-            audio_path = resolve_audio_path(audio_root, args.filename_template, token)
+            audio_path = resolve_audio_path(audio_root, templates, token)
             meta = audio_metadata(audio_path)
         except FileNotFoundError as exc:
             violations.append(str(exc))
