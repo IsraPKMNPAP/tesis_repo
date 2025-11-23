@@ -118,7 +118,14 @@ class AudioSegmentDataset(Dataset):
             "participant": participant_key,
         }
         if self.timestamp_col:
-            sample["timestamp"] = row[self.timestamp_col]
+            ts_val = row[self.timestamp_col]
+            if isinstance(ts_val, pd.Timestamp):
+                ts_val = ts_val.isoformat()
+            elif pd.isna(ts_val):
+                ts_val = None
+            else:
+                ts_val = str(ts_val)
+            sample["timestamp"] = ts_val
         return sample
 
 
