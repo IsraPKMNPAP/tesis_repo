@@ -291,7 +291,12 @@ def main() -> None:
     val_loss, val_acc, y_true, y_pred, y_prob = evaluate(model, val_loader, criterion, device)
     y_true_labels = label_encoder.inverse_transform(y_true)
     y_pred_labels = label_encoder.inverse_transform(y_pred)
-    report = classification_report(y_true_labels, y_pred_labels, labels=label_encoder.classes_)
+    report = classification_report(
+        y_true_labels,
+        y_pred_labels,
+        labels=label_encoder.classes_,
+        zero_division=0,
+    )
     print("\n=== Reporte validación ===")
     print(report)
 
