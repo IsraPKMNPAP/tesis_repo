@@ -54,7 +54,14 @@ class AudioWav2VecLogit(nn.Module):
             pass
         else:
             raise ValueError(f"Forma inesperada para wav2vec: {waveforms.shape}")
-        features, _ = self.backbone.extract_features(waveforms)
+        outputs = self.backbone.extract_features(waveforms)
+        # extract_features devuelve (features, lengths) o lista de features; manejar ambos
+        if isinstance(outputs, tuple):
+            features, _ = outputs
+        else:
+            features = outputs
+        if isinstance(features, list):
+            features = features[-1]
         # features: (B, T, C)
         feats = features.transpose(1, 2)  # (B, C, T)
         pooled = self.pool(feats).squeeze(-1)
