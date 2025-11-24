@@ -15,7 +15,7 @@ from sklearn.preprocessing import LabelEncoder
 import torch
 from torch import nn
 from torch.optim import AdamW
-from torch.utils.data import WeightedRandomSampler
+from torch.utils.data import WeightedRandomSampler, DataLoader
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
