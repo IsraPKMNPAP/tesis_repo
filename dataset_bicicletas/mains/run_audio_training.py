@@ -166,6 +166,7 @@ def main() -> None:
 
     label_encoder = LabelEncoder()
     df["label_id"] = label_encoder.fit_transform(df[args.label_col].astype(str))
+    num_classes = len(label_encoder.classes_)
     train_df, val_df = split_by_participant(df, args.participant_col, args.val_split, args.seed)
 
     dataset_kwargs: Dict[str, object] = dict(
@@ -218,7 +219,6 @@ def main() -> None:
             drop_last=False,
         )
 
-    num_classes = len(label_encoder.classes_)
     if args.arch == "cnn":
         model = AudioCNNLogit(
             sample_rate=args.sample_rate,
