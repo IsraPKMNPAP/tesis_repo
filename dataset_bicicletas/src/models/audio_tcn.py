@@ -10,13 +10,12 @@ import torchaudio
 class TemporalBlock(nn.Module):
     def __init__(self, in_ch: int, out_ch: int, kernel_size: int, dilation: int, dropout: float):
         super().__init__()
-        pad = (kernel_size - 1) * dilation
-        self.conv1 = nn.Conv1d(in_ch, out_ch, kernel_size, padding=pad, dilation=dilation)
+        self.conv1 = nn.Conv1d(in_ch, out_ch, kernel_size, padding="same", dilation=dilation)
         self.bn1 = nn.BatchNorm1d(out_ch)
         self.relu1 = nn.ReLU(inplace=True)
         self.dropout1 = nn.Dropout(dropout)
 
-        self.conv2 = nn.Conv1d(out_ch, out_ch, kernel_size, padding=pad, dilation=dilation)
+        self.conv2 = nn.Conv1d(out_ch, out_ch, kernel_size, padding="same", dilation=dilation)
         self.bn2 = nn.BatchNorm1d(out_ch)
         self.relu2 = nn.ReLU(inplace=True)
         self.dropout2 = nn.Dropout(dropout)
