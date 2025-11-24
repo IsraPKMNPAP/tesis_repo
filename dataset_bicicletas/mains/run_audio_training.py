@@ -25,6 +25,8 @@ from src.data_loading.audio_windows import (
     create_audio_dataloaders,
 )
 from src.models.audio_cnn import AudioCNNLogit
+from src.models.audio_tcn import AudioTCNLogit
+from src.models.audio_wav2vec import AudioWav2VecLogit, get_bundle
 from utils.results_io import (
     ensure_dir,
     compute_run_hash,
@@ -45,6 +47,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--label-col", default="action_proc")
     parser.add_argument("--window-seconds", type=float, default=5.0)
     parser.add_argument("--sample-rate", type=int, default=16000)
+    parser.add_argument("--arch", choices=["cnn", "tcn", "wav2vec"], default="cnn")
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--epochs", type=int, default=25)
     parser.add_argument("--lr", type=float, default=3e-4)
@@ -57,9 +60,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cnn-channels", nargs="+", type=int, default=[32, 64, 128])
     parser.add_argument("--n-mels", type=int, default=64)
     parser.add_argument("--dropout", type=float, default=0.2)
+    parser.add_argument("--tcn-channels", nargs="+", type=int, default=[64, 128, 256])
+    parser.add_argument("--tcn-kernel-size", type=int, default=3)
+    parser.add_argument("--tcn-dropout", type=float, default=0.2)
+    parser.add_argument("--wav2vec-bundle", default="WAV2VEC2_BASE")
+    parser.add_argument("--wav2vec-trainable", action="store_true")
+    parser.add_argument("--wav2vec-dropout", type=float, default=0.1)
     parser.add_argument("--results-prefix", default="AudioCNN")
     parser.add_argument("--class-weighted", action="store_true")
     parser.add_argument("--grad-clip", type=float, default=1.0)
+    parser.add_argument("--early-stop-patience", type=int, default=5, help="Cortesía: detener si val_acc no mejora en este número de épocas.")
+    parser.add_argument("--early-stop-min-delta", type=float, default=0.1, help="Mejora mínima en val_acc para resetear paciencia.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cuda")
     return parser.parse_args()
@@ -138,6 +149,11 @@ def main() -> None:
         args.device if args.device not in {"auto", "cuda"} else ("cuda" if torch.cuda.is_available() else "cpu")
     )
 
+    # Ajustar sample_rate si se usa wav2vec (debe coincidir con el bundle)
+    if args.arch == "wav2vec":
+        bundle = get_bundle(args.wav2vec_bundle)
+        args.sample_rate = bundle.sample_rate
+
     df = pd.read_pickle(args.pickle)
     df = df.dropna(subset=[args.participant_col, args.start_col, args.label_col]).reset_index(drop=True)
     df[args.start_col] = df[args.start_col].astype(float)
@@ -169,13 +185,33 @@ def main() -> None:
     )
 
     num_classes = len(label_encoder.classes_)
-    model = AudioCNNLogit(
-        sample_rate=args.sample_rate,
-        num_classes=num_classes,
-        n_mels=args.n_mels,
-        cnn_channels=args.cnn_channels,
-        dropout=args.dropout,
-    ).to(device)
+    if args.arch == "cnn":
+        model = AudioCNNLogit(
+            sample_rate=args.sample_rate,
+            num_classes=num_classes,
+            n_mels=args.n_mels,
+            cnn_channels=args.cnn_channels,
+            dropout=args.dropout,
+        )
+    elif args.arch == "tcn":
+        model = AudioTCNLogit(
+            sample_rate=args.sample_rate,
+            num_classes=num_classes,
+            n_mels=args.n_mels,
+            tcn_channels=args.tcn_channels,
+            kernel_size=args.tcn_kernel_size,
+            dropout=args.tcn_dropout,
+        )
+    elif args.arch == "wav2vec":
+        model = AudioWav2VecLogit(
+            bundle_name=args.wav2vec_bundle,
+            num_classes=num_classes,
+            trainable=args.wav2vec_trainable,
+            dropout=args.wav2vec_dropout,
+        )
+    else:
+        raise ValueError(f"Arquitectura no soportada: {args.arch}")
+    model = model.to(device)
 
     class_weights = None
     if args.class_weighted:
@@ -188,6 +224,7 @@ def main() -> None:
     history_rows: List[Dict[str, float]] = []
     best_state = None
     best_val_acc = 0.0
+    no_improve_epochs = 0
 
     for epoch in range(1, args.epochs + 1):
         train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, criterion, device, args.grad_clip)
@@ -199,9 +236,19 @@ def main() -> None:
             f"[{epoch:03d}/{args.epochs}] train_loss={train_loss:.4f} val_loss={val_loss:.4f} "
             f"train_acc={train_acc:.3f} val_acc={val_acc:.3f}"
         )
-        if val_acc >= best_val_acc:
+        if val_acc >= best_val_acc + args.early_stop_min_delta:
             best_val_acc = val_acc
             best_state = {k: v.cpu() for k, v in model.state_dict().items()}
+            no_improve_epochs = 0
+        else:
+            no_improve_epochs += 1
+
+        if no_improve_epochs >= args.early_stop_patience:
+            print(
+                f"[early-stop] Sin mejora >= {args.early_stop_min_delta:.3f} en val_acc por "
+                f"{args.early_stop_patience} épocas. Se detiene en la época {epoch}."
+            )
+            break
 
     if best_state is not None:
         model.load_state_dict(best_state)

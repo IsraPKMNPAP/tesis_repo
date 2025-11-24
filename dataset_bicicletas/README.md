@@ -48,6 +48,8 @@ Recomendacion: situarse dentro de `dataset_bicicletas` antes de ejecutar.
 
 - Entrenamiento unimodal audio (CNN/logit baseline)
   - `python mains/run_audio_training.py --pickle /mnt/otra_particion/home/israel_gpu_data/audio_data_raw/X_vid_aud.pkl --audio-root /mnt/otra_particion/home/israel_gpu_data/audio_data_raw/audio_participantes_validos --results-prefix AudioCNN_v1 --class-weighted --epochs 30 --batch-size 16`
+  - TCN: `python mains/run_audio_training.py --pickle /mnt/otra_particion/home/israel_gpu_data/audio_data_raw/X_vid_aud.pkl --audio-root /mnt/otra_particion/home/israel_gpu_data/audio_data_raw/audio_participantes_validos --arch tcn --results-prefix AudioTCN_v1 --tcn-channels 64 128 256 --class-weighted --epochs 30 --batch-size 16`
+  - wav2vec (freeze por defecto): `python mains/run_audio_training.py --pickle /mnt/otra_particion/home/israel_gpu_data/audio_data_raw/X_vid_aud.pkl --audio-root /mnt/otra_particion/home/israel_gpu_data/audio_data_raw/audio_participantes_validos --arch wav2vec --wav2vec-bundle WAV2VEC2_BASE --results-prefix AudioW2V_v1 --class-weighted --epochs 10 --batch-size 8`
 
 - Entrenamiento unimodal video (CNN/LSTM)
   - `python mains/run_video_training.py --pickle data/processed/X_proc_final_linked.pkl --path-col gpu_tensor_path --label-col action --prefer-df-label --timestamp-col timestamp --window-id-col window --batch-size 16 --epochs 20 --lr 1e-4 --weight-decay 1e-4 --cnn-emb 128 --lstm-hidden 128 --lstm-layers 1 --bidirectional --num-classes 5 --arkoudi --dropout 0.0 --val-split 0.2 --class-weighted --scheduler step --step-size 5 --gamma 0.5 --t-max 20 --plateau-patience 3 --plateau-factor 0.5`
