@@ -74,7 +74,12 @@ class AudioTCNLogit(nn.Module):
             waveforms = waveforms.unsqueeze(1)
         spec = self.melspec(waveforms)
         spec = self.to_db(spec).clamp(min=-80.0, max=80.0)
-        # spec: (B, n_mels, time)
+        # spec shape: (B, C, n_mels, time) cuando hay canales; colapsar a mono
+        if spec.dim() == 4:
+            spec = spec.mean(dim=1)
+        elif spec.dim() != 3:
+            raise ValueError(f"Forma inesperada del espectrograma: {spec.shape}")
+        # resultado: (B, n_mels, time)
         return spec
 
     def forward(self, waveforms: torch.Tensor) -> torch.Tensor:
