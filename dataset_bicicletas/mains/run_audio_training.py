@@ -15,6 +15,7 @@ from sklearn.preprocessing import LabelEncoder
 import torch
 from torch import nn
 from torch.optim import AdamW
+from torch.utils.data import WeightedRandomSampler
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -57,6 +58,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--participant-prefix", default="P")
     parser.add_argument("--participant-zero-pad", type=int, default=2)
     parser.add_argument("--filename-template", default="raw_audio_{participant}.wav")
+    parser.add_argument("--cache-audio", action="store_true", help="Cachear audio completo por participante en RAM para acelerar slicing.")
+    parser.add_argument("--aug-noise-std", type=float, default=0.0, help="Desvío estándar del ruido gaussiano en waveform.")
+    parser.add_argument("--aug-prob", type=float, default=0.0, help="Probabilidad de aplicar ruido gaussiano.")
     parser.add_argument("--cnn-channels", nargs="+", type=int, default=[32, 64, 128])
     parser.add_argument("--n-mels", type=int, default=64)
     parser.add_argument("--dropout", type=float, default=0.2)
@@ -68,6 +72,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wav2vec-dropout", type=float, default=0.1)
     parser.add_argument("--results-prefix", default="AudioCNN")
     parser.add_argument("--class-weighted", action="store_true")
+    parser.add_argument("--balance-sampler", action="store_true", help="Usar WeightedRandomSampler para balancear clases.")
+    parser.add_argument("--label-smoothing", type=float, default=0.0, help="Label smoothing para CrossEntropy.")
     parser.add_argument("--grad-clip", type=float, default=1.0)
     parser.add_argument("--early-stop-patience", type=int, default=5, help="Cortesía: detener si val_acc no mejora en este número de épocas.")
     parser.add_argument("--early-stop-min-delta", type=float, default=0.1, help="Mejora mínima en val_acc para resetear paciencia.")
@@ -174,15 +180,43 @@ def main() -> None:
         participant_prefix=args.participant_prefix,
         participant_zero_pad=args.participant_zero_pad,
         strict=True,
+        cache_audio=args.cache_audio,
+        aug_noise_std=args.aug_noise_std,
+        aug_prob=args.aug_prob,
     )
-    train_loader, val_loader = create_audio_dataloaders(
-        train_df,
-        val_df,
-        dataset_kwargs=dataset_kwargs,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        pin_memory=device.type == "cuda",
-    )
+    # Sampler balanceado opcional
+    if args.balance_sampler:
+        class_sample_counts = np.bincount(train_df["label_id"], minlength=num_classes)
+        weights = 1.0 / np.maximum(class_sample_counts, 1)
+        sample_weights = weights[train_df["label_id"].to_numpy()]
+        sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
+        train_loader = DataLoader(
+            AudioSegmentDataset(train_df, **dataset_kwargs),
+            batch_size=args.batch_size,
+            sampler=sampler,
+            num_workers=args.num_workers,
+            pin_memory=device.type == "cuda",
+            drop_last=False,
+        )
+    else:
+        train_loader, val_loader = create_audio_dataloaders(
+            train_df,
+            val_df,
+            dataset_kwargs=dataset_kwargs,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            pin_memory=device.type == "cuda",
+        )
+    # Asegurar val_loader si sampler se usó
+    if args.balance_sampler:
+        val_loader = DataLoader(
+            AudioSegmentDataset(val_df, **dataset_kwargs),
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            pin_memory=device.type == "cuda",
+            drop_last=False,
+        )
 
     num_classes = len(label_encoder.classes_)
     if args.arch == "cnn":
@@ -218,7 +252,7 @@ def main() -> None:
         counts = np.bincount(train_df["label_id"], minlength=num_classes)
         weights = (counts.sum() / np.maximum(counts, 1)).astype(np.float32)
         class_weights = torch.tensor(weights / weights.mean(), device=device)
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=args.label_smoothing)
     optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     history_rows: List[Dict[str, float]] = []

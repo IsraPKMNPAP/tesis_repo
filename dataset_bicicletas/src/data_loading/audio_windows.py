@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple, Optional
 
 import numpy as np
 import pandas as pd
@@ -50,6 +50,9 @@ class AudioSegmentDataset(Dataset):
         participant_prefix: str = "P",
         participant_zero_pad: int = 2,
         strict: bool = True,
+        cache_audio: bool = False,
+        aug_noise_std: float = 0.0,
+        aug_prob: float = 0.0,
     ):
         self.df = df.reset_index(drop=True)
         self.audio_root = Path(audio_root)
@@ -63,9 +66,13 @@ class AudioSegmentDataset(Dataset):
         self.participant_prefix = participant_prefix
         self.participant_zero_pad = participant_zero_pad
         self.strict = strict
+        self.cache_audio = cache_audio
+        self.aug_noise_std = aug_noise_std
+        self.aug_prob = aug_prob
 
         self.participant_tokens: Dict[str, str] = {}
         self.audio_meta: Dict[str, AudioMeta] = {}
+        self.audio_cache: Dict[str, torch.Tensor] = {}
         self._prepare_audio_index()
 
     def _prepare_audio_index(self) -> None:
@@ -82,6 +89,11 @@ class AudioSegmentDataset(Dataset):
             duration = info.num_frames / sr if sr else 0.0
             self.participant_tokens[str(value)] = token
             self.audio_meta[str(value)] = AudioMeta(path=path, sample_rate=sr, num_frames=info.num_frames, duration=duration)
+            if self.cache_audio:
+                waveform, sr_loaded = torchaudio.load(str(path))
+                if sr_loaded != self.sample_rate:
+                    waveform = F.resample(waveform, sr_loaded, self.sample_rate)
+                self.audio_cache[str(value)] = waveform.to(torch.float32)
         if self.strict and len(self.participant_tokens) != len(unique_parts):
             missing = set(map(str, unique_parts)) - set(self.participant_tokens.keys())
             raise FileNotFoundError(f"No se encontró audio para participantes: {missing}")
@@ -95,14 +107,32 @@ class AudioSegmentDataset(Dataset):
         num_frames = int(round(self.window_seconds * meta.sample_rate))
         frame_offset = max(frame_offset, 0)
         num_frames = max(num_frames, 1)
-        waveform, sr = torchaudio.load(str(meta.path), frame_offset=frame_offset, num_frames=num_frames)
-        needed_frames = int(round(self.window_seconds * sr))
-        if waveform.size(-1) < needed_frames:
-            pad_frames = needed_frames - waveform.size(-1)
-            waveform = torch.nn.functional.pad(waveform, (0, pad_frames))
-        if sr != self.sample_rate:
-            waveform = F.resample(waveform, sr, self.sample_rate)
+
+        if self.cache_audio and participant_key in self.audio_cache:
+            full = self.audio_cache[participant_key]
+            end = frame_offset + num_frames
+            slice_wave = full[:, frame_offset:end]
+            if slice_wave.size(-1) < num_frames:
+                pad_frames = num_frames - slice_wave.size(-1)
+                slice_wave = torch.nn.functional.pad(slice_wave, (0, pad_frames))
+            waveform = slice_wave
+            sr = self.sample_rate
+        else:
+            waveform, sr = torchaudio.load(str(meta.path), frame_offset=frame_offset, num_frames=num_frames)
+            needed_frames = int(round(self.window_seconds * sr))
+            if waveform.size(-1) < needed_frames:
+                pad_frames = needed_frames - waveform.size(-1)
+                waveform = torch.nn.functional.pad(waveform, (0, pad_frames))
+            if sr != self.sample_rate:
+                waveform = F.resample(waveform, sr, self.sample_rate)
         return waveform.to(torch.float32)
+
+    def _maybe_augment(self, waveform: torch.Tensor) -> torch.Tensor:
+        if self.aug_noise_std > 0 and self.aug_prob > 0:
+            if torch.rand(1).item() < self.aug_prob:
+                noise = torch.randn_like(waveform) * self.aug_noise_std
+                waveform = waveform + noise
+        return waveform
 
     def __getitem__(self, idx: int) -> Dict[str, object]:
         row = self.df.iloc[idx]
@@ -111,6 +141,7 @@ class AudioSegmentDataset(Dataset):
             raise KeyError(f"Sin audio para {participant_key}")
         start = float(row[self.start_col])
         waveform = self._slice_waveform(participant_key, start)
+        waveform = self._maybe_augment(waveform)
         label = int(row[self.label_col])
         sample = {
             "waveform": waveform,
