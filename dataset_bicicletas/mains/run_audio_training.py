@@ -24,6 +24,7 @@ if str(ROOT) not in sys.path:
 from src.data_loading.audio_windows import (
     split_by_participant,
     create_audio_dataloaders,
+    AudioSegmentDataset,
 )
 from src.models.audio_cnn import AudioCNNLogit
 from src.models.audio_tcn import AudioTCNLogit
