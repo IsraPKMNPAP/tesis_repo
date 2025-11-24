@@ -63,6 +63,10 @@ Recomendacion: situarse dentro de `dataset_bicicletas` antes de ejecutar.
   - Variacional (añadir KL):
     - `python mains/run_multimodal_vae_train.py --pkl data/processed/multimodal_join.pkl --features-file utils/feature_sets/exp1.json --label-col action_proc --batch-size 16 --epochs 20 --lr 1e-4 --w-kl 1.0 --kl-anneal-steps 10000 --fuse-dropout 0.2 --label-smoothing 0.05 --scheduler cosine --weight-decay 2e-4 --w-align 0.1 --w-contrastive 0.1 --contrastive-temp 0.07 --proj-dim 128 --modality-dropout 0.1 --grad-clip 1.0 --early-stop-patience 3 --early-stop-delta 0.02 --video-backbone vit --video-name vit_b_16 --video-target-size 224 --video-lstm-hidden 256 --video-lstm-layers 1 --video-bidirectional --video-dropout 0.0 --video-trainable --video-unfreeze-last 0 --val-split 0.2`
 
+- Entrenamiento multimodal con audio (nuevo)
+  - Determinista (tab + video + audio):
+    - `python mains/run_multimodal_vae_audio_train.py --pkl data/processed/multimodal_join.pkl --features-file utils/feature_sets/exp1.json --label-col action_proc --batch-size 32 --epochs 30 --lr 1e-4 --deterministic --fusion early --tabular-scaler robust --video-norm imagenet --audio-sr 16000 --audio-duration 5.0 --audio-norm per_channel --class-weighted --warmup-epochs 5 --warmup-modality both --warmup-disable-contrastive --w-align 0.0 --w-contrastive 0.0 --modality-dropout 0.0 --video-backbone vit --video-name vit_b_16 --video-trainable --video-unfreeze-last 1 --video-target-size 224 --video-lstm-hidden 256 --video-lstm-layers 1 --video-bidirectional`
+
 - Artefactos (ambos VAE)
   - Modelo: `results/MMVAE_*‑model‑<hash>.pt`
   - Preprocesador tabular: `results/MMVAE_*‑preprocessor‑<hash>.pkl`

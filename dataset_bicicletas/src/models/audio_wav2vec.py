@@ -44,11 +44,16 @@ class AudioWav2VecLogit(nn.Module):
                 p.requires_grad = False
 
     def forward(self, waveforms: torch.Tensor) -> torch.Tensor:
-        # waveforms: (B, 1, T) or (B, T)
-        if waveforms.dim() == 2:
-            waveforms = waveforms.unsqueeze(1)
-        # wav2vec espera (B, T); quitar canal
-        waveforms = waveforms.squeeze(1)
+        # Espera (B, T); si viene con canal, promediar a mono
+        if waveforms.dim() == 3:
+            if waveforms.size(1) > 1:
+                waveforms = waveforms.mean(dim=1)
+            else:
+                waveforms = waveforms.squeeze(1)
+        elif waveforms.dim() == 2:
+            pass
+        else:
+            raise ValueError(f"Forma inesperada para wav2vec: {waveforms.shape}")
         features, _ = self.backbone.extract_features(waveforms)
         # features: (B, T, C)
         feats = features.transpose(1, 2)  # (B, C, T)
