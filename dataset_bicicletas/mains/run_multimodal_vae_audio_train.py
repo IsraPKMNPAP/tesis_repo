@@ -455,7 +455,11 @@ def main():
             tr_batches += 1
             global_step += 1
         tr_acc = tr_correct / max(1, tr_total)
-        history["loss"].append(tr_loss / max(1, len(dl_tr)))
+        tr_loss_avg = tr_loss / max(1, tr_batches if overfit_batches else len(dl_tr))
+        # nan guard
+        tr_loss_avg = float(np.nan_to_num(tr_loss_avg))
+        tr_acc = float(np.nan_to_num(tr_acc))
+        history["loss"].append(tr_loss_avg)
         history["acc"].append(tr_acc)
 
         # Validation
@@ -491,22 +495,22 @@ def main():
             best_val_acc = val_acc
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
-        avg_align = (tr_align / max(1, tr_batches))
-        avg_con = (tr_con / max(1, tr_batches))
-        avg_cls = (tr_cls / max(1, tr_batches))
-        avg_rec_tab = (tr_rec_tab / max(1, tr_batches))
-        avg_rec_vid = (tr_rec_vid / max(1, tr_batches))
-        avg_kl = (tr_kl / max(1, tr_batches))
-        avg_aux_tab = (tr_aux_tab / max(1, tr_batches))
-        avg_aux_vid = (tr_aux_vid / max(1, tr_batches))
-        avg_aux_aud = (tr_aux_aud / max(1, tr_batches))
+        avg_align = float(np.nan_to_num(tr_align / max(1, tr_batches)))
+        avg_con = float(np.nan_to_num(tr_con / max(1, tr_batches)))
+        avg_cls = float(np.nan_to_num(tr_cls / max(1, tr_batches)))
+        avg_rec_tab = float(np.nan_to_num(tr_rec_tab / max(1, tr_batches)))
+        avg_rec_vid = float(np.nan_to_num(tr_rec_vid / max(1, tr_batches)))
+        avg_kl = float(np.nan_to_num(tr_kl / max(1, tr_batches)))
+        avg_aux_tab = float(np.nan_to_num(tr_aux_tab / max(1, tr_batches)))
+        avg_aux_vid = float(np.nan_to_num(tr_aux_vid / max(1, tr_batches)))
+        avg_aux_aud = float(np.nan_to_num(tr_aux_aud / max(1, tr_batches)))
         cur_lr = optimizer.param_groups[0]["lr"]
         epoch_metrics.append(
             {
                 "epoch": epoch + 1,
                 "train_loss": history["loss"][-1],
                 "train_acc": tr_acc,
-                "val_acc": val_acc,
+                "val_acc": float(np.nan_to_num(val_acc)),
                 "align_loss": avg_align,
                 "contrastive_loss": avg_con,
                 "cls_loss": avg_cls,
@@ -516,7 +520,7 @@ def main():
                 "aux_tab_loss": avg_aux_tab,
                 "aux_vid_loss": avg_aux_vid,
                 "aux_aud_loss": avg_aux_aud,
-                "lr": cur_lr,
+                "lr": float(np.nan_to_num(cur_lr)),
             }
         )
         print(

@@ -76,8 +76,8 @@ class DeterministicMMVAEAudio(DeterministicMMVAE):
     def forward(self, x_tab: torch.Tensor, x_vid: torch.Tensor, x_aud: Optional[torch.Tensor] = None):
         z_tab, z_vid = self.encode_modalities(x_tab, x_vid)
         z_aud = self.encode_audio(x_aud)
-        p_tab = F.normalize(self.proj_tab(z_tab), p=2, dim=-1)
-        p_vid = F.normalize(self.proj_vid(z_vid), p=2, dim=-1)
+        p_tab = _safe_normalize(self.proj_tab(z_tab), dim=-1)
+        p_vid = _safe_normalize(self.proj_vid(z_vid), dim=-1)
         p_aud = None
         if z_aud is not None:
             p_aud = _safe_normalize(self.proj_aud(z_aud), dim=-1)
@@ -173,15 +173,16 @@ class DeterministicMMVAEAudio(DeterministicMMVAE):
             + float(w_aux_vid) * l_aux_vid
             + float(w_aux_aud) * l_aux_aud
         )
+        total = torch.nan_to_num(total)
         return total, {
-            "rec_tab": l_rec_tab.item(),
-            "rec_vid": l_rec_vid.item(),
-            "cls": l_cls.item(),
-            "align": l_align.item() if isinstance(l_align, torch.Tensor) else 0.0,
-            "con": l_con.item() if isinstance(l_con, torch.Tensor) else 0.0,
-            "aux_tab": l_aux_tab.item() if isinstance(l_aux_tab, torch.Tensor) else 0.0,
-            "aux_vid": l_aux_vid.item() if isinstance(l_aux_vid, torch.Tensor) else 0.0,
-            "aux_aud": l_aux_aud.item() if isinstance(l_aux_aud, torch.Tensor) else 0.0,
+            "rec_tab": float(torch.nan_to_num(l_rec_tab).item()),
+            "rec_vid": float(torch.nan_to_num(l_rec_vid).item()),
+            "cls": float(torch.nan_to_num(l_cls).item()),
+            "align": float(torch.nan_to_num(l_align).item()),
+            "con": float(torch.nan_to_num(l_con).item()),
+            "aux_tab": float(torch.nan_to_num(l_aux_tab).item()),
+            "aux_vid": float(torch.nan_to_num(l_aux_vid).item()),
+            "aux_aud": float(torch.nan_to_num(l_aux_aud).item()),
         }
 
 
@@ -247,15 +248,16 @@ class VariationalMMVAEAudio(DeterministicMMVAEAudio, VariationalMMVAE):
             + float(w_aux_vid) * l_aux_vid
             + float(w_aux_aud) * l_aux_aud
         )
+        total = torch.nan_to_num(total)
         return total, {
-            "rec_tab": l_rec_tab.item(),
-            "rec_vid": l_rec_vid.item(),
-            "cls": l_cls.item(),
-            "kl": kl.item(),
+            "rec_tab": float(torch.nan_to_num(l_rec_tab).item()),
+            "rec_vid": float(torch.nan_to_num(l_rec_vid).item()),
+            "cls": float(torch.nan_to_num(l_cls).item()),
+            "kl": float(torch.nan_to_num(kl).item()),
             "kl_w": kl_w,
-            "align": l_align.item() if isinstance(l_align, torch.Tensor) else 0.0,
-            "con": l_con.item() if isinstance(l_con, torch.Tensor) else 0.0,
-            "aux_tab": l_aux_tab.item() if isinstance(l_aux_tab, torch.Tensor) else 0.0,
-            "aux_vid": l_aux_vid.item() if isinstance(l_aux_vid, torch.Tensor) else 0.0,
-            "aux_aud": l_aux_aud.item() if isinstance(l_aux_aud, torch.Tensor) else 0.0,
+            "align": float(torch.nan_to_num(l_align).item()),
+            "con": float(torch.nan_to_num(l_con).item()),
+            "aux_tab": float(torch.nan_to_num(l_aux_tab).item()),
+            "aux_vid": float(torch.nan_to_num(l_aux_vid).item()),
+            "aux_aud": float(torch.nan_to_num(l_aux_aud).item()),
         }
