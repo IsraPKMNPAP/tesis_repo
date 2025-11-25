@@ -124,6 +124,7 @@ def main():
     ap.add_argument("--contrastive-temp", type=float, default=0.07)
     ap.add_argument("--proj-dim", type=int, default=128)
     ap.add_argument("--modality-dropout", type=float, default=0.0)
+    ap.add_argument("--fuse-dropout", type=float, default=0.0)
     ap.add_argument("--w-aux-tab", type=float, default=0.1, help="Peso de CE auxiliar sobre logits_tab")
     ap.add_argument("--w-aux-vid", type=float, default=0.1, help="Peso de CE auxiliar sobre logits_vid")
     ap.add_argument("--w-aux-aud", type=float, default=0.05, help="Peso de CE auxiliar sobre logits_aud")
