@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .mm_vae import DeterministicMMVAE, VariationalMMVAE
+from .mm_vae import DeterministicMMVAE, VariationalMMVAE, _safe_normalize
 from .audio_encoders import SimpleAudioEncoder
 
 
@@ -52,6 +52,7 @@ class DeterministicMMVAEAudio(DeterministicMMVAE):
         )
         # Crear encoder de audio y head auxiliar una vez inicializado el nn.Module padre
         self.audio_enc = audio_encoder or SimpleAudioEncoder(emb_dim=self.audio_emb_dim)
+        self.proj_aud = nn.Linear(self.audio_emb_dim, self.proj_tab.out_features)
         # Ajustar classifier para soportar audio en late fusion
         if classifier_arkoudi:
             self.cls_aud = nn.Linear(self.audio_emb_dim, num_classes, bias=False)
@@ -79,9 +80,7 @@ class DeterministicMMVAEAudio(DeterministicMMVAE):
         p_vid = F.normalize(self.proj_vid(z_vid), p=2, dim=-1)
         p_aud = None
         if z_aud is not None:
-            # Proyección a proj_dim
-            proj_aud = nn.Linear(self.audio_emb_dim, self.proj_tab.out_features).to(z_aud.device)
-            p_aud = F.normalize(proj_aud(z_aud), p=2, dim=-1)
+            p_aud = _safe_normalize(self.proj_aud(z_aud), dim=-1)
         z_shared = self.fuse_modalities(z_tab, z_vid, z_aud)
         rec_tab, rec_vid = self.decode_modalities(z_shared)
         logits_tab = self.cls_tab(z_tab)

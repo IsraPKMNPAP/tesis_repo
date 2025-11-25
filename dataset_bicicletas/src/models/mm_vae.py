@@ -48,6 +48,11 @@ class VideoEncoderWrapper(nn.Module):
         return z
 
 
+def _safe_normalize(x: torch.Tensor, dim: int = -1, eps: float = 1e-6) -> torch.Tensor:
+    norm = x.norm(p=2, dim=dim, keepdim=True).clamp(min=eps)
+    return x / norm
+
+
 class DeterministicMMVAE(nn.Module):
     def __init__(
         self,
@@ -140,8 +145,8 @@ class DeterministicMMVAE(nn.Module):
     def forward(self, x_tab: torch.Tensor, x_vid: torch.Tensor):
         z_tab, z_vid = self.encode_modalities(x_tab, x_vid)
         # Projections for optional alignment/contrastive
-        p_tab = F.normalize(self.proj_tab(z_tab), p=2, dim=-1)
-        p_vid = F.normalize(self.proj_vid(z_vid), p=2, dim=-1)
+        p_tab = _safe_normalize(self.proj_tab(z_tab), dim=-1)
+        p_vid = _safe_normalize(self.proj_vid(z_vid), dim=-1)
         z_shared = self.fuse_modalities(z_tab, z_vid)
         rec_tab, rec_vid = self.decode_modalities(z_shared)
         # logits according to fusion type
