@@ -32,7 +32,6 @@ class DeterministicMMVAEAudio(DeterministicMMVAE):
         late_alpha: float = 0.5,
         audio_emb_dim: int = 128,
     ):
-        self.audio_enc = audio_encoder or SimpleAudioEncoder(emb_dim=audio_emb_dim)
         self.audio_emb_dim = audio_emb_dim
         # Llamar al init padre (tab+video)
         super().__init__(
@@ -51,6 +50,8 @@ class DeterministicMMVAEAudio(DeterministicMMVAE):
             fusion_type=fusion_type,
             late_alpha=late_alpha,
         )
+        # Crear encoder de audio y head auxiliar una vez inicializado el nn.Module padre
+        self.audio_enc = audio_encoder or SimpleAudioEncoder(emb_dim=self.audio_emb_dim)
         # Ajustar classifier para soportar audio en late fusion
         if classifier_arkoudi:
             self.cls_aud = nn.Linear(self.audio_emb_dim, num_classes, bias=False)
