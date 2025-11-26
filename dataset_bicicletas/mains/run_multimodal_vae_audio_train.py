@@ -75,9 +75,11 @@ def main():
     ap.add_argument("--features", nargs="*", default=None, help="Columnas tabulares a usar")
     ap.add_argument("--features-file", type=str, default="utils/feature_sets/exp1.json", help="Archivo con lista de features")
     ap.add_argument("--path-col", type=str, default="gpu_tensor_path")
-    ap.add_argument("--audio-col", type=str, default="audio_path")
+    ap.add_argument("--video-root", type=str, default=None, help="Raíz para prefijar paths de video si son relativos (ej: /mnt/.../video_tensors)")
+    ap.add_argument("--audio-col", type=str, default="audio_path", help="Columna con ruta directa al audio (opcional)")
     ap.add_argument("--timestamp-col", type=str, default="timestamp")
     ap.add_argument("--window-id-col", type=str, default="window")
+    ap.add_argument("--participant-col", type=str, default="participant")
     ap.add_argument("--batch-size", type=int, default=8)
     ap.add_argument("--epochs", type=int, default=20)
     ap.add_argument("--lr", type=float, default=1e-4)
@@ -146,6 +148,10 @@ def main():
     ap.add_argument("--audio-sr", type=int, default=16000)
     ap.add_argument("--audio-duration", type=float, default=5.0)
     ap.add_argument("--audio-norm", type=str, default="per_channel", choices=["per_channel", "none"])
+    ap.add_argument("--audio-root", type=str, default=None, help="Raíz donde viven los raw_audio_<PARTICIPANTE>.wav")
+    ap.add_argument("--audio-template", type=str, default="raw_audio_{participant}.wav")
+    ap.add_argument("--audio-fallback-template", type=str, default=None)
+    ap.add_argument("--audio-start-col", type=str, default="audio_segment_start")
     args = ap.parse_args()
     if args.scheduler == "none":
         args.scheduler = None
@@ -154,6 +160,15 @@ def main():
     if not pkl_path.exists():
         raise FileNotFoundError(f"No existe el pickle multimodal: {pkl_path}")
     df = pd.read_pickle(pkl_path).reset_index(drop=True)
+    # Si se provee video_root, prefijar si las rutas no son absolutas
+    if args.video_root:
+        root = Path(args.video_root)
+        df[args.path_col] = df[args.path_col].astype(str).apply(
+            lambda p: str(root / p) if not Path(p).is_absolute() else p
+        )
+    has_audio_col = args.audio_col in df.columns
+    if not has_audio_col:
+        print(f"[WARN] No se encontró columna de audio '{args.audio_col}' en el pickle. Se intentará usar audio_root+segmento si se provee.")
 
     # Features
     tab_cols = args.features
@@ -232,7 +247,12 @@ def main():
         tab_columns=tab_cols,
         X_tab_array=_to_float_tensor(X_tr_mat),
         path_col=args.path_col,
-        audio_col=args.audio_col,
+        audio_col=(args.audio_col if has_audio_col else None),
+        participant_col=args.participant_col,
+        audio_start_col=args.audio_start_col,
+        audio_root=args.audio_root,
+        audio_template=args.audio_template,
+        audio_fallback_template=args.audio_fallback_template,
         label_col=args.label_col,
         timestamp_col=args.timestamp_col,
         window_id_col=args.window_id_col,
@@ -248,7 +268,12 @@ def main():
         tab_columns=tab_cols,
         X_tab_array=_to_float_tensor(X_val_mat),
         path_col=args.path_col,
-        audio_col=args.audio_col,
+        audio_col=(args.audio_col if has_audio_col else None),
+        participant_col=args.participant_col,
+        audio_start_col=args.audio_start_col,
+        audio_root=args.audio_root,
+        audio_template=args.audio_template,
+        audio_fallback_template=args.audio_fallback_template,
         label_col=args.label_col,
         timestamp_col=args.timestamp_col,
         window_id_col=args.window_id_col,
@@ -266,7 +291,7 @@ def main():
     # Modality defaults
     use_tab_default = args.use_tabular or (not args.use_tabular and not args.use_video and not args.use_audio)
     use_vid_default = args.use_video or (not args.use_tabular and not args.use_video and not args.use_audio)
-    use_aud_default = args.use_audio or (not args.use_tabular and not args.use_video and not args.use_audio)
+    use_aud_default = (args.use_audio if has_audio_col else False) or (not args.use_tabular and not args.use_video and not args.use_audio and has_audio_col)
 
     # Class weights
     class_weights_tensor = None

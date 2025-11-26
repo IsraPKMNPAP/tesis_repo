@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import List, Optional, Sequence
+from pathlib import Path
+import os
 
 import numpy as np
 import pandas as pd
@@ -17,31 +19,46 @@ class MultimodalAudioSample(MultimodalSample):
     x_aud: Optional[torch.Tensor] = None
 
 
-def load_audio(
-    path: str,
+def load_audio_segment(
+    root: Path,
+    template: str,
+    participant: str,
+    start_seconds: float,
     target_sr: int = 16000,
     duration_seconds: float = 5.0,
     normalize: bool = True,
     norm_mode: str = "per_channel",
-) -> torch.Tensor:
-    waveform, sr = torchaudio.load(path)
-    # Convert to mono
+    fallback_template: Optional[str] = None,
+) -> Optional[torch.Tensor]:
+    """Carga un segmento fijo desde el raw_audio_{participant}.wav."""
+    cand_templates = [template] + ([fallback_template] if fallback_template else [])
+    wav_path = None
+    for tmpl in cand_templates:
+        p = root / tmpl.format(participant=participant)
+        if p.exists():
+            wav_path = p
+            break
+    if wav_path is None:
+        return None
+    waveform, sr = torchaudio.load(str(wav_path))
     if waveform.size(0) > 1:
         waveform = waveform.mean(dim=0, keepdim=True)
     if sr != target_sr:
         waveform = torchaudio.functional.resample(waveform, sr, target_sr)
-    # Trim/pad to fixed duration
-    target_len = int(duration_seconds * target_sr)
-    if waveform.size(-1) > target_len:
-        waveform = waveform[..., :target_len]
-    elif waveform.size(-1) < target_len:
-        pad_len = target_len - waveform.size(-1)
-        waveform = torch.nn.functional.pad(waveform, (0, pad_len))
+        sr = target_sr
+    start = max(0, int(start_seconds * sr))
+    end = start + int(duration_seconds * sr)
+    if start >= waveform.size(-1):
+        return None
+    segment = waveform[..., start:end]
+    if segment.size(-1) < int(duration_seconds * sr):
+        pad_len = int(duration_seconds * sr) - segment.size(-1)
+        segment = torch.nn.functional.pad(segment, (0, pad_len))
     if normalize and norm_mode == "per_channel":
-        mean = waveform.mean(dim=-1, keepdim=True)
-        std = waveform.std(dim=-1, keepdim=True) + 1e-6
-        waveform = (waveform - mean) / std
-    return waveform  # [1, T]
+        mean = segment.mean(dim=-1, keepdim=True)
+        std = segment.std(dim=-1, keepdim=True) + 1e-6
+        segment = (segment - mean) / std
+    return segment  # [1, T]
 
 
 class MultimodalAudioDataset(Dataset):
@@ -53,10 +70,15 @@ class MultimodalAudioDataset(Dataset):
         tab_columns: Sequence[str],
         X_tab_array: Optional[torch.Tensor] = None,
         path_col: str = "gpu_tensor_path",
-        audio_col: str = "audio_path",
+        audio_col: Optional[str] = "audio_path",
         label_col: Optional[str] = None,
         timestamp_col: Optional[str] = "timestamp",
         window_id_col: Optional[str] = "window",
+        participant_col: str = "participant",
+        audio_start_col: str = "audio_segment_start",
+        audio_root: Optional[str] = None,
+        audio_template: str = "raw_audio_{participant}.wav",
+        audio_fallback_template: Optional[str] = None,
         prefer_df_label: bool = True,
         class_map: Optional[dict] = None,
         video_transform=None,
@@ -67,7 +89,12 @@ class MultimodalAudioDataset(Dataset):
         self.df = df.reset_index(drop=True)
         self.tab_columns = list(tab_columns)
         self.X_tab_array = X_tab_array
-        self.audio_col = audio_col
+        self.audio_col = audio_col if (audio_col and audio_col in df.columns) else None
+        self.participant_col = participant_col
+        self.audio_start_col = audio_start_col
+        self.audio_root = Path(audio_root) if audio_root else None
+        self.audio_template = audio_template
+        self.audio_fallback_template = audio_fallback_template
         self.audio_sr = int(audio_sr)
         self.audio_duration = float(audio_duration)
         self.audio_norm = audio_norm
@@ -91,10 +118,14 @@ class MultimodalAudioDataset(Dataset):
     def __getitem__(self, idx: int) -> MultimodalAudioSample:
         base = self.inner[idx]
         x_aud = None
-        if self.audio_col in self.df.columns and pd.notna(self.df.iloc[idx][self.audio_col]):
+        # Preferir audio_col directo; si no existe, usar raw + segment_start
+        if self.audio_col and self.audio_col in self.df.columns and pd.notna(self.df.iloc[idx][self.audio_col]):
             try:
-                x_aud = load_audio(
-                    str(self.df.iloc[idx][self.audio_col]),
+                x_aud = load_audio_segment(
+                    root=Path(os.path.dirname(str(self.df.iloc[idx][self.audio_col]))),
+                    template=os.path.basename(str(self.df.iloc[idx][self.audio_col])),
+                    participant=str(self.df.iloc[idx].get(self.participant_col, "")),
+                    start_seconds=float(self.df.iloc[idx].get(self.audio_start_col, 0.0) or 0.0),
                     target_sr=self.audio_sr,
                     duration_seconds=self.audio_duration,
                     normalize=True,
@@ -102,6 +133,20 @@ class MultimodalAudioDataset(Dataset):
                 )
             except Exception:
                 x_aud = None
+        elif self.audio_root and self.participant_col in self.df.columns and self.audio_start_col in self.df.columns:
+            part = str(self.df.iloc[idx][self.participant_col])
+            start_s = float(self.df.iloc[idx][self.audio_start_col] or 0.0)
+            x_aud = load_audio_segment(
+                root=self.audio_root,
+                template=self.audio_template,
+                participant=part,
+                start_seconds=start_s,
+                target_sr=self.audio_sr,
+                duration_seconds=self.audio_duration,
+                normalize=True,
+                norm_mode=self.audio_norm,
+                fallback_template=self.audio_fallback_template,
+            )
         return MultimodalAudioSample(
             x_tab=base.x_tab,
             x_vid=base.x_vid,
@@ -174,4 +219,3 @@ def collate_multimodal_audio(batch: List[MultimodalAudioSample]):
             self.participant = participant
 
     return B(x_tab=X_tab, x_vid=X_vid, x_aud=X_aud, y=y, timestamp=ts, window_id=wids, participant=parts)
-
