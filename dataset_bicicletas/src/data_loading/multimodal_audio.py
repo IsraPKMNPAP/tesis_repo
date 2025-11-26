@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional, Sequence
 from pathlib import Path
-import os
 
 import numpy as np
 import pandas as pd
@@ -30,7 +29,7 @@ def load_audio_segment(
     norm_mode: str = "per_channel",
     fallback_template: Optional[str] = None,
 ) -> Optional[torch.Tensor]:
-    """Carga un segmento fijo desde el raw_audio_{participant}.wav."""
+    """Carga un segmento fijo desde raw_audio_{participant}.wav (o fallback)."""
     cand_templates = [template] + ([fallback_template] if fallback_template else [])
     wav_path = None
     for tmpl in cand_templates:
@@ -70,7 +69,6 @@ class MultimodalAudioDataset(Dataset):
         tab_columns: Sequence[str],
         X_tab_array: Optional[torch.Tensor] = None,
         path_col: str = "gpu_tensor_path",
-        audio_col: Optional[str] = "audio_path",
         label_col: Optional[str] = None,
         timestamp_col: Optional[str] = "timestamp",
         window_id_col: Optional[str] = "window",
@@ -89,7 +87,6 @@ class MultimodalAudioDataset(Dataset):
         self.df = df.reset_index(drop=True)
         self.tab_columns = list(tab_columns)
         self.X_tab_array = X_tab_array
-        self.audio_col = audio_col if (audio_col and audio_col in df.columns) else None
         self.participant_col = participant_col
         self.audio_start_col = audio_start_col
         self.audio_root = Path(audio_root) if audio_root else None
@@ -118,22 +115,7 @@ class MultimodalAudioDataset(Dataset):
     def __getitem__(self, idx: int) -> MultimodalAudioSample:
         base = self.inner[idx]
         x_aud = None
-        # Preferir audio_col directo; si no existe, usar raw + segment_start
-        if self.audio_col and self.audio_col in self.df.columns and pd.notna(self.df.iloc[idx][self.audio_col]):
-            try:
-                x_aud = load_audio_segment(
-                    root=Path(os.path.dirname(str(self.df.iloc[idx][self.audio_col]))),
-                    template=os.path.basename(str(self.df.iloc[idx][self.audio_col])),
-                    participant=str(self.df.iloc[idx].get(self.participant_col, "")),
-                    start_seconds=float(self.df.iloc[idx].get(self.audio_start_col, 0.0) or 0.0),
-                    target_sr=self.audio_sr,
-                    duration_seconds=self.audio_duration,
-                    normalize=True,
-                    norm_mode=self.audio_norm,
-                )
-            except Exception:
-                x_aud = None
-        elif self.audio_root and self.participant_col in self.df.columns and self.audio_start_col in self.df.columns:
+        if self.audio_root and self.participant_col in self.df.columns and self.audio_start_col in self.df.columns:
             part = str(self.df.iloc[idx][self.participant_col])
             start_s = float(self.df.iloc[idx][self.audio_start_col] or 0.0)
             x_aud = load_audio_segment(

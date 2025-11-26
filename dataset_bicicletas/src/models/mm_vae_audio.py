@@ -33,7 +33,7 @@ class DeterministicMMVAEAudio(DeterministicMMVAE):
         audio_emb_dim: int = 128,
     ):
         self.audio_emb_dim = audio_emb_dim
-        # Llamar al init padre (tab+video)
+        self.tab_emb_dim = tab_emb_dim
         super().__init__(
             tab_in_dim=tab_in_dim,
             vid_backbone=vid_backbone,
@@ -50,7 +50,28 @@ class DeterministicMMVAEAudio(DeterministicMMVAE):
             fusion_type=fusion_type,
             late_alpha=late_alpha,
         )
-        # Crear encoder de audio y head auxiliar una vez inicializado el nn.Module padre
+        # Dimensiones por modalidad
+        self.vid_emb_dim = self.vid_enc.output_dim()
+        # Re-definir fuse y decoders para incluir audio
+        fuse_in = self.tab_emb_dim + self.vid_emb_dim + self.audio_emb_dim
+        fuse_hidden = max(shared_dim * 2, fuse_in // 2 + 1)
+        self.fuse = nn.Sequential(
+            nn.Linear(fuse_in, fuse_hidden),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=fuse_dropout) if fuse_dropout and fuse_dropout > 0 else nn.Identity(),
+            nn.Linear(fuse_hidden, shared_dim),
+        )
+        self.dec_tab = nn.Sequential(
+            nn.Linear(shared_dim, max(self.tab_emb_dim, shared_dim)),
+            nn.ReLU(inplace=True),
+            nn.Linear(max(self.tab_emb_dim, shared_dim), self.tab_emb_dim),
+        )
+        self.dec_vid = nn.Sequential(
+            nn.Linear(shared_dim, max(self.vid_emb_dim, shared_dim)),
+            nn.ReLU(inplace=True),
+            nn.Linear(max(self.vid_emb_dim, shared_dim), self.vid_emb_dim),
+        )
+        # Crear encoder de audio y head auxiliar
         self.audio_enc = audio_encoder or SimpleAudioEncoder(emb_dim=self.audio_emb_dim)
         self.proj_aud = nn.Linear(self.audio_emb_dim, self.proj_tab.out_features)
         # Ajustar classifier para soportar audio en late fusion
