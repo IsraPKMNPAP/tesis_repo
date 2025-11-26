@@ -97,7 +97,7 @@ def main():
     # Regularización/opt
     ap.add_argument("--grad-clip", type=float, default=1.0)
     ap.add_argument("--label-smoothing", type=float, default=0.0)
-    ap.add_argument("--scheduler", type=str, default=None, choices=[None, "step", "cosine", "plateau"], help="Scheduler de LR")
+    ap.add_argument("--scheduler", type=str, default="none", choices=["none", "step", "cosine", "plateau"], help="Scheduler de LR")
     ap.add_argument("--step-size", type=int, default=5)
     ap.add_argument("--gamma", type=float, default=0.5)
     ap.add_argument("--t-max", type=int, default=None)
@@ -147,6 +147,8 @@ def main():
     ap.add_argument("--audio-duration", type=float, default=5.0)
     ap.add_argument("--audio-norm", type=str, default="per_channel", choices=["per_channel", "none"])
     args = ap.parse_args()
+    if args.scheduler == "none":
+        args.scheduler = None
 
     pkl_path = Path(args.pkl)
     if not pkl_path.exists():
