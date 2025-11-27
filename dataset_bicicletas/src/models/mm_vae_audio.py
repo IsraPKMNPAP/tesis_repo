@@ -97,11 +97,12 @@ class DeterministicMMVAEAudio(DeterministicMMVAE):
     def forward(self, x_tab: torch.Tensor, x_vid: torch.Tensor, x_aud: Optional[torch.Tensor] = None):
         z_tab, z_vid = self.encode_modalities(x_tab, x_vid)
         z_aud = self.encode_audio(x_aud)
+        if z_aud is None:
+            # Asegurar dimensiones consistentes para fusión y proyección
+            z_aud = torch.zeros(z_tab.size(0), self.audio_emb_dim, device=z_tab.device, dtype=z_tab.dtype)
         p_tab = _safe_normalize(self.proj_tab(z_tab), dim=-1)
         p_vid = _safe_normalize(self.proj_vid(z_vid), dim=-1)
-        p_aud = None
-        if z_aud is not None:
-            p_aud = _safe_normalize(self.proj_aud(z_aud), dim=-1)
+        p_aud = _safe_normalize(self.proj_aud(z_aud), dim=-1)
         z_shared = self.fuse_modalities(z_tab, z_vid, z_aud)
         rec_tab, rec_vid = self.decode_modalities(z_shared)
         logits_tab = self.cls_tab(z_tab)
@@ -109,19 +110,11 @@ class DeterministicMMVAEAudio(DeterministicMMVAE):
         logits_aud = self.cls_aud(z_aud) if z_aud is not None else None
 
         if self.fusion_type == "late":
-            # Promedio con pesos: alpha distribuye solo entre las modalidades presentes
-            logits_list = []
-            weights = []
-            if logits_tab is not None:
-                logits_list.append(logits_tab)
-                weights.append(self.late_alpha / 2 if logits_aud is not None else self.late_alpha)
-            if logits_vid is not None:
-                logits_list.append(logits_vid)
-                weights.append(1 - self.late_alpha if logits_aud is None else (1 - self.late_alpha) / 2)
-            if logits_aud is not None:
-                logits_list.append(logits_aud)
-                weights.append(0.33)  # simple peso neutro si hay audio
-            weights = [w / sum(weights) for w in weights]
+            logits_list = [logits_tab, logits_vid, logits_aud]
+            weights = [self.late_alpha / 2, self.late_alpha / 2, 1 - self.late_alpha]
+            # Normalizar pesos
+            total_w = sum(weights)
+            weights = [w / total_w for w in weights]
             logits = sum(w * l for w, l in zip(weights, logits_list))
         else:
             logits = self.classifier(z_shared)
