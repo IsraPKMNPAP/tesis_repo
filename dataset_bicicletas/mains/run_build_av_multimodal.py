@@ -11,7 +11,12 @@ def load_features(path: Path) -> list[str]:
     if not path.exists():
         raise FileNotFoundError(f"No existe features-file: {path}")
     if path.suffix.lower() == ".json":
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and "features" in data:
+            return data.get("features", [])
+        if isinstance(data, list):
+            return data
+        raise ValueError(f"Estructura de {path} no reconocida. Se esperaba lista o dict con clave 'features'.")
     return [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
@@ -111,10 +116,19 @@ def main():
         lambda w: f"{args.video_root}/{w}"
     )
 
-    # Preservar columnas solicitadas
+    # Preservar columnas solicitadas: features + esenciales + keep_extra
     keep_extra = args.keep_cols or []
-    base_cols = set(features) | {args.label_col, args.timestamp_col, args.participant_col, args.window_col, args.audio_start_col, "audio_route", "frames_route"}
+    base_cols = set(features) | {
+        args.label_col,
+        args.timestamp_col,
+        args.participant_col,
+        args.window_col,
+        args.audio_start_col,
+        "audio_route",
+        "frames_route",
+    }
     base_cols |= set(keep_extra)
+
     cols_present = [c for c in merged.columns if c in base_cols]
     dropped = [c for c in merged.columns if c not in base_cols]
 
