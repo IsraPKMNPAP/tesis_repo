@@ -61,29 +61,38 @@ def main():
         raise KeyError(f"Falta columna de ventana '{args.window_col}' en VA.")
     if args.audio_start_col not in df_va.columns:
         raise KeyError(f"Falta columna audio_start '{args.audio_start_col}' en VA.")
-    if args.participant_col not in df_tab.columns or args.participant_col not in df_va.columns:
-        raise KeyError(f"Falta participant '{args.participant_col}' en tabular o VA.")
+    if args.participant_col not in df_tab.columns and args.participant_col not in df_va.columns:
+        raise KeyError(f"Falta participant '{args.participant_col}' en tabular y VA.")
 
-    # Join por timestamp (inner para mantener consistencia)
     before_tab = len(df_tab)
     before_va = len(df_va)
-    # Preparar cols tabulares (sin label si no existe)
     tab_cols_for_merge = [c for c in features if c in df_tab.columns]
-    join_cols = [args.timestamp_col, args.participant_col]
+    join_cols = [args.timestamp_col]
+    if args.participant_col in df_tab.columns:
+        join_cols.append(args.participant_col)
     if args.label_col in df_tab.columns:
         join_cols.append(args.label_col)
     df_tab_sel = df_tab[join_cols + tab_cols_for_merge]
 
+    # Preferir mantener todas las filas de VA (left join)
     merged = pd.merge(
         df_va,
         df_tab_sel,
         on=args.timestamp_col,
-        how="inner",
+        how="left",
         suffixes=("_va", "_tab"),
     )
-    # Si el label no vino del tabular, tomarlo del VA
+    # Completar participant y label desde VA si faltan
+    if args.participant_col not in merged.columns and args.participant_col in df_va.columns:
+        merged[args.participant_col] = df_va[args.participant_col]
+    elif args.participant_col in merged.columns and args.participant_col in df_va.columns:
+        merged[args.participant_col] = merged[args.participant_col].fillna(df_va[args.participant_col])
+
     if args.label_col not in merged.columns and args.label_col in df_va.columns:
         merged[args.label_col] = df_va[args.label_col]
+    elif args.label_col in merged.columns and args.label_col in df_va.columns:
+        merged[args.label_col] = merged[args.label_col].fillna(df_va[args.label_col])
+
     print(f"Tab rows={before_tab}, VA rows={before_va}, merged={len(merged)}")
     if len(merged) == 0:
         raise SystemExit("Merge vacío: revisa timestamp/archivos.")
