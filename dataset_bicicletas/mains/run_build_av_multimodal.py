@@ -67,16 +67,22 @@ def main():
     before_tab = len(df_tab)
     before_va = len(df_va)
     tab_cols_for_merge = [c for c in features if c in df_tab.columns]
+    missing_feats = [c for c in features if c not in df_tab.columns]
+    if missing_feats:
+        print(f"[WARN] Features no encontradas en tabular: {missing_feats}")
     join_cols = [args.timestamp_col]
     if args.participant_col in df_tab.columns:
         join_cols.append(args.participant_col)
     if args.label_col in df_tab.columns:
         join_cols.append(args.label_col)
     df_tab_sel = df_tab[join_cols + tab_cols_for_merge]
+    # Evitar colisiones: quitar de VA las columnas de features (y participant/label) para preservar las de tabular
+    drop_cols_va = set(tab_cols_for_merge + [args.participant_col, args.label_col])
+    df_va_clean = df_va.drop(columns=[c for c in drop_cols_va if c in df_va.columns], errors="ignore")
 
     # Preferir mantener todas las filas de VA (left join)
     merged = pd.merge(
-        df_va,
+        df_va_clean,
         df_tab_sel,
         on=args.timestamp_col,
         how="left",
