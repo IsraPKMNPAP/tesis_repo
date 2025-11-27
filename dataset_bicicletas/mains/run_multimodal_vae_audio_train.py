@@ -105,8 +105,8 @@ def main():
     ap.add_argument("--t-max", type=int, default=None)
     ap.add_argument("--plateau-patience", type=int, default=3)
     ap.add_argument("--plateau-factor", type=float, default=0.5)
-    ap.add_argument("--early-stop-patience", type=int, default=3)
-    ap.add_argument("--early-stop-delta", type=float, default=0.02)
+    ap.add_argument("--early-stop-patience", type=int, default=6)
+    ap.add_argument("--early-stop-delta", type=float, default=0.01)
     # Video backbone fine-tuning
     ap.add_argument("--video-backbone", type=str, default="vit", choices=["vit", "clip"])
     ap.add_argument("--video-name", type=str, default="vit_b_16")
@@ -148,7 +148,12 @@ def main():
     ap.add_argument("--audio-sr", type=int, default=16000)
     ap.add_argument("--audio-duration", type=float, default=5.0)
     ap.add_argument("--audio-norm", type=str, default="per_channel", choices=["per_channel", "none"])
-    ap.add_argument("--audio-root", type=str, default=None, help="Raíz donde viven los raw_audio_<PARTICIPANTE>.wav")
+    ap.add_argument(
+        "--audio-root",
+        type=str,
+        default="/mnt/otra_particion/home/israel_gpu_data/audio_data_raw/audio_participantes_validos",
+        help="Raíz donde viven los raw_audio_<PARTICIPANTE>.wav",
+    )
     ap.add_argument("--audio-template", type=str, default="raw_audio_{participant}.wav")
     ap.add_argument("--audio-fallback-template", type=str, default=None)
     ap.add_argument("--audio-start-col", type=str, default="audio_segment_start")
