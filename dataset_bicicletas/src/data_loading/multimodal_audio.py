@@ -60,6 +60,37 @@ def load_audio_segment(
     return segment  # [1, T]
 
 
+def load_audio_segment_from_path(
+    path: Path,
+    start_seconds: float,
+    target_sr: int = 16000,
+    duration_seconds: float = 5.0,
+    normalize: bool = True,
+    norm_mode: str = "per_channel",
+) -> Optional[torch.Tensor]:
+    if not path.exists():
+        return None
+    waveform, sr = torchaudio.load(str(path))
+    if waveform.size(0) > 1:
+        waveform = waveform.mean(dim=0, keepdim=True)
+    if sr != target_sr:
+        waveform = torchaudio.functional.resample(waveform, sr, target_sr)
+        sr = target_sr
+    start = max(0, int(start_seconds * sr))
+    end = start + int(duration_seconds * sr)
+    if start >= waveform.size(-1):
+        return None
+    segment = waveform[..., start:end]
+    if segment.size(-1) < int(duration_seconds * sr):
+        pad_len = int(duration_seconds * sr) - segment.size(-1)
+        segment = torch.nn.functional.pad(segment, (0, pad_len))
+    if normalize and norm_mode == "per_channel":
+        mean = segment.mean(dim=-1, keepdim=True)
+        std = segment.std(dim=-1, keepdim=True) + 1e-6
+        segment = (segment - mean) / std
+    return segment
+
+
 class MultimodalAudioDataset(Dataset):
     """Extiende MultimodalDataset para incluir audio opcional."""
 
@@ -115,7 +146,23 @@ class MultimodalAudioDataset(Dataset):
     def __getitem__(self, idx: int) -> MultimodalAudioSample:
         base = self.inner[idx]
         x_aud = None
-        if self.audio_root and self.participant_col in self.df.columns and self.audio_start_col in self.df.columns:
+        # Caso 1: si existe columna audio_route en el DF, usarla directamente
+        if "audio_route" in self.df.columns and pd.notna(self.df.iloc[idx]["audio_route"]):
+            try:
+                p = Path(str(self.df.iloc[idx]["audio_route"]))
+                start_s = float(self.df.iloc[idx][self.audio_start_col] or 0.0)
+                x_aud = load_audio_segment_from_path(
+                    p,
+                    start_seconds=start_s,
+                    target_sr=self.audio_sr,
+                    duration_seconds=self.audio_duration,
+                    normalize=True,
+                    norm_mode=self.audio_norm,
+                )
+            except Exception:
+                x_aud = None
+        # Caso 2: usar audio_root + template
+        elif self.audio_root and self.participant_col in self.df.columns and self.audio_start_col in self.df.columns:
             part = str(self.df.iloc[idx][self.participant_col])
             start_s = float(self.df.iloc[idx][self.audio_start_col] or 0.0)
             x_aud = load_audio_segment(
