@@ -45,8 +45,12 @@ def main():
     features = load_features(feats_path)
     print(f"Features cargadas ({len(features)}): {features}")
 
-    df_tab = pd.read_csv(tab_path)
+    df_tab = pd.read_csv(tab_path, low_memory=False)
     df_va = pd.read_pickle(va_path)
+
+    # Asegurar timestamp en datetime en ambos
+    df_tab[args.timestamp_col] = pd.to_datetime(df_tab[args.timestamp_col], errors="coerce")
+    df_va[args.timestamp_col] = pd.to_datetime(df_va[args.timestamp_col], errors="coerce")
 
     if args.timestamp_col not in df_tab.columns or args.timestamp_col not in df_va.columns:
         raise KeyError(f"Falta columna timestamp '{args.timestamp_col}' en tabular o VA.")
