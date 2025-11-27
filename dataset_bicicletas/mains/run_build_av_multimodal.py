@@ -50,8 +50,9 @@ def main():
 
     if args.timestamp_col not in df_tab.columns or args.timestamp_col not in df_va.columns:
         raise KeyError(f"Falta columna timestamp '{args.timestamp_col}' en tabular o VA.")
-    if args.label_col not in df_tab.columns:
-        raise KeyError(f"Falta label '{args.label_col}' en tabular.")
+    # El label puede venir en el VA si no está en tabular
+    if args.label_col not in df_tab.columns and args.label_col not in df_va.columns:
+        raise KeyError(f"Falta label '{args.label_col}' en tabular y VA.")
     if args.window_col not in df_va.columns:
         raise KeyError(f"Falta columna de ventana '{args.window_col}' en VA.")
     if args.audio_start_col not in df_va.columns:
@@ -62,13 +63,23 @@ def main():
     # Join por timestamp (inner para mantener consistencia)
     before_tab = len(df_tab)
     before_va = len(df_va)
+    # Preparar cols tabulares (sin label si no existe)
+    tab_cols_for_merge = [c for c in features if c in df_tab.columns]
+    join_cols = [args.timestamp_col, args.participant_col]
+    if args.label_col in df_tab.columns:
+        join_cols.append(args.label_col)
+    df_tab_sel = df_tab[join_cols + tab_cols_for_merge]
+
     merged = pd.merge(
         df_va,
-        df_tab[[args.timestamp_col, args.participant_col, args.label_col] + [c for c in features if c in df_tab.columns]],
+        df_tab_sel,
         on=args.timestamp_col,
         how="inner",
         suffixes=("_va", "_tab"),
     )
+    # Si el label no vino del tabular, tomarlo del VA
+    if args.label_col not in merged.columns and args.label_col in df_va.columns:
+        merged[args.label_col] = df_va[args.label_col]
     print(f"Tab rows={before_tab}, VA rows={before_va}, merged={len(merged)}")
     if len(merged) == 0:
         raise SystemExit("Merge vacío: revisa timestamp/archivos.")
@@ -98,4 +109,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
