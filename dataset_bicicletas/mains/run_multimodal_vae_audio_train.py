@@ -157,6 +157,7 @@ def main():
     ap.add_argument("--audio-template", type=str, default="raw_audio_{participant}.wav")
     ap.add_argument("--audio-fallback-template", type=str, default=None)
     ap.add_argument("--audio-start-col", type=str, default="audio_segment_start")
+    ap.add_argument("--debug-batch", action="store_true", help="Imprime shapes/min-max del primer batch y sale")
     args = ap.parse_args()
     if args.scheduler == "none":
         args.scheduler = None
@@ -382,6 +383,20 @@ def main():
             overfit_batches.append(b)
             if len(overfit_batches) >= args.overfit_batches:
                 break
+    if args.debug_batch:
+        if overfit_batches:
+            b = overfit_batches[0]
+        else:
+            b = next(iter(dl_tr))
+        print("=== Debug batch ===")
+        print("x_tab shape:", b.x_tab.shape, "min/max", b.x_tab.min().item(), b.x_tab.max().item())
+        print("x_vid shape:", b.x_vid.shape, "min/max", b.x_vid.min().item(), b.x_vid.max().item())
+        if b.x_aud is not None:
+            print("x_aud shape:", b.x_aud.shape, "min/max", b.x_aud.min().item(), b.x_aud.max().item())
+        else:
+            print("x_aud: None")
+        print("y shape:", b.y.shape, "labels:", b.y.tolist() if b.y.numel() <= 64 else f"{b.y[:64].tolist()} ...")
+        return
 
     for epoch in range(args.epochs):
         model.train()
