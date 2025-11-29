@@ -8,13 +8,6 @@ import numpy as np
 import pandas as pd
 import torch
 import torchaudio
-
-# Backends de torchaudio pueden causar inestabilidad en algunos sistemas; forzar uno conocido
-try:
-    torchaudio.set_audio_backend("sox_io")
-except Exception:
-    # Si no está disponible, dejar backend por defecto
-    pass
 from torch.utils.data import Dataset
 
 from .multimodal import MultimodalDataset, MultimodalSample  # reuse tab+video structure
