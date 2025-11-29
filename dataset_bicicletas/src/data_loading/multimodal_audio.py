@@ -30,6 +30,8 @@ def load_audio_segment(
     fallback_template: Optional[str] = None,
 ) -> Optional[torch.Tensor]:
     """Carga un segmento fijo desde raw_audio_{participant}.wav (o fallback)."""
+    if duration_seconds <= 0:
+        return None
     try:
         cand_templates = [template] + ([fallback_template] if fallback_template else [])
         wav_path = None
@@ -47,12 +49,13 @@ def load_audio_segment(
             waveform = torchaudio.functional.resample(waveform, sr, target_sr)
             sr = target_sr
         start = max(0, int(start_seconds * sr))
-        end = start + int(duration_seconds * sr)
+        target_len = max(int(duration_seconds * sr), 9)  # asegurar longitud mínima para conv1d
+        end = start + target_len
         if start >= waveform.size(-1):
             return None
         segment = waveform[..., start:end]
-        if segment.size(-1) < int(duration_seconds * sr):
-            pad_len = int(duration_seconds * sr) - segment.size(-1)
+        if segment.size(-1) < target_len:
+            pad_len = target_len - segment.size(-1)
             segment = torch.nn.functional.pad(segment, (0, pad_len))
         if normalize and norm_mode == "per_channel":
             mean = segment.mean(dim=-1, keepdim=True)
@@ -71,6 +74,8 @@ def load_audio_segment_from_path(
     normalize: bool = True,
     norm_mode: str = "per_channel",
 ) -> Optional[torch.Tensor]:
+    if duration_seconds <= 0:
+        return None
     try:
         if not path.exists():
             return None
@@ -81,12 +86,13 @@ def load_audio_segment_from_path(
             waveform = torchaudio.functional.resample(waveform, sr, target_sr)
             sr = target_sr
         start = max(0, int(start_seconds * sr))
-        end = start + int(duration_seconds * sr)
+        target_len = max(int(duration_seconds * sr), 9)
+        end = start + target_len
         if start >= waveform.size(-1):
             return None
         segment = waveform[..., start:end]
-        if segment.size(-1) < int(duration_seconds * sr):
-            pad_len = int(duration_seconds * sr) - segment.size(-1)
+        if segment.size(-1) < target_len:
+            pad_len = target_len - segment.size(-1)
             segment = torch.nn.functional.pad(segment, (0, pad_len))
         if normalize and norm_mode == "per_channel":
             mean = segment.mean(dim=-1, keepdim=True)
@@ -152,8 +158,10 @@ class MultimodalAudioDataset(Dataset):
     def __getitem__(self, idx: int) -> MultimodalAudioSample:
         base = self.inner[idx]
         x_aud = None
+        if self.audio_duration <= 0:
+            x_aud = None
         # Caso 1: si existe columna audio_route en el DF, usarla directamente
-        if "audio_route" in self.df.columns and pd.notna(self.df.iloc[idx]["audio_route"]):
+        elif "audio_route" in self.df.columns and pd.notna(self.df.iloc[idx]["audio_route"]):
             try:
                 p = Path(str(self.df.iloc[idx]["audio_route"]))
                 start_s = float(self.df.iloc[idx][self.audio_start_col] or 0.0)

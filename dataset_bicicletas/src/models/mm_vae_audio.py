@@ -81,8 +81,12 @@ class DeterministicMMVAEAudio(DeterministicMMVAE):
             self.cls_aud = nn.Linear(self.audio_emb_dim, num_classes)
 
     def encode_audio(self, x_aud: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
-        if x_aud is None:
+        if x_aud is None or x_aud.numel() == 0:
             return None
+        # Asegurar longitud mínima para conv1d
+        if x_aud.shape[-1] < 9:
+            pad_len = 9 - x_aud.shape[-1]
+            x_aud = torch.nn.functional.pad(x_aud, (0, pad_len))
         return self.audio_enc(x_aud)
 
     def fuse_modalities(self, z_tab: torch.Tensor, z_vid: torch.Tensor, z_aud: Optional[torch.Tensor]) -> torch.Tensor:
