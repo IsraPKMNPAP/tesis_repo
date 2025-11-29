@@ -225,8 +225,9 @@ class VariationalMMVAEAudio(DeterministicMMVAEAudio, VariationalMMVAE):
         kl_anneal_end: float = 1.0,
         kl_anneal_steps: int = 1000,
     ):
-        # Inicializar rama determinista (tab+video+audio)
-        super().__init__(
+        # Inicializar rama determinista explícitamente para evitar pasar fusion_type a VariationalMMVAE
+        DeterministicMMVAEAudio.__init__(
+            self,
             tab_in_dim=tab_in_dim,
             vid_backbone=vid_backbone,
             audio_encoder=audio_encoder,
