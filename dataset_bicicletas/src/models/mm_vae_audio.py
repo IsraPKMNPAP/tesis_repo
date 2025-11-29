@@ -200,8 +200,8 @@ class DeterministicMMVAEAudio(DeterministicMMVAE):
         }
 
 
-class VariationalMMVAEAudio(DeterministicMMVAEAudio, VariationalMMVAE):
-    """Versión variacional con audio; hereda lógica de pérdidas/kl del padre variacional."""
+class VariationalMMVAEAudio(DeterministicMMVAEAudio):
+    """Versión variacional con audio (mu/logvar + reparam)."""
 
     def __init__(
         self,
@@ -225,9 +225,7 @@ class VariationalMMVAEAudio(DeterministicMMVAEAudio, VariationalMMVAE):
         kl_anneal_end: float = 1.0,
         kl_anneal_steps: int = 1000,
     ):
-        # Inicializar rama determinista explícitamente para evitar pasar fusion_type a VariationalMMVAE
-        DeterministicMMVAEAudio.__init__(
-            self,
+        super().__init__(
             tab_in_dim=tab_in_dim,
             vid_backbone=vid_backbone,
             audio_encoder=audio_encoder,
@@ -252,6 +250,54 @@ class VariationalMMVAEAudio(DeterministicMMVAEAudio, VariationalMMVAE):
         self._kl_anneal_start = float(kl_anneal_start)
         self._kl_anneal_end = float(kl_anneal_end)
         self._kl_anneal_steps = int(kl_anneal_steps)
+
+    def fuse_modalities(self, z_tab: torch.Tensor, z_vid: torch.Tensor, z_aud: torch.Tensor):
+        z_tab_d, z_vid_d = self._apply_modality_dropout(z_tab, z_vid)
+        z_cat = torch.cat([z_tab_d, z_vid_d, z_aud], dim=-1)
+        mu = self.q_mu(z_cat)
+        logvar = self.q_logvar(z_cat)
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        z = mu + eps * std
+        return z, mu, logvar
+
+    def forward(self, x_tab: torch.Tensor, x_vid: torch.Tensor, x_aud: Optional[torch.Tensor] = None):
+        z_tab, z_vid = self.encode_modalities(x_tab, x_vid)
+        z_aud = self.encode_audio(x_aud)
+        if z_aud is None:
+            z_aud = torch.zeros(z_tab.size(0), self.audio_emb_dim, device=z_tab.device, dtype=z_tab.dtype)
+        p_tab = _safe_normalize(self.proj_tab(z_tab), dim=-1)
+        p_vid = _safe_normalize(self.proj_vid(z_vid), dim=-1)
+        p_aud = _safe_normalize(self.proj_aud(z_aud), dim=-1)
+        z, mu, logvar = self.fuse_modalities(z_tab, z_vid, z_aud)
+        rec_tab, rec_vid = self.decode_modalities(z)
+        logits_tab = self.cls_tab(z_tab)
+        logits_vid = self.cls_vid(z_vid)
+        logits_aud = self.cls_aud(z_aud)
+        if self.fusion_type == "late":
+            weights = [self.late_alpha / 2, self.late_alpha / 2, 1 - self.late_alpha]
+            total_w = sum(weights)
+            weights = [w / total_w for w in weights]
+            logits = weights[0] * logits_tab + weights[1] * logits_vid + weights[2] * logits_aud
+        else:
+            logits = self.classifier(z)
+        return {
+            "z_tab": z_tab,
+            "z_vid": z_vid,
+            "z_aud": z_aud,
+            "p_tab": p_tab,
+            "p_vid": p_vid,
+            "p_aud": p_aud,
+            "z": z,
+            "mu": mu,
+            "logvar": logvar,
+            "rec_tab": rec_tab,
+            "rec_vid": rec_vid,
+            "logits": logits,
+            "logits_tab": logits_tab,
+            "logits_vid": logits_vid,
+            "logits_aud": logits_aud,
+        }
 
     def loss(
         self,
