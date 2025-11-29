@@ -134,6 +134,9 @@ def main():
     ap.add_argument("--use-tabular", action="store_true")
     ap.add_argument("--use-video", action="store_true")
     ap.add_argument("--use-audio", action="store_true")
+    ap.add_argument("--disable-tabular", action="store_true", help="Desactiva por completo tabular")
+    ap.add_argument("--disable-video", action="store_true", help="Desactiva por completo video")
+    ap.add_argument("--disable-audio", action="store_true", help="Desactiva por completo audio")
     # Overfit mode
     ap.add_argument("--overfit-batches", type=int, default=0)
     # Class weighting
@@ -172,7 +175,7 @@ def main():
         df[args.path_col] = df[args.path_col].astype(str).apply(
             lambda p: str(root / p) if not Path(p).is_absolute() else p
         )
-    has_audio = bool(args.audio_root)
+    has_audio = bool(args.audio_root) and not args.disable_audio and args.audio_duration > 0
     if not has_audio:
         print("[WARN] No se proporcionó audio_root; se desactiva audio.")
 
@@ -293,9 +296,12 @@ def main():
     dl_val = DataLoader(ds_val, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate_multimodal_audio)
 
     # Modality defaults
-    use_tab_default = args.use_tabular or (not args.use_tabular and not args.use_video and not args.use_audio)
-    use_vid_default = args.use_video or (not args.use_tabular and not args.use_video and not args.use_audio)
-    use_aud_default = (args.use_audio if has_audio else False) or (not args.use_tabular and not args.use_video and not args.use_audio and has_audio)
+    use_tab_default = (not args.disable_tabular) and (args.use_tabular or (not args.use_tabular and not args.use_video and not args.use_audio))
+    use_vid_default = (not args.disable_video) and (args.use_video or (not args.use_tabular and not args.use_video and not args.use_audio))
+    use_aud_default = (not args.disable_audio) and (
+        (args.use_audio if has_audio else False)
+        or (not args.use_tabular and not args.use_video and not args.use_audio and has_audio)
+    )
 
     # Class weights
     class_weights_tensor = None
