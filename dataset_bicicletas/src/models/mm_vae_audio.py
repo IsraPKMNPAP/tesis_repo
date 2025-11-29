@@ -203,8 +203,54 @@ class DeterministicMMVAEAudio(DeterministicMMVAE):
 class VariationalMMVAEAudio(DeterministicMMVAEAudio, VariationalMMVAE):
     """Versión variacional con audio; hereda lógica de pérdidas/kl del padre variacional."""
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(
+        self,
+        tab_in_dim: int,
+        vid_backbone: Optional[nn.Module] = None,
+        audio_encoder: Optional[nn.Module] = None,
+        tab_emb_dim: int = 128,
+        shared_dim: int = 64,
+        num_classes: int = 3,
+        dropout: float = 0.0,
+        video_kwargs: Optional[dict] = None,
+        classifier_arkoudi: bool = True,
+        fuse_dropout: float = 0.0,
+        proj_dim: int = 128,
+        contrastive_temp: float = 0.07,
+        modality_dropout_p: float = 0.0,
+        fusion_type: str = "early",
+        late_alpha: float = 0.5,
+        audio_emb_dim: int = 128,
+        kl_anneal_start: float = 0.0,
+        kl_anneal_end: float = 1.0,
+        kl_anneal_steps: int = 1000,
+    ):
+        # Inicializar rama determinista (tab+video+audio)
+        super().__init__(
+            tab_in_dim=tab_in_dim,
+            vid_backbone=vid_backbone,
+            audio_encoder=audio_encoder,
+            tab_emb_dim=tab_emb_dim,
+            shared_dim=shared_dim,
+            num_classes=num_classes,
+            dropout=dropout,
+            video_kwargs=video_kwargs,
+            classifier_arkoudi=classifier_arkoudi,
+            fuse_dropout=fuse_dropout,
+            proj_dim=proj_dim,
+            contrastive_temp=contrastive_temp,
+            modality_dropout_p=modality_dropout_p,
+            fusion_type=fusion_type,
+            late_alpha=late_alpha,
+            audio_emb_dim=audio_emb_dim,
+        )
+        enc_out = self.fuse[0].in_features
+        self.q_mu = nn.Linear(enc_out, shared_dim)
+        self.q_logvar = nn.Linear(enc_out, shared_dim)
+        self.fuse = None
+        self._kl_anneal_start = float(kl_anneal_start)
+        self._kl_anneal_end = float(kl_anneal_end)
+        self._kl_anneal_steps = int(kl_anneal_steps)
 
     def loss(
         self,
