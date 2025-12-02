@@ -79,12 +79,16 @@ class AudioSegmentDataset(Dataset):
 
     def _prepare_audio_index(self) -> None:
         # Si hay audio precortado en cache, podemos saltar la preparación pesada
-        has_cached = self.audio_cached_col and self.audio_cached_col in self.df.columns and self.df[self.audio_cached_col].notna().any()
-        if self.audio_root is None and has_cached:
-            return
+        has_cached_col = self.audio_cached_col and self.audio_cached_col in self.df.columns
+        has_cached_values = bool(has_cached_col and self.df[self.audio_cached_col].notna().any())
         if self.audio_root is None:
+            if has_cached_values:
+                return
             if self.strict:
-                raise FileNotFoundError("audio_root es requerido cuando no hay audio precortado.")
+                raise FileNotFoundError(
+                    "audio_root es requerido cuando no hay audio precortado. "
+                    "Si usas cache, asegúrate de que la columna audio_cached_path tenga valores."
+                )
             return
 
         unique_parts = self.df[self.participant_col].astype(str).unique()
