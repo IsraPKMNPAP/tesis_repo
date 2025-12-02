@@ -176,9 +176,9 @@ def main():
         df[args.path_col] = df[args.path_col].astype(str).apply(
             lambda p: str(root / p) if not Path(p).is_absolute() else p
         )
-    has_audio = bool(args.audio_root) and not args.disable_audio and args.audio_duration > 0
+    has_audio = (bool(args.audio_root) or args.audio_cached_col) and not args.disable_audio and args.audio_duration > 0
     if not has_audio:
-        print("[WARN] No se proporcionó audio_root; se desactiva audio.")
+        print("[WARN] No se proporcionó audio_root ni cache de audio; se desactiva audio.")
 
     # Features
     tab_cols = args.features
