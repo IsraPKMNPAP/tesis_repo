@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 
 import pandas as pd
 import torch
@@ -62,10 +62,11 @@ def main():
         help="Raíz donde viven los raw_audio_<PARTICIPANTE>.wav",
     )
     ap.add_argument("--audio-template", type=str, default="raw_audio_{participant}.wav")
+    ap.add_argument("--audio-patched-template", type=str, default="raw_audio_{participant}_patched.wav", help="Patrón alternativo; se prioriza si existe")
     ap.add_argument("--sr", type=int, default=8000, help="Sample rate de salida para los segmentos")
     ap.add_argument("--duration", type=float, default=5.0, help="Duración en segundos de cada segmento")
     ap.add_argument("--norm", action="store_true", help="Normaliza por canal cada segmento")
-    ap.add_argument("--output-dir", type=str, default="data/processed/audio_segments_cached", help="Directorio donde guardar los .pt")
+    ap.add_argument("--output-dir", type=str, default="/mnt/otra_particion/home/israel_gpu_data/audio_segments", help="Directorio donde guardar los .pt")
     ap.add_argument(
         "--output-pkl",
         type=str,
@@ -91,14 +92,25 @@ def main():
     audio_paths = []
     root = Path(args.audio_root) if args.audio_root else None
 
+    def resolve_wav_path(participant: str) -> Optional[Path]:
+        # Prioridad: patched -> template -> audio_col (cuando se llama aparte)
+        if root:
+            patched = root / args.audio_patched_template.format(participant=participant)
+            if patched.exists():
+                return patched
+            normal = root / args.audio_template.format(participant=participant)
+            if normal.exists():
+                return normal
+        return None
+
     for idx, row in tqdm(df.iterrows(), total=len(df), desc="Precomputando audio"):
         part = str(row.get(args.participant_col, ""))
         start_s = float(row.get(args.start_col, 0.0) or 0.0)
         wav_path = None
         if args.audio_col and args.audio_col in row and pd.notna(row[args.audio_col]):
             wav_path = Path(str(row[args.audio_col]))
-        elif root is not None and part:
-            wav_path = root / args.audio_template.format(participant=part)
+        elif part:
+            wav_path = resolve_wav_path(part)
         if wav_path is None or not wav_path.exists():
             audio_paths.append(None)
             continue
@@ -122,7 +134,7 @@ def main():
         try:
             seg = extract_segment(waveform, start_s=start_s, duration_s=args.duration, sr=args.sr, normalize=args.norm)
             # Nombre de archivo: usa window_col si existe, si no índice
-            base_name = str(row.get(args.window_col, f"idx_{idx}"))
+            base_name = f"audio_{row.get(args.window_col, f'idx_{idx}')}"
             out_path = out_dir / f"{base_name}.pt"
             torch.save(seg, out_path)
             seg_cache[seg_key] = out_path
