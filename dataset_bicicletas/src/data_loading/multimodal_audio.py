@@ -117,6 +117,7 @@ class MultimodalAudioDataset(Dataset):
         window_id_col: Optional[str] = "window",
         participant_col: str = "participant",
         audio_start_col: str = "audio_segment_start",
+        audio_cached_col: Optional[str] = "audio_cached_path",
         audio_root: Optional[str] = None,
         audio_template: str = "raw_audio_{participant}.wav",
         audio_fallback_template: Optional[str] = None,
@@ -132,6 +133,7 @@ class MultimodalAudioDataset(Dataset):
         self.X_tab_array = X_tab_array
         self.participant_col = participant_col
         self.audio_start_col = audio_start_col
+        self.audio_cached_col = audio_cached_col
         self.audio_root = Path(audio_root) if audio_root else None
         self.audio_template = audio_template
         self.audio_fallback_template = audio_fallback_template
@@ -160,6 +162,25 @@ class MultimodalAudioDataset(Dataset):
         x_aud = None
         if self.audio_duration <= 0:
             x_aud = None
+        # Caso 0: cargar tensor ya precalculado
+        elif self.audio_cached_col and self.audio_cached_col in self.df.columns and pd.notna(self.df.iloc[idx][self.audio_cached_col]):
+            try:
+                p = Path(str(self.df.iloc[idx][self.audio_cached_col]))
+                if p.exists():
+                    seg = torch.load(p, map_location="cpu")
+                    # Asegurar forma [1, T]
+                    if seg.dim() == 1:
+                        seg = seg.unsqueeze(0)
+                    elif seg.dim() == 2 and seg.size(0) != 1:
+                        seg = seg.mean(dim=0, keepdim=True)
+                    target_len = max(int(self.audio_duration * self.audio_sr), 9)
+                    if seg.shape[-1] < target_len:
+                        seg = torch.nn.functional.pad(seg, (0, target_len - seg.shape[-1]))
+                    elif seg.shape[-1] > target_len:
+                        seg = seg[..., :target_len]
+                    x_aud = seg.float()
+            except Exception:
+                x_aud = None
         # Caso 1: si existe columna audio_route en el DF, usarla directamente
         elif "audio_route" in self.df.columns and pd.notna(self.df.iloc[idx]["audio_route"]):
             try:

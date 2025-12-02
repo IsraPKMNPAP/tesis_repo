@@ -159,6 +159,7 @@ def main():
     )
     ap.add_argument("--audio-template", type=str, default="raw_audio_{participant}.wav")
     ap.add_argument("--audio-fallback-template", type=str, default=None)
+    ap.add_argument("--audio-cached-col", type=str, default="audio_cached_path", help="Columna con segmento .pt precalculado")
     ap.add_argument("--audio-start-col", type=str, default="audio_segment_start")
     ap.add_argument("--debug-batch", action="store_true", help="Imprime shapes/min-max del primer batch y sale")
     args = ap.parse_args()
@@ -258,6 +259,7 @@ def main():
         path_col=args.path_col,
         participant_col=args.participant_col,
         audio_start_col=args.audio_start_col,
+        audio_cached_col=args.audio_cached_col,
         audio_root=args.audio_root if has_audio else None,
         audio_template=args.audio_template,
         audio_fallback_template=args.audio_fallback_template,
@@ -278,6 +280,7 @@ def main():
         path_col=args.path_col,
         participant_col=args.participant_col,
         audio_start_col=args.audio_start_col,
+        audio_cached_col=args.audio_cached_col,
         audio_root=args.audio_root if has_audio else None,
         audio_template=args.audio_template,
         audio_fallback_template=args.audio_fallback_template,

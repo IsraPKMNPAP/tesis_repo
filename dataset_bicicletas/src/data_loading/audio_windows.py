@@ -53,9 +53,10 @@ class AudioSegmentDataset(Dataset):
         cache_audio: bool = False,
         aug_noise_std: float = 0.0,
         aug_prob: float = 0.0,
+        audio_cached_col: str | None = None,
     ):
         self.df = df.reset_index(drop=True)
-        self.audio_root = Path(audio_root)
+        self.audio_root = Path(audio_root) if audio_root else None
         self.participant_col = participant_col
         self.start_col = start_col
         self.label_col = label_col
@@ -69,6 +70,7 @@ class AudioSegmentDataset(Dataset):
         self.cache_audio = cache_audio
         self.aug_noise_std = aug_noise_std
         self.aug_prob = aug_prob
+        self.audio_cached_col = audio_cached_col
 
         self.participant_tokens: Dict[str, str] = {}
         self.audio_meta: Dict[str, AudioMeta] = {}
@@ -76,6 +78,15 @@ class AudioSegmentDataset(Dataset):
         self._prepare_audio_index()
 
     def _prepare_audio_index(self) -> None:
+        # Si hay audio precortado en cache, podemos saltar la preparación pesada
+        has_cached = self.audio_cached_col and self.audio_cached_col in self.df.columns and self.df[self.audio_cached_col].notna().any()
+        if self.audio_root is None and has_cached:
+            return
+        if self.audio_root is None:
+            if self.strict:
+                raise FileNotFoundError("audio_root es requerido cuando no hay audio precortado.")
+            return
+
         unique_parts = self.df[self.participant_col].astype(str).unique()
         for value in unique_parts:
             token = format_participant_token(value, self.participant_prefix, self.participant_zero_pad)
@@ -137,10 +148,32 @@ class AudioSegmentDataset(Dataset):
     def __getitem__(self, idx: int) -> Dict[str, object]:
         row = self.df.iloc[idx]
         participant_key = str(row[self.participant_col])
-        if participant_key not in self.participant_tokens:
-            raise KeyError(f"Sin audio para {participant_key}")
         start = float(row[self.start_col])
-        waveform = self._slice_waveform(participant_key, start)
+
+        waveform = None
+        # Caso 0: audio precalculado
+        if self.audio_cached_col and self.audio_cached_col in row and pd.notna(row[self.audio_cached_col]):
+            path = Path(str(row[self.audio_cached_col]))
+            if path.exists():
+                try:
+                    seg = torch.load(path, map_location="cpu")
+                    if seg.dim() == 1:
+                        seg = seg.unsqueeze(0)
+                    elif seg.dim() == 2 and seg.size(0) != 1:
+                        seg = seg.mean(dim=0, keepdim=True)
+                    target_frames = max(int(round(self.window_seconds * self.sample_rate)), 1)
+                    if seg.size(-1) < target_frames:
+                        seg = torch.nn.functional.pad(seg, (0, target_frames - seg.size(-1)))
+                    elif seg.size(-1) > target_frames:
+                        seg = seg[..., :target_frames]
+                    waveform = seg.to(torch.float32)
+                except Exception:
+                    waveform = None
+
+        if waveform is None:
+            if participant_key not in self.participant_tokens:
+                raise KeyError(f"Sin audio para {participant_key} y sin cache disponible")
+            waveform = self._slice_waveform(participant_key, start)
         waveform = self._maybe_augment(waveform)
         label = int(row[self.label_col])
         sample = {

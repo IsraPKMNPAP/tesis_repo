@@ -42,7 +42,7 @@ from utils.results_io import (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Baseline CNN/logit sobre ventanas de audio crudo.")
     parser.add_argument("--pickle", required=True, help="Ruta a X_vid_aud.pkl")
-    parser.add_argument("--audio-root", required=True, help="Carpeta con raw_audio_PXX.wav")
+    parser.add_argument("--audio-root", default="", help="Carpeta con raw_audio_PXX.wav (opcional si usas audio precortado)")
     parser.add_argument("--participant-col", default="participant")
     parser.add_argument("--timestamp-col", default="timestamp")
     parser.add_argument("--start-col", default="audio_segment_start")
@@ -62,6 +62,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cache-audio", action="store_true", help="Cachear audio completo por participante en RAM para acelerar slicing.")
     parser.add_argument("--aug-noise-std", type=float, default=0.0, help="Desvío estándar del ruido gaussiano en waveform.")
     parser.add_argument("--aug-prob", type=float, default=0.0, help="Probabilidad de aplicar ruido gaussiano.")
+    parser.add_argument("--audio-cached-col", type=str, default="audio_cached_path", help="Columna con tensor .pt precortado (opcional). Si existe, el loader la usará y omitirá el corte on-the-fly.")
     parser.add_argument("--cnn-channels", nargs="+", type=int, default=[32, 64, 128])
     parser.add_argument("--n-mels", type=int, default=64)
     parser.add_argument("--dropout", type=float, default=0.2)
@@ -170,8 +171,10 @@ def main() -> None:
     num_classes = len(label_encoder.classes_)
     train_df, val_df = split_by_participant(df, args.participant_col, args.val_split, args.seed)
 
+    audio_root = args.audio_root if args.audio_root else None
+
     dataset_kwargs: Dict[str, object] = dict(
-        audio_root=args.audio_root,
+        audio_root=audio_root,
         participant_col=args.participant_col,
         start_col=args.start_col,
         label_col="label_id",
@@ -185,6 +188,7 @@ def main() -> None:
         cache_audio=args.cache_audio,
         aug_noise_std=args.aug_noise_std,
         aug_prob=args.aug_prob,
+        audio_cached_col=args.audio_cached_col,
     )
     # Sampler balanceado opcional
     if args.balance_sampler:

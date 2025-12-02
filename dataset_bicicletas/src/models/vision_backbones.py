@@ -87,6 +87,13 @@ class ViTFrameEncoder(nn.Module):
         self.proj = proj
 
         # Freeze if not trainable
+        # Si el backbone define image_size (torchvision ViT), usarlo para evitar asserts
+        if self.backbone is not None and hasattr(self.backbone, "image_size"):
+            try:
+                self.target_size = int(self.backbone.image_size)
+            except Exception:
+                pass
+
         if self.backbone is not None:
             for p in self.backbone.parameters():
                 p.requires_grad = False
@@ -136,6 +143,16 @@ class ClipFrameEncoder(nn.Module):
             # Infer embedding dim
             if hasattr(self.visual, "output_dim"):
                 self.emb_dim = getattr(self.visual, "output_dim")
+            if hasattr(self.visual, "image_size"):
+                try:
+                    sz = self.visual.image_size
+                    # image_size can be int or tuple
+                    if isinstance(sz, (list, tuple)):
+                        self.target_size = int(sz[0])
+                    else:
+                        self.target_size = int(sz)
+                except Exception:
+                    pass
             self.is_open_clip = True
             for p in self.visual.parameters():
                 p.requires_grad = False

@@ -50,6 +50,7 @@ Recomendacion: situarse dentro de `dataset_bicicletas` antes de ejecutar.
   - `python mains/run_audio_training.py --pickle /mnt/otra_particion/home/israel_gpu_data/audio_data_raw/X_vid_aud.pkl --audio-root /mnt/otra_particion/home/israel_gpu_data/audio_data_raw/audio_participantes_validos --results-prefix AudioCNN_v1 --class-weighted --epochs 30 --batch-size 16`
   - TCN: `python mains/run_audio_training.py --pickle /mnt/otra_particion/home/israel_gpu_data/audio_data_raw/X_vid_aud.pkl --audio-root /mnt/otra_particion/home/israel_gpu_data/audio_data_raw/audio_participantes_validos --arch tcn --results-prefix AudioTCN_v1 --tcn-channels 64 128 256 --class-weighted --epochs 30 --batch-size 16`
   - wav2vec (freeze por defecto): `python mains/run_audio_training.py --pickle /mnt/otra_particion/home/israel_gpu_data/audio_data_raw/X_vid_aud.pkl --audio-root /mnt/otra_particion/home/israel_gpu_data/audio_data_raw/audio_participantes_validos --arch wav2vec --wav2vec-bundle WAV2VEC2_BASE --results-prefix AudioW2V_v1 --class-weighted --epochs 10 --batch-size 8`
+  - Si ya precortaste segmentos: añade `--audio-cached-col audio_cached_path --audio-root ""` y usa el pickle con `audio_cached_path` para saltar el recorte on-the-fly.
   - Flags útiles: `--cache-audio` (carga audios a RAM para acelerar), `--balance-sampler` (sampler balanceado), `--label-smoothing 0.05`, `--aug-noise-std 0.01 --aug-prob 0.5` (ruido ligero).
 
 - Entrenamiento unimodal video (CNN/LSTM)
@@ -67,6 +68,9 @@ Recomendacion: situarse dentro de `dataset_bicicletas` antes de ejecutar.
 - Entrenamiento multimodal con audio (nuevo)
   - Determinista (tab + video + audio):
     - `python mains/run_multimodal_vae_audio_train.py --pkl data/processed/multimodal_join.pkl --features-file utils/feature_sets/exp1.json --label-col action_proc --batch-size 32 --epochs 30 --lr 1e-4 --deterministic --fusion early --tabular-scaler robust --video-norm imagenet --audio-sr 16000 --audio-duration 5.0 --audio-norm per_channel --class-weighted --warmup-epochs 5 --warmup-modality both --warmup-disable-contrastive --w-align 0.0 --w-contrastive 0.0 --modality-dropout 0.0 --video-backbone vit --video-name vit_b_16 --video-trainable --video-unfreeze-last 1 --video-target-size 224 --video-lstm-hidden 256 --video-lstm-layers 1 --video-bidirectional`
+  - Precortar audio para acelerar entrenamiento (opcional):
+    - `python utils/precompute_audio_segments.py --pkl data/processed/multimodal_av_join.pkl --audio-root /mnt/otra_particion/home/israel_gpu_data/audio_data_raw/audio_participantes_validos --sr 8000 --duration 5 --norm --output-dir data/processed/audio_segments_cached --output-pkl data/processed/multimodal_av_join_audio_cached.pkl --window-col tensor_path_id`
+    - Luego entrena usando el pickle con cache y la columna `audio_cached_path`: añade `--pkl data/processed/multimodal_av_join_audio_cached.pkl --audio-cached-col audio_cached_path` a tu comando de `run_multimodal_vae_audio_train.py`.
 
 - Artefactos (ambos VAE)
   - Modelo: `results/MMVAE_*‑model‑<hash>.pt`
@@ -107,3 +111,19 @@ Recomendacion: situarse dentro de `dataset_bicicletas` antes de ejecutar.
 - Etiquetas: usar `action_proc` cuando exista; si aparecen strings, los mapeos se aplican internamente.
 - Preprocesamiento tabular: StandardScaler + OneHot; el preprocessor entrenado se guarda junto al modelo para inferencia reproducible.
 - Multimodal: el VAE guarda embeddings (`z_*`) y, en variacional, `mu_*`/`std_*` para analisis econometrico.
+
+### Opciones clave de `utils/precompute_audio_segments.py`
+- `--pkl`: pickle multimodal de entrada (default `data/processed/multimodal_av_join.pkl`).
+- `--participant-col`: columna de participante (default `participant`).
+- `--start-col`: inicio del segmento en segundos (default `audio_segment_start`).
+- `--audio-col`: ruta directa al wav (opcional). Si no está, se usa `audio_root` + `audio_template`.
+- `--audio-root`: carpeta con los `raw_audio_<PARTICIPANTE>.wav`.
+- `--audio-template`: patrón de nombre (default `raw_audio_{participant}.wav`).
+- `--sr`: sample rate de salida de los segmentos (default 8000).
+- `--duration`: duración del segmento en segundos (default 5.0).
+- `--norm`: normaliza por canal el segmento recortado.
+- `--output-dir`: carpeta donde se guardan los `.pt` de audio.
+- `--output-pkl`: pickle de salida con columna `audio_cached_path`.
+- `--overwrite`: rehace segmentos aunque existan.
+- `--limit`: procesa solo los primeros N (debug).
+- `--window-col`: columna usada para nombrar los archivos `.pt` (default `tensor_path_id`).
