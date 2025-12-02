@@ -159,8 +159,16 @@ class AudioSegmentDataset(Dataset):
         if self.audio_cached_col and self.audio_cached_col in row and pd.notna(row[self.audio_cached_col]):
             path = Path(str(row[self.audio_cached_col]))
             if path.exists():
+                seg = None
+                # Intento seguro usando weights_only (evita código arbitrario)
                 try:
+                    seg = torch.load(path, map_location="cpu", weights_only=True)
+                except TypeError:
+                    # weights_only no soportado en torch anterior: fallback
                     seg = torch.load(path, map_location="cpu")
+                except Exception:
+                    seg = None
+                if seg is not None:
                     if seg.dim() == 1:
                         seg = seg.unsqueeze(0)
                     elif seg.dim() == 2 and seg.size(0) != 1:
@@ -171,8 +179,6 @@ class AudioSegmentDataset(Dataset):
                     elif seg.size(-1) > target_frames:
                         seg = seg[..., :target_frames]
                     waveform = seg.to(torch.float32)
-                except Exception:
-                    waveform = None
 
         if waveform is None:
             if participant_key not in self.participant_tokens:
