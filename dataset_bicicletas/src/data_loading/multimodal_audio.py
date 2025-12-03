@@ -167,7 +167,10 @@ class MultimodalAudioDataset(Dataset):
             try:
                 p = Path(str(self.df.iloc[idx][self.audio_cached_col]))
                 if p.exists():
-                    seg = torch.load(p, map_location="cpu")
+                    try:
+                        seg = torch.load(p, map_location="cpu", weights_only=True)
+                    except TypeError:
+                        seg = torch.load(p, map_location="cpu")
                     # Asegurar forma [1, T]
                     if seg.dim() == 1:
                         seg = seg.unsqueeze(0)
@@ -182,26 +185,6 @@ class MultimodalAudioDataset(Dataset):
             except Exception:
                 x_aud = None
         # Caso 1: si existe columna audio_route en el DF, usarla directamente
-        elif self.audio_cached_col and self.audio_cached_col in self.df.columns and pd.notna(self.df.iloc[idx][self.audio_cached_col]):
-            try:
-                p = Path(str(self.df.iloc[idx][self.audio_cached_col]))
-                if p.exists():
-                    try:
-                        x = torch.load(p, map_location="cpu", weights_only=True)
-                    except TypeError:
-                        x = torch.load(p, map_location="cpu")
-                    if x.dim() == 1:
-                        x = x.unsqueeze(0)
-                    elif x.dim() == 2 and x.size(0) != 1:
-                        x = x.mean(dim=0, keepdim=True)
-                    target_len = max(int(self.audio_duration * self.audio_sr), 9)
-                    if x.shape[-1] < target_len:
-                        x = torch.nn.functional.pad(x, (0, target_len - x.shape[-1]))
-                    elif x.shape[-1] > target_len:
-                        x = x[..., :target_len]
-                    x_aud = x
-            except Exception:
-                x_aud = None
         elif "audio_route" in self.df.columns and pd.notna(self.df.iloc[idx]["audio_route"]):
             try:
                 p = Path(str(self.df.iloc[idx]["audio_route"]))
