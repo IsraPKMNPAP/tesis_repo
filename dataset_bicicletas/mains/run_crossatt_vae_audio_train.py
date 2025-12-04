@@ -71,14 +71,20 @@ def split_train_val(df: pd.DataFrame, label_col: str, val_split: float = 0.2, se
 
 def main():
     ap = argparse.ArgumentParser(description="Train cross-attentive multimodal VAE (tabular + video + audio)")
-    ap.add_argument("--pkl", type=str, default="data/processed/multimodal_join.pkl", help="Ruta al pickle multimodal")
+    ap.add_argument("--pkl", type=str, default="data/processed/multimodal_av_join_audio_cached.pkl", help="Ruta al pickle multimodal")
     ap.add_argument("--label-col", type=str, default="action_proc")
     ap.add_argument("--features", nargs="*", default=None, help="Columnas tabulares a usar")
     ap.add_argument("--features-file", type=str, default="utils/feature_sets/exp1.json", help="Archivo con lista de features")
-    ap.add_argument("--path-col", type=str, default="gpu_tensor_path")
-    ap.add_argument("--audio-col", type=str, default="audio_path")
+    ap.add_argument("--path-col", type=str, default="frames_route")
     ap.add_argument("--timestamp-col", type=str, default="timestamp")
-    ap.add_argument("--window-id-col", type=str, default="window")
+    ap.add_argument("--window-id-col", type=str, default="tensor_path_id")
+    # Audio windowed segments
+    ap.add_argument("--participant-col", type=str, default="participant")
+    ap.add_argument("--audio-start-col", type=str, default="audio_segment_start")
+    ap.add_argument("--audio-cached-col", type=str, default="audio_cached_path")
+    ap.add_argument("--audio-root", type=str, default=None, help="Carpeta donde viven los audios completos por participante (opcional)")
+    ap.add_argument("--audio-template", type=str, default="raw_audio_{participant}.wav")
+    ap.add_argument("--audio-fallback-template", type=str, default=None)
     ap.add_argument("--batch-size", type=int, default=8)
     ap.add_argument("--epochs", type=int, default=20)
     ap.add_argument("--lr", type=float, default=1e-4)
@@ -166,7 +172,19 @@ def main():
         if loaded:
             tab_cols = loaded
     if not tab_cols:
-        drop_cols = {args.path_col, args.audio_col, args.label_col, args.timestamp_col, args.window_id_col, "participant", "session_id"}
+        drop_cols = {
+            args.path_col,
+            args.label_col,
+            args.timestamp_col,
+            args.window_id_col,
+            args.participant_col,
+            args.audio_start_col,
+            args.audio_cached_col,
+            "frames_route",
+            "audio_route",
+            "tensor_path_id",
+            "session_id",
+        }
         tab_cols = [c for c in df.columns if c not in drop_cols and pd.api.types.is_numeric_dtype(df[c])]
     tab_cols = [c for c in tab_cols if c in df.columns]
 
@@ -230,16 +248,23 @@ def main():
             return x if x.size(0) > 1 else x.squeeze(0)
         return x
 
+    audio_root = args.audio_root if args.audio_root not in ("", None) else None
+
     # Datasets / loaders
     ds_tr = MultimodalAudioDataset(
         df_tr,
         tab_columns=tab_cols,
         X_tab_array=_to_float_tensor(X_tr_mat),
         path_col=args.path_col,
-        audio_col=args.audio_col,
         label_col=args.label_col,
         timestamp_col=args.timestamp_col,
         window_id_col=args.window_id_col,
+        participant_col=args.participant_col,
+        audio_start_col=args.audio_start_col,
+        audio_cached_col=args.audio_cached_col,
+        audio_root=audio_root,
+        audio_template=args.audio_template,
+        audio_fallback_template=args.audio_fallback_template,
         prefer_df_label=True,
         class_map=default_class_map,
         video_transform=_video_transform,
@@ -252,10 +277,15 @@ def main():
         tab_columns=tab_cols,
         X_tab_array=_to_float_tensor(X_val_mat),
         path_col=args.path_col,
-        audio_col=args.audio_col,
         label_col=args.label_col,
         timestamp_col=args.timestamp_col,
         window_id_col=args.window_id_col,
+        participant_col=args.participant_col,
+        audio_start_col=args.audio_start_col,
+        audio_cached_col=args.audio_cached_col,
+        audio_root=audio_root,
+        audio_template=args.audio_template,
+        audio_fallback_template=args.audio_fallback_template,
         prefer_df_label=True,
         class_map=default_class_map,
         video_transform=_video_transform,
@@ -518,7 +548,12 @@ def main():
         "pkl": str(pkl_path),
         "label_col": args.label_col,
         "path_col": args.path_col,
-        "audio_col": args.audio_col,
+        "participant_col": args.participant_col,
+        "audio_start_col": args.audio_start_col,
+        "audio_cached_col": args.audio_cached_col,
+        "audio_root": audio_root,
+        "audio_template": args.audio_template,
+        "audio_fallback_template": args.audio_fallback_template,
         "features": tab_cols,
         "batch_size": args.batch_size,
         "epochs": args.epochs,
