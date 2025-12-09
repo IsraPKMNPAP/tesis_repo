@@ -71,6 +71,10 @@ Recomendacion: situarse dentro de `dataset_bicicletas` antes de ejecutar.
   - Precortar audio para acelerar entrenamiento (opcional):
     - `python utils/precompute_audio_segments.py --pkl data/processed/multimodal_av_join.pkl --audio-root /mnt/otra_particion/home/israel_gpu_data/audio_data_raw/audio_participantes_validos --sr 8000 --duration 5 --norm --output-dir data/processed/audio_segments_cached --output-pkl data/processed/multimodal_av_join_audio_cached.pkl --window-col tensor_path_id`
     - Luego entrena usando el pickle con cache y la columna `audio_cached_path`: añade `--pkl data/processed/multimodal_av_join_audio_cached.pkl --audio-cached-col audio_cached_path` a tu comando de `run_multimodal_vae_audio_train.py`.
+  - Interpretabilidad (embedding del tamaño de la etiqueta; estilo Arkoudi):
+    - Variacional por defecto (usa por defecto el pickle con audio cacheado en `data/processed/multimodal_av_join_audio_cached.pkl` y resuelve paths relativos de audio a `data/processed/audio_segments_cached`):  
+      `python mains/run_multimodal_vae_audio_interpretable.py --features-file utils/feature_sets/exp1.json --label-col action_proc --batch-size 16 --epochs 20 --lr 1e-4 --weight-decay 2e-4 --fusion early --proj-dim 128 --contrastive-temp 0.07 --w-align 0.0 --w-contrastive 0.0 --w-l1-z 0.05 --w-ortho-proto 0.05 --w-margin 0.05 --save-embeddings --video-backbone vit --video-name vit_b_16 --video-trainable --video-unfreeze-last 1 --video-target-size 224 --video-lstm-hidden 256 --video-lstm-layers 1 --video-bidirectional`
+    - Flags clave: `--shared-dim` (embedding interpretable; default = num_classes), `--w-l1-z` (sparsidad en z), `--w-ortho-proto` (ortogonalidad de prototipos/clases), `--w-margin` + `--margin-type` (alinear z a one-hot por clase), `--save-embeddings` (guarda `z_dim_*` de validación), `--audio-cached-col` + `--audio-root` para columnas cacheadas en `data/processed/audio_segments_cached`.
 
 - Artefactos (ambos VAE)
   - Modelo: `results/MMVAE_*‑model‑<hash>.pt`
