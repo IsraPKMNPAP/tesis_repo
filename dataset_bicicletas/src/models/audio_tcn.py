@@ -67,6 +67,7 @@ class AudioTCNLogit(nn.Module):
         self.tcn = nn.Sequential(*layers)
         self.pool = nn.AdaptiveAvgPool1d(1)
         self.classifier = nn.Linear(in_ch, num_classes)
+        self.repr_dim = in_ch
 
     def _wave_to_feature(self, waveforms: torch.Tensor) -> torch.Tensor:
         if waveforms.dim() == 2:
@@ -86,3 +87,9 @@ class AudioTCNLogit(nn.Module):
         out = self.tcn(feats)
         out = self.pool(out).flatten(1)
         return self.classifier(out)
+
+    def extract_repr(self, waveforms: torch.Tensor) -> torch.Tensor:
+        feats = self._wave_to_feature(waveforms)
+        out = self.tcn(feats)
+        out = self.pool(out).flatten(1)
+        return out

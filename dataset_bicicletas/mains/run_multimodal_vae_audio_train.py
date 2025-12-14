@@ -151,6 +151,14 @@ def main():
     ap.add_argument("--audio-sr", type=int, default=16000)
     ap.add_argument("--audio-duration", type=float, default=5.0)
     ap.add_argument("--audio-norm", type=str, default="per_channel", choices=["per_channel", "none"])
+    ap.add_argument("--audio-encoder", type=str, default="simple", choices=["simple", "cnn", "tcn", "wav2vec"])
+    ap.add_argument("--audio-n-mels", type=int, default=64)
+    ap.add_argument("--audio-cnn-channels", nargs="+", type=int, default=[32, 64, 128])
+    ap.add_argument("--audio-tcn-channels", nargs="+", type=int, default=[64, 128, 256])
+    ap.add_argument("--audio-tcn-kernel", type=int, default=3)
+    ap.add_argument("--audio-encoder-dropout", type=float, default=0.2)
+    ap.add_argument("--audio-wav2vec-bundle", type=str, default="WAV2VEC2_BASE")
+    ap.add_argument("--audio-wav2vec-trainable", action="store_true")
     ap.add_argument(
         "--audio-root",
         type=str,
@@ -346,6 +354,17 @@ def main():
             modality_dropout_p=args.modality_dropout,
             fusion_type=args.fusion,
             late_alpha=args.late_alpha,
+            audio_encoder_type=args.audio_encoder,
+            audio_kwargs=dict(
+                sample_rate=args.audio_sr,
+                n_mels=args.audio_n_mels,
+                cnn_channels=args.audio_cnn_channels,
+                tcn_channels=args.audio_tcn_channels,
+                kernel_size=args.audio_tcn_kernel,
+                dropout=args.audio_encoder_dropout,
+                bundle_name=args.audio_wav2vec_bundle,
+                trainable=args.audio_wav2vec_trainable,
+            ),
         )
     else:
         model = VariationalMMVAEAudio(
@@ -364,6 +383,17 @@ def main():
             modality_dropout_p=args.modality_dropout,
             fusion_type=args.fusion,
             late_alpha=args.late_alpha,
+            audio_encoder_type=args.audio_encoder,
+            audio_kwargs=dict(
+                sample_rate=args.audio_sr,
+                n_mels=args.audio_n_mels,
+                cnn_channels=args.audio_cnn_channels,
+                tcn_channels=args.audio_tcn_channels,
+                kernel_size=args.audio_tcn_kernel,
+                dropout=args.audio_encoder_drop,
+                bundle_name=args.audio_wav2vec_bundle,
+                trainable=args.audio_wav2vec_trainable,
+            ),
         )
 
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")

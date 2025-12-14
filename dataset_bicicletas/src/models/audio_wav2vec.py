@@ -42,6 +42,7 @@ class AudioWav2VecLogit(nn.Module):
         if not trainable:
             for p in self.backbone.parameters():
                 p.requires_grad = False
+        self.repr_dim = feat_dim
 
     def forward(self, waveforms: torch.Tensor) -> torch.Tensor:
         # Espera (B, T); si viene con canal, promediar a mono
@@ -66,3 +67,23 @@ class AudioWav2VecLogit(nn.Module):
         feats = features.transpose(1, 2)  # (B, C, T)
         pooled = self.pool(feats).squeeze(-1)
         return self.head(pooled)
+
+    def extract_repr(self, waveforms: torch.Tensor) -> torch.Tensor:
+        # Igual que forward pero devolviendo el embedding antes del head
+        if waveforms.dim() == 3:
+            if waveforms.size(1) > 1:
+                waveforms = waveforms.mean(dim=1)
+            else:
+                waveforms = waveforms.squeeze(1)
+        elif waveforms.dim() != 2:
+            raise ValueError(f"Forma inesperada para wav2vec: {waveforms.shape}")
+        outputs = self.backbone.extract_features(waveforms)
+        if isinstance(outputs, tuple):
+            features, _ = outputs
+        else:
+            features = outputs
+        if isinstance(features, list):
+            features = features[-1]
+        feats = features.transpose(1, 2)
+        pooled = self.pool(feats).squeeze(-1)
+        return pooled

@@ -64,3 +64,8 @@ class AudioCNNLogit(nn.Module):
         feats = self.backbone(spec)
         feats = self.pool(feats).flatten(1)
         return feats
+
+    @property
+    def repr_dim(self) -> int:
+        # Dimensión previa a la capa de clasificación
+        return self.classifier.in_features

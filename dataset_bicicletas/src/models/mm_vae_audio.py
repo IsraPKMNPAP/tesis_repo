@@ -8,6 +8,9 @@ import torch.nn.functional as F
 
 from .mm_vae import DeterministicMMVAE, VariationalMMVAE, _safe_normalize
 from .audio_encoders import SimpleAudioEncoder
+from .audio_cnn import AudioCNNLogit
+from .audio_tcn import AudioTCNLogit
+from .audio_wav2vec import AudioWav2VecLogit, get_bundle
 
 
 class DeterministicMMVAEAudio(DeterministicMMVAE):
@@ -18,6 +21,8 @@ class DeterministicMMVAEAudio(DeterministicMMVAE):
         tab_in_dim: int,
         vid_backbone: Optional[nn.Module] = None,
         audio_encoder: Optional[nn.Module] = None,
+        audio_encoder_type: str = "simple",
+        audio_kwargs: Optional[dict] = None,
         tab_emb_dim: int = 128,
         shared_dim: int = 64,
         num_classes: int = 3,
@@ -34,6 +39,15 @@ class DeterministicMMVAEAudio(DeterministicMMVAE):
     ):
         self.audio_emb_dim = audio_emb_dim
         self.tab_emb_dim = tab_emb_dim
+        # Construir encoder de audio si no viene dado
+        if audio_encoder is None:
+            audio_encoder, enc_dim = self._build_audio_encoder(
+                encoder_type=audio_encoder_type,
+                audio_kwargs=audio_kwargs or {},
+                default_emb_dim=audio_emb_dim,
+                num_classes=num_classes,
+            )
+            self.audio_emb_dim = enc_dim
         super().__init__(
             tab_in_dim=tab_in_dim,
             vid_backbone=vid_backbone,
@@ -71,8 +85,8 @@ class DeterministicMMVAEAudio(DeterministicMMVAE):
             nn.ReLU(inplace=True),
             nn.Linear(max(self.vid_emb_dim, shared_dim), self.vid_emb_dim),
         )
-        # Crear encoder de audio y head auxiliar
-        self.audio_enc = audio_encoder or SimpleAudioEncoder(emb_dim=self.audio_emb_dim)
+        # Encoder de audio y head auxiliar
+        self.audio_enc = audio_encoder
         self.proj_aud = nn.Linear(self.audio_emb_dim, self.proj_tab.out_features)
         # Ajustar classifier para soportar audio en late fusion
         if classifier_arkoudi:
@@ -88,6 +102,70 @@ class DeterministicMMVAEAudio(DeterministicMMVAE):
             pad_len = 9 - x_aud.shape[-1]
             x_aud = torch.nn.functional.pad(x_aud, (0, pad_len))
         return self.audio_enc(x_aud)
+
+    def _build_audio_encoder(
+        self,
+        encoder_type: str,
+        audio_kwargs: dict,
+        default_emb_dim: int,
+        num_classes: int,
+    ) -> Tuple[nn.Module, int]:
+        et = (encoder_type or "simple").lower()
+        if et == "simple":
+            emb_dim = audio_kwargs.get("emb_dim", default_emb_dim)
+            return SimpleAudioEncoder(emb_dim=emb_dim), emb_dim
+        if et == "cnn":
+            sample_rate = int(audio_kwargs.get("sample_rate", 16000))
+            n_mels = int(audio_kwargs.get("n_mels", 64))
+            channels = audio_kwargs.get("cnn_channels", (32, 64, 128))
+            dropout = float(audio_kwargs.get("dropout", 0.2))
+            model = AudioCNNLogit(sample_rate=sample_rate, num_classes=num_classes, n_mels=n_mels, cnn_channels=channels, dropout=dropout)
+            emb_dim = model.repr_dim
+
+            class CNNEncoder(nn.Module):
+                def __init__(self, m):
+                    super().__init__()
+                    self.m = m
+
+                def forward(self, x):
+                    return self.m.extract_repr(x)
+
+            return CNNEncoder(model), emb_dim
+        if et == "tcn":
+            sample_rate = int(audio_kwargs.get("sample_rate", 16000))
+            n_mels = int(audio_kwargs.get("n_mels", 64))
+            channels = audio_kwargs.get("tcn_channels", (64, 128, 256))
+            kernel = int(audio_kwargs.get("kernel_size", 3))
+            dropout = float(audio_kwargs.get("dropout", 0.2))
+            model = AudioTCNLogit(sample_rate=sample_rate, num_classes=num_classes, n_mels=n_mels, tcn_channels=channels, kernel_size=kernel, dropout=dropout)
+            emb_dim = model.repr_dim
+
+            class TCNEncoder(nn.Module):
+                def __init__(self, m):
+                    super().__init__()
+                    self.m = m
+
+                def forward(self, x):
+                    return self.m.extract_repr(x)
+
+            return TCNEncoder(model), emb_dim
+        if et == "wav2vec":
+            bundle_name = audio_kwargs.get("bundle_name", "WAV2VEC2_BASE")
+            trainable = bool(audio_kwargs.get("trainable", False))
+            dropout = float(audio_kwargs.get("dropout", 0.1))
+            model = AudioWav2VecLogit(bundle_name=bundle_name, num_classes=num_classes, trainable=trainable, dropout=dropout)
+            emb_dim = model.repr_dim
+
+            class W2VEncoder(nn.Module):
+                def __init__(self, m):
+                    super().__init__()
+                    self.m = m
+
+                def forward(self, x):
+                    return self.m.extract_repr(x)
+
+            return W2VEncoder(model), emb_dim
+        raise ValueError(f"Tipo de encoder de audio no soportado: {encoder_type}")
 
     def fuse_modalities(self, z_tab: torch.Tensor, z_vid: torch.Tensor, z_aud: Optional[torch.Tensor]) -> torch.Tensor:
         # Aplicar modality dropout solo a tab/vid; audio se incluye si existe
