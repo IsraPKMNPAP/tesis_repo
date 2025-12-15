@@ -9,6 +9,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import StandardScaler, OneHotEncoder, RobustScaler
@@ -29,6 +31,61 @@ from utils.results_io import (
 )
 from utils.features import load_features_file
 from src.data_cleaning.cleaning import categorias_a_str, convertir_a_categorico
+from src.models.audio_cnn import AudioCNNLogit
+from src.models.audio_tcn import AudioTCNLogit
+from src.models.audio_wav2vec import AudioWav2VecLogit
+
+
+class AudioEncoderAdapter(nn.Module):
+    """Envuelve modelos de audio existentes para entregar embeddings normalizados."""
+
+    def __init__(self, base: nn.Module, proj_dim: int, repr_attr: str = "extract_repr"):
+        super().__init__()
+        self.base = base
+        self.repr_attr = repr_attr
+        self.proj = nn.Linear(getattr(base, "repr_dim", proj_dim), proj_dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if hasattr(self.base, self.repr_attr):
+            h = getattr(self.base, self.repr_attr)(x)
+        else:
+            h = self.base(x)
+        if h.dim() > 2:
+            h = h.mean(dim=tuple(range(2, h.dim())))
+        z = self.proj(h)
+        return F.normalize(z, p=2, dim=-1)
+
+
+def build_audio_encoder(args, num_classes: int) -> nn.Module:
+    enc_type = args.audio_encoder
+    if enc_type == "cnn":
+        base = AudioCNNLogit(
+            sample_rate=args.audio_sr,
+            num_classes=num_classes,
+            n_mels=args.audio_n_mels,
+            dropout=args.audio_dropout,
+        )
+        return AudioEncoderAdapter(base, proj_dim=args.audio_emb, repr_attr="extract_repr")
+    if enc_type == "tcn":
+        base = AudioTCNLogit(
+            sample_rate=args.audio_sr,
+            num_classes=num_classes,
+            n_mels=args.audio_n_mels,
+            dropout=args.audio_dropout,
+        )
+        return AudioEncoderAdapter(base, proj_dim=args.audio_emb, repr_attr="extract_repr")
+    if enc_type == "wav2vec":
+        base = AudioWav2VecLogit(
+            bundle_name=args.audio_wav2vec_bundle,
+            num_classes=num_classes,
+            trainable=args.audio_wav2vec_trainable,
+            dropout=args.audio_dropout,
+        )
+        return AudioEncoderAdapter(base, proj_dim=args.audio_emb, repr_attr="extract_repr")
+    # simple conv encoder
+    from src.models.audio_encoders import SimpleAudioEncoder
+
+    return SimpleAudioEncoder(emb_dim=args.audio_emb)
 
 
 def _to_float_tensor(mat):
@@ -158,6 +215,12 @@ def main():
     ap.add_argument("--audio-sr", type=int, default=16000)
     ap.add_argument("--audio-duration", type=float, default=5.0)
     ap.add_argument("--audio-norm", type=str, default="per_channel", choices=["per_channel", "none"])
+    # Audio encoder choices
+    ap.add_argument("--audio-encoder", type=str, default="simple", choices=["simple", "cnn", "tcn", "wav2vec"])
+    ap.add_argument("--audio-n-mels", type=int, default=64)
+    ap.add_argument("--audio-dropout", type=float, default=0.2)
+    ap.add_argument("--audio-wav2vec-bundle", type=str, default="WAV2VEC2_BASE")
+    ap.add_argument("--audio-wav2vec-trainable", action="store_true", help="Fine-tune wav2vec backbone")
     args = ap.parse_args()
 
     pkl_path = Path(args.pkl)
@@ -326,6 +389,8 @@ def main():
         num_classes=num_classes,
     )
 
+    audio_encoder = build_audio_encoder(args, num_classes=num_classes)
+
     model = CrossAttentiveMMVAEAudio(
         tab_in_dim=_to_float_tensor(X_tr_mat).shape[1],
         tab_emb_dim=args.tab_emb,
@@ -341,6 +406,7 @@ def main():
         contrastive_temp=args.contrastive_temp,
         modality_dropout_p=args.modality_dropout,
         audio_emb_dim=args.audio_emb,
+        audio_encoder=audio_encoder,
         video_kwargs=video_kwargs,
         kl_anneal_start=args.kl_anneal_start,
         kl_anneal_end=args.kl_anneal_end,
@@ -606,6 +672,11 @@ def main():
         "w_aux_tab": args.w_aux_tab,
         "w_aux_vid": args.w_aux_vid,
         "w_aux_aud": args.w_aux_aud,
+        "audio_encoder": args.audio_encoder,
+        "audio_n_mels": args.audio_n_mels,
+        "audio_dropout": args.audio_dropout,
+        "audio_wav2vec_bundle": args.audio_wav2vec_bundle,
+        "audio_wav2vec_trainable": args.audio_wav2vec_trainable,
     }
     run_hash = compute_run_hash(cfg, sys.argv, model=model_name)
     ensure_dir(results_dir)
