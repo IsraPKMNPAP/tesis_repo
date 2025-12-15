@@ -165,6 +165,14 @@ def main():
     ap.add_argument("--audio-sr", type=int, default=16000)
     ap.add_argument("--audio-duration", type=float, default=5.0)
     ap.add_argument("--audio-norm", type=str, default="per_channel", choices=["per_channel", "none"])
+    ap.add_argument("--audio-encoder", type=str, default="simple", choices=["simple", "cnn", "tcn", "wav2vec"])
+    ap.add_argument("--audio-n-mels", type=int, default=64)
+    ap.add_argument("--audio-cnn-channels", nargs="+", type=int, default=[32, 64, 128])
+    ap.add_argument("--audio-tcn-channels", nargs="+", type=int, default=[64, 128, 256])
+    ap.add_argument("--audio-tcn-kernel", type=int, default=3)
+    ap.add_argument("--audio-encoder-dropout", type=float, default=0.2)
+    ap.add_argument("--audio-wav2vec-bundle", type=str, default="WAV2VEC2_BASE")
+    ap.add_argument("--audio-wav2vec-trainable", action="store_true")
     # Interpretabilidad
     ap.add_argument("--w-l1-z", type=float, default=0.05, help="Peso L1 sobre z interpretable")
     ap.add_argument("--w-ortho-proto", type=float, default=0.05, help="Peso de ortogonalidad sobre embeddings de clase")
@@ -348,6 +356,17 @@ def main():
         num_classes=num_classes,
     )
 
+    audio_kwargs = dict(
+        sample_rate=args.audio_sr,
+        n_mels=args.audio_n_mels,
+        cnn_channels=args.audio_cnn_channels,
+        tcn_channels=args.audio_tcn_channels,
+        kernel_size=args.audio_tcn_kernel,
+        dropout=args.audio_encoder_dropout,
+        bundle_name=args.audio_wav2vec_bundle,
+        trainable=args.audio_wav2vec_trainable,
+    )
+
     model_kwargs = dict(
         tab_in_dim=_to_float_tensor(X_tr_mat).shape[1],
         tab_emb_dim=args.tab_emb,
@@ -363,6 +382,8 @@ def main():
         modality_dropout_p=args.modality_dropout,
         fusion_type=args.fusion,
         late_alpha=args.late_alpha,
+        audio_encoder_type=args.audio_encoder,
+        audio_kwargs=audio_kwargs,
     )
 
     if args.deterministic:
@@ -620,6 +641,14 @@ def main():
         "audio_sr": args.audio_sr,
         "audio_duration": args.audio_duration,
         "audio_norm": args.audio_norm,
+        "audio_encoder": args.audio_encoder,
+        "audio_n_mels": args.audio_n_mels,
+        "audio_cnn_channels": args.audio_cnn_channels,
+        "audio_tcn_channels": args.audio_tcn_channels,
+        "audio_tcn_kernel": args.audio_tcn_kernel,
+        "audio_encoder_dropout": args.audio_encoder_dropout,
+        "audio_wav2vec_bundle": args.audio_wav2vec_bundle,
+        "audio_wav2vec_trainable": args.audio_wav2vec_trainable,
         "w_l1_z": args.w_l1_z,
         "w_ortho_proto": args.w_ortho_proto,
         "w_margin": args.w_margin,

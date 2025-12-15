@@ -7,6 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .mm_vae_audio import DeterministicMMVAEAudio
+from .mm_vae import _safe_normalize
 
 
 def _proto_orthogonality_loss(head: nn.Module) -> torch.Tensor:
@@ -65,6 +66,9 @@ class InterpretableMMVAEAudioDeterministic(DeterministicMMVAEAudio):
         modality_dropout_p: float = 0.0,
         fusion_type: str = "early",
         late_alpha: float = 0.5,
+        audio_encoder: Optional[nn.Module] = None,
+        audio_encoder_type: str = "simple",
+        audio_kwargs: Optional[dict] = None,
     ):
         self.interpretable_dim = int(shared_dim)
         super().__init__(
@@ -82,6 +86,9 @@ class InterpretableMMVAEAudioDeterministic(DeterministicMMVAEAudio):
             fusion_type=fusion_type,
             late_alpha=late_alpha,
             audio_emb_dim=audio_emb_dim,
+            audio_encoder=audio_encoder,
+            audio_encoder_type=audio_encoder_type,
+            audio_kwargs=audio_kwargs,
         )
         # Proyección fija para audio (evita crear capas nuevas en cada forward)
         self.proj_aud = nn.Linear(self.audio_emb_dim, self.proj_tab.out_features)
@@ -89,11 +96,11 @@ class InterpretableMMVAEAudioDeterministic(DeterministicMMVAEAudio):
     def forward(self, x_tab: torch.Tensor, x_vid: torch.Tensor, x_aud: Optional[torch.Tensor] = None):
         z_tab, z_vid = self.encode_modalities(x_tab, x_vid)
         z_aud = self.encode_audio(x_aud)
-        p_tab = F.normalize(self.proj_tab(z_tab), p=2, dim=-1)
-        p_vid = F.normalize(self.proj_vid(z_vid), p=2, dim=-1)
-        p_aud = None
-        if z_aud is not None:
-            p_aud = F.normalize(self.proj_aud(z_aud), p=2, dim=-1)
+        if z_aud is None:
+            z_aud = torch.zeros(z_tab.size(0), self.audio_emb_dim, device=z_tab.device, dtype=z_tab.dtype)
+        p_tab = _safe_normalize(self.proj_tab(z_tab), dim=-1)
+        p_vid = _safe_normalize(self.proj_vid(z_vid), dim=-1)
+        p_aud = _safe_normalize(self.proj_aud(z_aud), dim=-1)
         z_shared = self.fuse_modalities(z_tab, z_vid, z_aud)
         rec_tab, rec_vid = self.decode_modalities(z_shared)
         logits_tab = self.cls_tab(z_tab)
@@ -204,6 +211,9 @@ class InterpretableMMVAEAudioVariational(InterpretableMMVAEAudioDeterministic):
         modality_dropout_p: float = 0.0,
         fusion_type: str = "early",
         late_alpha: float = 0.5,
+        audio_encoder: Optional[nn.Module] = None,
+        audio_encoder_type: str = "simple",
+        audio_kwargs: Optional[dict] = None,
     ):
         super().__init__(
             tab_in_dim=tab_in_dim,
@@ -220,6 +230,9 @@ class InterpretableMMVAEAudioVariational(InterpretableMMVAEAudioDeterministic):
             modality_dropout_p=modality_dropout_p,
             fusion_type=fusion_type,
             late_alpha=late_alpha,
+            audio_encoder=audio_encoder,
+            audio_encoder_type=audio_encoder_type,
+            audio_kwargs=audio_kwargs,
         )
         self.tab_emb_dim = tab_emb_dim
         self.vid_emb_dim = self.vid_enc.output_dim()
@@ -253,11 +266,11 @@ class InterpretableMMVAEAudioVariational(InterpretableMMVAEAudioDeterministic):
     def forward(self, x_tab: torch.Tensor, x_vid: torch.Tensor, x_aud: Optional[torch.Tensor] = None):
         z_tab, z_vid = self.encode_modalities(x_tab, x_vid)
         z_aud = self.encode_audio(x_aud)
-        p_tab = F.normalize(self.proj_tab(z_tab), p=2, dim=-1)
-        p_vid = F.normalize(self.proj_vid(z_vid), p=2, dim=-1)
-        p_aud = None
-        if z_aud is not None:
-            p_aud = F.normalize(self.proj_aud(z_aud), p=2, dim=-1)
+        if z_aud is None:
+            z_aud = torch.zeros(z_tab.size(0), self.audio_emb_dim, device=z_tab.device, dtype=z_tab.dtype)
+        p_tab = _safe_normalize(self.proj_tab(z_tab), dim=-1)
+        p_vid = _safe_normalize(self.proj_vid(z_vid), dim=-1)
+        p_aud = _safe_normalize(self.proj_aud(z_aud), dim=-1)
         z_shared, mu, logvar = self.fuse_modalities(z_tab, z_vid, z_aud)
         rec_tab, rec_vid = self.decode_modalities(z_shared)
         logits_tab = self.cls_tab(z_tab)
