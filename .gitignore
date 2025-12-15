@@ -1,6 +1,7 @@
 *.csv
 *.zip
 *.rar
+*.pdf
 __pycache__/
 .env
 .pkl
