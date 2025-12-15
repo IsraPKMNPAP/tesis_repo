@@ -49,7 +49,10 @@ def plot_embedding(embedding: np.ndarray, meta: pd.DataFrame, title: str, out_pa
     plt.figure(figsize=(8, 6))
     colors = meta["bought"].fillna(-1).astype(int)
     scatter = plt.scatter(embedding[:, 0], embedding[:, 1], c=colors, cmap="viridis", s=10, alpha=0.7)
-    cbar = plt.colorbar(scatter)
+    # Discretizar la barra: ticks en valores únicos de clase
+    unique_vals = sorted(colors.unique())
+    cbar = plt.colorbar(scatter, ticks=unique_vals)
+    cbar.ax.set_yticklabels([str(v) for v in unique_vals])
     cbar.set_label("bought (NaN=-1)")
     plt.title(title)
     plt.xlabel("Dim 1")
@@ -90,7 +93,7 @@ def main() -> None:
     plot_embedding(emb_pca, meta, "PCA (colored by bought)", args.out_dir / "pca.png")
 
     # UMAP
-    reducer = umap.UMAP(n_components=args.umap_components, random_state=42)
+    reducer = umap.UMAP(n_components=args.umap_components, random_state=42, n_jobs=1)
     emb_umap = reducer.fit_transform(X_scaled)
     plot_embedding(emb_umap, meta, "UMAP (colored by bought)", args.out_dir / "umap.png")
 
