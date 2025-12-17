@@ -53,6 +53,7 @@ def main() -> None:
     parser.add_argument("--out-img", type=Path, default=Path("./data/EDA/eda_results_img/clip_pca.png"))
     parser.add_argument("--out-csv", type=Path, default=Path("./data/EDA/eda_results_tabular/clip_pca_coords.csv"))
     parser.add_argument("--no-color", action="store_true", help="No colorear por purchase_rate.")
+    parser.add_argument("--no-labels", action="store_true", help="No anotar productos (aunque se entregue ref).")
     parser.add_argument(
         "--ref-page",
         type=str,
@@ -137,7 +138,7 @@ def main() -> None:
         cb.set_label("purchase_rate")
 
     # Anotaciones de vecinos cercanos alrededor de un producto de referencia
-    if args.ref_page and args.ref_product:
+    if (not args.no_labels) and args.ref_page and args.ref_product:
         mask_ref = (out_coords["page"] == args.ref_page) & (out_coords["product_id"] == args.ref_product)
         if mask_ref.any():
             ref_idx = int(np.where(mask_ref.to_numpy())[0][0])
@@ -155,21 +156,42 @@ def main() -> None:
             # Resalta el punto de referencia
             plt.scatter([ref_pt[0]], [ref_pt[1]], s=120, facecolors="none", edgecolors="black", linewidths=2)
 
-            for i in within:
-                label = None
+            # Para evitar superposición: coloca etiquetas en una columna a la derecha
+            x_all = coords[:, 0]
+            y_all = coords[:, 1]
+            x_rng = float(x_all.max() - x_all.min()) or 1.0
+            y_rng = float(y_all.max() - y_all.min()) or 1.0
+
+            x_sel = coords[within, 0]
+            y_sel = coords[within, 1]
+            label_x = float(x_sel.max() + 0.08 * x_rng)
+            step = 0.05 * y_rng
+            y_start = float(y_sel.max() + 0.02 * y_rng)
+
+            # Ordena por y (arriba->abajo) para asignar slots limpios
+            within_sorted = sorted(within, key=lambda i: float(coords[i, 1]), reverse=True)
+
+            for slot, i in enumerate(within_sorted):
                 if "description" in out_coords.columns and pd.notna(out_coords.loc[i, "description"]):
                     label = str(out_coords.loc[i, "description"])
                 else:
                     label = f"{out_coords.loc[i, 'page']}_{out_coords.loc[i, 'product_id']}"
-                x, y = coords[i, 0], coords[i, 1]
+
+                x, y = float(coords[i, 0]), float(coords[i, 1])
                 is_ref = i == ref_idx
-                plt.text(
-                    x + 0.01,
-                    y + 0.01,
+                label_y = y_start - slot * step
+
+                plt.annotate(
                     label,
+                    xy=(x, y),
+                    xytext=(label_x, label_y),
+                    textcoords="data",
+                    ha="left",
+                    va="center",
                     fontsize=8 if is_ref else 7,
                     fontweight="bold" if is_ref else "normal",
-                    bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="black", alpha=0.7) if is_ref else None,
+                    bbox=dict(boxstyle="round,pad=0.25", fc="white", ec="black", alpha=1.0),
+                    arrowprops=dict(arrowstyle="-", color="black", lw=0.8),
                 )
         else:
             print(f"[WARN] Referencia no encontrada en embeddings: {args.ref_page} {args.ref_product}")
