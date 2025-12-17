@@ -4,6 +4,9 @@ Hace PCA 2D sobre embeddings CLIP de imágenes de productos y grafica.
 Color:
   - por defecto usa tasa de compra por objeto (page, product_id):
       purchase_rate = mean(bought) sobre todos los sujetos
+Anotaciones:
+  - opcionalmente anota un producto de referencia y sus vecinos más cercanos en PCA,
+    usando el nombre/description desde products_all_with_images.csv.
 
 Entradas:
   - data/processed/image_embeddings/embeddings_index.csv
@@ -50,6 +53,30 @@ def main() -> None:
     parser.add_argument("--out-img", type=Path, default=Path("./data/EDA/eda_results_img/clip_pca.png"))
     parser.add_argument("--out-csv", type=Path, default=Path("./data/EDA/eda_results_tabular/clip_pca_coords.csv"))
     parser.add_argument("--no-color", action="store_true", help="No colorear por purchase_rate.")
+    parser.add_argument(
+        "--ref-page",
+        type=str,
+        default=None,
+        help="Página de referencia (ej: Page1) para anotar vecinos cercanos.",
+    )
+    parser.add_argument(
+        "--ref-product",
+        type=str,
+        default=None,
+        help="Producto de referencia (ej: Product1) para anotar vecinos cercanos.",
+    )
+    parser.add_argument(
+        "--radius",
+        type=float,
+        default=0.5,
+        help="Radio en el espacio PCA para anotar vecinos (unidades de PCA).",
+    )
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=10,
+        help="Si no hay vecinos dentro del radio, anota los K más cercanos.",
+    )
     args = parser.parse_args()
 
     index_path = args.embeddings_dir / "embeddings_index.csv"
@@ -61,6 +88,7 @@ def main() -> None:
 
     # Purchase rate por objeto (page, product_id)
     purchase_rate = None
+    desc_df = None
     if not args.no_color:
         if not args.products.exists():
             raise SystemExit(f"No se encontró {args.products}")
@@ -75,6 +103,17 @@ def main() -> None:
             .reset_index()
         )
         index_df = index_df.merge(purchase_rate, on=["page", "product_id"], how="left")
+
+        # Nombre/description del producto por objeto (page, product_id)
+        if "description" in df_prod.columns:
+            desc_df = (
+                df_prod.dropna(subset=["description"])
+                .groupby(["page", "product_id"])["description"]
+                .first()
+                .rename("description")
+                .reset_index()
+            )
+            index_df = index_df.merge(desc_df, on=["page", "product_id"], how="left")
 
     X = load_embeddings(index_df)
     X = np.nan_to_num(X, nan=0.0)
@@ -96,6 +135,45 @@ def main() -> None:
         sc = plt.scatter(coords[:, 0], coords[:, 1], c=c, cmap="viridis", s=40, alpha=0.85)
         cb = plt.colorbar(sc)
         cb.set_label("purchase_rate")
+
+    # Anotaciones de vecinos cercanos alrededor de un producto de referencia
+    if args.ref_page and args.ref_product:
+        mask_ref = (out_coords["page"] == args.ref_page) & (out_coords["product_id"] == args.ref_product)
+        if mask_ref.any():
+            ref_idx = int(np.where(mask_ref.to_numpy())[0][0])
+            ref_pt = coords[ref_idx]
+            dists = np.sqrt(np.sum((coords - ref_pt) ** 2, axis=1))
+            within = np.where(dists <= args.radius)[0].tolist()
+            if ref_idx not in within:
+                within.append(ref_idx)
+            if len(within) <= 1:
+                within = np.argsort(dists)[: max(2, args.top_k)].tolist()
+
+            # Ordena por distancia, limita a top_k para evitar saturación
+            within = sorted(within, key=lambda i: float(dists[i]))[: max(2, args.top_k)]
+
+            # Resalta el punto de referencia
+            plt.scatter([ref_pt[0]], [ref_pt[1]], s=120, facecolors="none", edgecolors="black", linewidths=2)
+
+            for i in within:
+                label = None
+                if "description" in out_coords.columns and pd.notna(out_coords.loc[i, "description"]):
+                    label = str(out_coords.loc[i, "description"])
+                else:
+                    label = f"{out_coords.loc[i, 'page']}_{out_coords.loc[i, 'product_id']}"
+                x, y = coords[i, 0], coords[i, 1]
+                is_ref = i == ref_idx
+                plt.text(
+                    x + 0.01,
+                    y + 0.01,
+                    label,
+                    fontsize=8 if is_ref else 7,
+                    fontweight="bold" if is_ref else "normal",
+                    bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="black", alpha=0.7) if is_ref else None,
+                )
+        else:
+            print(f"[WARN] Referencia no encontrada en embeddings: {args.ref_page} {args.ref_product}")
+
     plt.title("CLIP image embeddings PCA (2D)")
     plt.xlabel("PC1")
     plt.ylabel("PC2")
@@ -110,4 +188,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
