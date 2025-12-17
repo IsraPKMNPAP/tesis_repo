@@ -48,7 +48,7 @@ def main() -> None:
     parser.add_argument("--embeddings-dir", type=Path, default=Path("./data/processed/image_embeddings"))
     parser.add_argument("--products", type=Path, default=Path("./data/processed/products_all_with_images.csv"))
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--C", type=float, default=1.0, help="Inverso de fuerza de regularización L2.")
+    parser.add_argument("--C", type=float, default=0.1, help="Inverso de fuerza de regularización L2.")
     args = parser.parse_args()
 
     index_path = args.embeddings_dir / "embeddings_index.csv"
@@ -95,7 +95,7 @@ def main() -> None:
     pipe = Pipeline(
         steps=[
             ("scaler", StandardScaler()),
-            ("clf", LogisticRegression(max_iter=500, C=args.C, penalty="l2", solver="lbfgs", class_weight="balanced")),
+            ("clf", LogisticRegression(max_iter=500, C=args.C, penalty="l2", solver="liblinear", class_weight="balanced")),
         ]
     )
     pipe.fit(X, y)
