@@ -29,6 +29,7 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
+from sklearn.model_selection import StratifiedKFold
 
 # Permite ejecución desde carpeta dataset_neuma
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -41,26 +42,29 @@ def load_embeddings(paths: List[str]) -> np.ndarray:
     return np.stack(vecs, axis=0)
 
 
-def compute_auc(X: np.ndarray, y: np.ndarray, C: float, seed: int) -> float:
-    clf = LogisticRegression(
-        penalty="l2",
-        C=C,
-        solver="liblinear",
-        random_state=seed,
-        class_weight="balanced",
-        max_iter=500,
-    )
-    clf.fit(X, y)
-    y_score = clf.predict_proba(X)[:, 1]
-    return float(roc_auc_score(y, y_score))
+def compute_auc_cv(X: np.ndarray, y: np.ndarray, C: float, seed: int, n_splits: int) -> float:
+    cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    aucs = []
+    for train_idx, test_idx in cv.split(X, y):
+        clf = LogisticRegression(
+            penalty="l2",
+            C=C,
+            solver="liblinear",
+            class_weight="balanced",
+            max_iter=500,
+        )
+        clf.fit(X[train_idx], y[train_idx])
+        y_score = clf.predict_proba(X[test_idx])[:, 1]
+        aucs.append(roc_auc_score(y[test_idx], y_score))
+    return float(np.mean(aucs))
 
 
-def permutation_test_auc(X: np.ndarray, y: np.ndarray, n_perm: int, C: float, seed: int) -> np.ndarray:
+def permutation_test_auc_cv(X: np.ndarray, y: np.ndarray, n_perm: int, C: float, seed: int, n_splits: int) -> np.ndarray:
     rng = np.random.RandomState(seed)
     auc_perm = np.zeros(n_perm, dtype=float)
     for i in range(n_perm):
         y_perm = rng.permutation(y)
-        auc_perm[i] = compute_auc(X, y_perm, C=C, seed=seed)
+        auc_perm[i] = compute_auc_cv(X, y_perm, C=C, seed=seed, n_splits=n_splits)
         if (i + 1) % 50 == 0:
             print(f"  perm {i+1}/{n_perm} ...")
     return auc_perm
@@ -73,6 +77,7 @@ def main() -> None:
     parser.add_argument("--n-perm", type=int, default=1000)
     parser.add_argument("--C", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--n-splits", type=int, default=5)
     parser.add_argument("--out-img", type=Path, default=Path("./data/EDA/eda_results_img/clip_auc_permtest.png"))
     parser.add_argument("--out-npy", type=Path, default=Path("./data/EDA/eda_results_tabular/clip_auc_permtest.npy"))
     args = parser.parse_args()
@@ -114,13 +119,13 @@ def main() -> None:
     X = load_embeddings(df["embedding_path"].tolist())
     y = df["y"].to_numpy()
 
-    auc_obs = compute_auc(X, y, C=args.C, seed=args.seed)
-    print("== Permutation test (AUC) ==")
+    auc_obs = compute_auc_cv(X, y, C=args.C, seed=args.seed, n_splits=args.n_splits)
+    print("== Permutation test (AUC, Stratified CV) ==")
     print(f"Q1={q1:.4f}  Q3={q3:.4f}")
     print(f"Used samples: {len(df)} (class0={int((y==0).sum())}, class1={int((y==1).sum())})")
-    print(f"AUC observed: {auc_obs:.4f}")
+    print(f"AUC observed (mean CV={args.n_splits}): {auc_obs:.4f}")
 
-    auc_perm = permutation_test_auc(X, y, n_perm=args.n_perm, C=args.C, seed=args.seed)
+    auc_perm = permutation_test_auc_cv(X, y, n_perm=args.n_perm, C=args.C, seed=args.seed, n_splits=args.n_splits)
     p_emp = (float(np.sum(auc_perm >= auc_obs)) + 1.0) / (len(auc_perm) + 1.0)
     print(f"Empirical p-value: {p_emp:.6f}")
 
@@ -144,4 +149,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
