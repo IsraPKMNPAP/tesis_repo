@@ -1,0 +1,41 @@
+{
+  "label_col": "bought",
+  "cat_cols": [
+    "Age",
+    "Gender",
+    "MaritalStatus",
+    "Children",
+    "WeeklySupermarketVisits",
+    "SupermarketVisitDuration",
+    "PriceImpact",
+    "BrandImpact",
+    "DiscountImpact",
+    "AdvertisementImpact",
+    "SuggestionImpact",
+    "ShoppingList",
+    "VerbalVisual",
+    "Spontaneous",
+    "VarietySeeker",
+    "UtilitarianMotivation",
+    "HedonicMotivation",
+    "Extraversion",
+    "Neuroticism",
+    "Agreeableness",
+    "Openness",
+    "Conscientiousness",
+    "BargainHunter",
+    "Offer_2x1",
+    "Offer_50%",
+    "Offer_No",
+    "DominantHand_ambidextrous",
+    "DominantHand_left",
+    "DominantHand_right",
+    "Education_NI",
+    "Education_basic",
+    "Education_college",
+    "Education_master"
+  ],
+  "num_cols": [
+    "Price"
+  ]
+}
