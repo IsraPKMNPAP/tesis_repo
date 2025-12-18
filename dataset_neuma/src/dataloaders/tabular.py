@@ -23,7 +23,14 @@ class TabularDataset(Dataset):
     ) -> None:
         self.label = torch.tensor(df[label_col].to_numpy(), dtype=torch.float32)
 
-        self.ohe = ohe or OneHotEncoder(handle_unknown="ignore", sparse=False)
+        if ohe is None:
+            try:
+                self.ohe = OneHotEncoder(handle_unknown="ignore", sparse=False)
+            except TypeError:
+                # scikit-learn >=1.2 usa sparse_output en lugar de sparse
+                self.ohe = OneHotEncoder(handle_unknown="ignore", sparse_output=False)
+        else:
+            self.ohe = ohe
         cat_data = self.ohe.fit_transform(df[cat_cols]) if ohe is None else self.ohe.transform(df[cat_cols])
 
         self.scaler = scaler or StandardScaler()
