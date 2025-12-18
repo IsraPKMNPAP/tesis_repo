@@ -108,6 +108,9 @@ def main() -> None:
     emb_index.columns = emb_index.columns.str.lower()
     tab_df = pd.read_csv(args.tabular)
     tab_df.columns = tab_df.columns.str.lower()
+    # Renombrar ID_sub -> subject si existe
+    if "id_sub" in tab_df.columns:
+        tab_df = tab_df.rename(columns={"id_sub": "subject"})
 
     cfg = json.loads(args.config.read_text(encoding="utf-8"))
     cat_cols = [c.lower() for c in cfg["cat_cols"]]
@@ -118,7 +121,9 @@ def main() -> None:
     merged = prod_df.merge(emb_index[["page", "product_id", "embedding_path"]], on=["page", "product_id"], how="left")
     merged = merged.dropna(subset=["embedding_path", label_col, "subject"])
 
-    # Merge con tabular sujeto
+    # Merge con tabular sujeto (usa subject)
+    if "subject" not in tab_df.columns:
+        raise SystemExit("La tabla tabular no contiene columna 'subject' (ni 'ID_sub' renombrada).")
     merged = merged.merge(tab_df, on="subject", how="left")
     merged = merged.dropna(subset=cat_cols + num_cols + [label_col])
 
