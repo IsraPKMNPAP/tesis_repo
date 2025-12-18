@@ -68,7 +68,10 @@ def load_tabular(
 
 def save_preprocessors(ohe: OneHotEncoder, scaler: StandardScaler, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
+    cats_serializable = []
+    for cat in ohe.categories_:
+        cats_serializable.append([c.item() if hasattr(c, "item") else c for c in cat])
     with open(out_dir / "ohe.json", "w", encoding="utf-8") as f:
-        json.dump({"categories": [list(cat) for cat in ohe.categories_]}, f, ensure_ascii=False, indent=2)
+        json.dump({"categories": cats_serializable}, f, ensure_ascii=False, indent=2)
     np.save(out_dir / "scaler_mean.npy", scaler.mean_)
     np.save(out_dir / "scaler_scale.npy", scaler.scale_)
