@@ -47,7 +47,13 @@ def load_tabular(
     shuffle: bool = True,
 ) -> Tuple[DataLoader, OneHotEncoder, StandardScaler, int]:
     df = pd.read_csv(csv_path)
-    ds = TabularDataset(df, cat_cols, num_cols, label_col)
+    # Normaliza nombres de columnas a minúsculas
+    df.columns = df.columns.str.lower()
+    cat_cols_l = [c.lower() for c in cat_cols]
+    num_cols_l = [c.lower() for c in num_cols]
+    label_col_l = label_col.lower()
+
+    ds = TabularDataset(df, cat_cols_l, num_cols_l, label_col_l)
     loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle)
     input_dim = ds.x.shape[1]
     return loader, ds.ohe, ds.scaler, input_dim
@@ -59,4 +65,3 @@ def save_preprocessors(ohe: OneHotEncoder, scaler: StandardScaler, out_dir: Path
         json.dump({"categories": [list(cat) for cat in ohe.categories_]}, f, ensure_ascii=False, indent=2)
     np.save(out_dir / "scaler_mean.npy", scaler.mean_)
     np.save(out_dir / "scaler_scale.npy", scaler.scale_)
-

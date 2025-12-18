@@ -79,9 +79,9 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = json.loads(args.config.read_text(encoding="utf-8"))
-    cat_cols = cfg["cat_cols"]
-    num_cols = cfg["num_cols"]
-    label_col = cfg.get("label_col", "bought")
+    cat_cols = [c.lower() for c in cfg["cat_cols"]]
+    num_cols = [c.lower() for c in cfg["num_cols"]]
+    label_col = cfg.get("label_col", "bought").lower()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     loader, ohe, scaler, input_dim = load_tabular(args.data, cat_cols, num_cols, label_col, batch_size=args.batch_size, shuffle=True)
