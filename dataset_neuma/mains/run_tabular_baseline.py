@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -24,8 +25,13 @@ import torch.nn as nn
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from torch.utils.data import DataLoader
 
-from dataset_neuma.src.dataloaders.tabular import load_tabular, save_preprocessors
-from dataset_neuma.src.models.tabular_mlp import TabularMLP
+# Permite ejecución desde carpeta dataset_neuma
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+if str(PACKAGE_ROOT) not in sys.path:
+    sys.path.insert(0, str(PACKAGE_ROOT))
+
+from src.dataloaders.tabular import load_tabular, save_preprocessors
+from src.models.tabular_mlp import TabularMLP
 
 
 def train_one_epoch(model, loader, optimizer, criterion, device):
