@@ -111,6 +111,13 @@ def main() -> None:
     # Renombrar ID_sub -> subject si existe
     if "id_sub" in tab_df.columns:
         tab_df = tab_df.rename(columns={"id_sub": "subject"})
+    # Forzar subject a string en todos los dataframes
+    if "subject" in prod_df.columns:
+        prod_df["subject"] = prod_df["subject"].astype(str)
+    if "subject" in tab_df.columns:
+        tab_df["subject"] = tab_df["subject"].astype(str)
+    if "subject" in emb_index.columns:
+        emb_index["subject"] = emb_index["subject"].astype(str)
 
     cfg = json.loads(args.config.read_text(encoding="utf-8"))
     cat_cols = [c.lower() for c in cfg["cat_cols"]]
