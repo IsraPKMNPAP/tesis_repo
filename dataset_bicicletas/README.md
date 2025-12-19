@@ -22,6 +22,8 @@ Recomendacion: situarse dentro de `dataset_bicicletas` antes de ejecutar.
 - Baseline (tabular, sklearn) + opcionales (MNLogit/Torch)
   - `python mains/run_training.py --csv data/processed/dataset_bicicletas_clean.csv --features-file utils/feature_sets/exp1.json --label action --mnlogit --torch --no-clean --prefix baseline_exp`
   - Flags y defaults: `--features` (lista) | `--features-file` | `--label action` | `--mnlogit` | `--torch` | `--no-clean` | `--prefix None`
+- ICLV determinista (tabular -> latentes -> utilidad)
+  - `python mains/run_icl_v.py --pkl data/processed/multimodal_av_join_audio_cached.pkl --features-file utils/feature_sets/exp1.json --label-col action_proc --n-latent 3 --alpha 1.0 --batch-size 64 --epochs 50`
 
 - Linkeo de tensores de video a pickle (GPU)
   - `python mains/run_link_video_tensors.py --pickle-in data/raw/X_proc_final.pkl --linux-root /mnt/otra_particion/home/israel_gpu_data/video_tensors --timestamp-col timestamp --out-pickle data/processed/X_proc_final_linked.pkl --out-column gpu_tensor_path`
