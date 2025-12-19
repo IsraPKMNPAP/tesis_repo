@@ -31,6 +31,7 @@ import torch.nn as nn
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, Subset
+import re
 
 # Permite ejecución desde carpeta dataset_neuma
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -96,6 +97,7 @@ def main() -> None:
     parser.add_argument("--img-proj", type=int, default=128)
     parser.add_argument("--val-size", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--premerged", action="store_true", help="Indica que el CSV de products ya contiene columnas tabulares (no hace merge).")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -124,9 +126,23 @@ def main() -> None:
     num_cols = [c.lower() for c in cfg["num_cols"]]
     label_col = cfg.get("label_col", "bought").lower()
 
+    # Funciones para parsear PageX/ProductY y subject Sxx
+    def page_num(val: str) -> int:
+        m = re.match(r"page(\d+)", str(val).lower())
+        return int(m.group(1)) if m else None
+
+    def prod_num(val: str) -> int:
+        m = re.match(r"product(\d+)", str(val).lower())
+        return int(m.group(1)) if m else None
+
+    def subj_num(val: str) -> str:
+        m = re.match(r"s0*(\d+)", str(val).lower())
+        return m.group(1) if m else str(val)
+
     # Merge products con embeddings
     merged = prod_df.merge(emb_index[["page", "product_id", "embedding_path"]], on=["page", "product_id"], how="left")
-    # Asegurar que la etiqueta exista; si vino con sufijo (por merges previos) la normalizamos.
+
+    # Normalizar etiqueta
     if label_col not in merged.columns:
         candidates = [c for c in merged.columns if c.startswith(label_col)]
         if candidates:
@@ -134,19 +150,39 @@ def main() -> None:
         else:
             raise SystemExit(f"No se encontró la columna de etiqueta '{label_col}' en products; cols: {merged.columns.tolist()}")
 
-    merged = merged.dropna(subset=["embedding_path", label_col, "subject"])
+    # Si no está subject en products, intenta derivarlo (pero aquí sí está). Formatear para matching con tabular numérica.
+    merged["subject_norm"] = merged["subject"].apply(subj_num)
 
-    # Merge con tabular sujeto (usa subject)
-    if "subject" not in tab_df.columns:
-        raise SystemExit("La tabla tabular no contiene columna 'subject' (ni 'ID_sub' renombrada).")
-    merged = merged.merge(tab_df, on="subject", how="left")
-    # Validar existencia de columnas tabulares
-    missing_cols = [c for c in (cat_cols + num_cols) if c not in merged.columns]
-    if missing_cols:
-        raise SystemExit(f"Faltan columnas tabulares en el merge: {missing_cols}")
-    if label_col not in merged.columns:
-        raise SystemExit(f"No se encontró la columna de etiqueta '{label_col}' tras el merge con tabular.")
-    merged = merged.dropna(subset=cat_cols + num_cols + [label_col])
+    if not args.premerged:
+        # Preparar llaves para tabular: subject y id_prod
+        if "subject" not in tab_df.columns:
+            raise SystemExit("La tabla tabular no contiene columna 'subject' (ni 'ID_sub' renombrada).")
+        tab_df["subject_norm"] = tab_df["subject"].apply(lambda s: str(int(s)) if str(s).isdigit() else str(s))
+
+        # Calcular id_prod en products: 24*(page-1)+product
+        merged["page_num"] = merged["page"].apply(page_num)
+        merged["prod_num"] = merged["product_id"].apply(prod_num)
+        merged["id_prod_key"] = merged.apply(lambda r: 24 * (r["page_num"] - 1) + r["prod_num"] if pd.notna(r["page_num"]) and pd.notna(r["prod_num"]) else np.nan, axis=1)
+
+        if "id_prod" in tab_df.columns:
+            merged = merged.merge(
+                tab_df,
+                left_on=["subject_norm", "id_prod_key"],
+                right_on=["subject_norm", "id_prod"],
+                how="left",
+                suffixes=("", "_tab"),
+            )
+        else:
+            raise SystemExit("La tabla tabular no contiene columna 'id_prod' para la llave de producto.")
+
+        merged = merged.dropna(subset=["embedding_path", label_col])
+        # Validar columnas tabulares
+        missing_cols = [c for c in (cat_cols + num_cols) if c not in merged.columns]
+        if missing_cols:
+            raise SystemExit(f"Faltan columnas tabulares en el merge: {missing_cols}")
+        merged = merged.dropna(subset=cat_cols + num_cols + [label_col])
+    else:
+        merged = merged.dropna(subset=["embedding_path", label_col, "subject"])
 
     merged[label_col] = merged[label_col].astype(int)
 
