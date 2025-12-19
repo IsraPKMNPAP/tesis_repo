@@ -71,7 +71,6 @@ def concat_eeg_segments(
     """
     df = df_idx.copy()
     df.columns = df.columns.str.lower()
-    df = df[df["modality"] == "eeg"]
     if "subject" in df.columns:
         df["subject_norm"] = df["subject"].apply(subj_num)
     else:
