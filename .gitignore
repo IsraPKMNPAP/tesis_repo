@@ -4,5 +4,5 @@
 *.pdf
 __pycache__/
 .env
-.pkl
-.json
+*.pkl
+*.json
