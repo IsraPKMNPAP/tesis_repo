@@ -73,6 +73,32 @@ def prepare_preprocessor(df: pd.DataFrame, cols: Sequence[str], scaler: str = "s
     return mat, preprocessor
 
 
+def encode_indicator_blocks(
+    df_tr: pd.DataFrame, df_val: pd.DataFrame, cols: Sequence[str]
+) -> tuple[np.ndarray, np.ndarray]:
+    """Convierte indicadores mixtos a numerico (factoriza strings/categorias)."""
+    tr_blocks = []
+    val_blocks = []
+    for col in cols:
+        if pd.api.types.is_numeric_dtype(df_tr[col]):
+            tr_col = df_tr[col].fillna(df_tr[col].median())
+            val_col = df_val[col].fillna(df_tr[col].median())
+        else:
+            # Factorizar sobre train y aplicar mapping al val; out-of-vocab -> -1
+            tr_str = df_tr[col].astype(str)
+            uniq = tr_str.unique().tolist()
+            mapping = {v: i for i, v in enumerate(uniq)}
+            tr_col = tr_str.map(mapping).fillna(-1)
+            val_col = df_val[col].astype(str).map(mapping).fillna(-1)
+        tr_blocks.append(tr_col.to_numpy(dtype=np.float32))
+        val_blocks.append(val_col.to_numpy(dtype=np.float32))
+    if not tr_blocks:
+        return np.zeros((len(df_tr), 0), dtype=np.float32), np.zeros((len(df_val), 0), dtype=np.float32)
+    tr_mat = np.stack(tr_blocks, axis=1).astype(np.float32)
+    val_mat = np.stack(val_blocks, axis=1).astype(np.float32)
+    return tr_mat, val_mat
+
+
 def build_datasets(
     df_tr: pd.DataFrame,
     df_val: pd.DataFrame,
@@ -90,12 +116,7 @@ def build_datasets(
     X_u_val = preproc_u.transform(convertir_a_categorico(categorias_a_str(df_val[obs_u_cols].copy())))
 
     if indicator_cols:
-        ind_tr = df_tr[indicator_cols].copy()
-        ind_val = df_val[indicator_cols].copy()
-        ind_tr = ind_tr.fillna(ind_tr.median(numeric_only=True))
-        ind_val = ind_val.fillna(ind_tr.median(numeric_only=True))
-        ind_tr_mat = ind_tr.to_numpy(dtype=np.float32)
-        ind_val_mat = ind_val.to_numpy(dtype=np.float32)
+        ind_tr_mat, ind_val_mat = encode_indicator_blocks(df_tr[indicator_cols].copy(), df_val[indicator_cols].copy(), indicator_cols)
     else:
         ind_tr_mat = np.zeros((len(df_tr), 0), dtype=np.float32)
         ind_val_mat = np.zeros((len(df_val), 0), dtype=np.float32)
