@@ -126,12 +126,26 @@ def main() -> None:
 
     # Merge products con embeddings
     merged = prod_df.merge(emb_index[["page", "product_id", "embedding_path"]], on=["page", "product_id"], how="left")
+    # Asegurar que la etiqueta exista; si vino con sufijo (por merges previos) la normalizamos.
+    if label_col not in merged.columns:
+        candidates = [c for c in merged.columns if c.startswith(label_col)]
+        if candidates:
+            merged = merged.rename(columns={candidates[0]: label_col})
+        else:
+            raise SystemExit(f"No se encontró la columna de etiqueta '{label_col}' en products; cols: {merged.columns.tolist()}")
+
     merged = merged.dropna(subset=["embedding_path", label_col, "subject"])
 
     # Merge con tabular sujeto (usa subject)
     if "subject" not in tab_df.columns:
         raise SystemExit("La tabla tabular no contiene columna 'subject' (ni 'ID_sub' renombrada).")
     merged = merged.merge(tab_df, on="subject", how="left")
+    # Validar existencia de columnas tabulares
+    missing_cols = [c for c in (cat_cols + num_cols) if c not in merged.columns]
+    if missing_cols:
+        raise SystemExit(f"Faltan columnas tabulares en el merge: {missing_cols}")
+    if label_col not in merged.columns:
+        raise SystemExit(f"No se encontró la columna de etiqueta '{label_col}' tras el merge con tabular.")
     merged = merged.dropna(subset=cat_cols + num_cols + [label_col])
 
     merged[label_col] = merged[label_col].astype(int)
