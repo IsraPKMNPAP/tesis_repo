@@ -1,22 +1,19 @@
 """
-Construye un dataset de unión multimodal (imágenes + tabular + EEG concatenado) tomando como referencia products_all_with_images.csv.
+Construye un dataset de unión multimodal (imágenes + perfiles + EEG concatenado) tomando como referencia products_all_with_images.csv.
 
-Pasos:
-  1) Carga products_all_with_images.csv (referencia completa de decisiones).
-  2) Agrega embedding_path desde embeddings_index.csv (CLIP).
-  3) Hace merge con datos tabulares de sujetos (data_latente_neuma.csv) usando claves:
-       subject_norm (S01 -> "1"), id_prod_key = 24*(page_num-1)+prod_num.
-  4) Agrega ruta de EEG concatenado por (subject, page, product_id) a partir de eeg_segments_index.csv:
-       - Corta segmentos start:end en el npy de cada sujeto.
-       - Ordena por start y concatena en el eje temporal.
-       - Guarda npy en eeg_concat_dir y anota ruta/shape.
-  5) Guarda CSV final con todas las columnas de productos + embedding_path + tabular + eeg_concat_path/eeg_shape.
+Flujo:
+  1) products_all_with_images.csv (referencia completa de decisiones).
+  2) embeddings_index.csv -> agrega embedding_path.
+  3) profiles_all.csv -> merge por subject_norm (S01 -> "1"); elimina columna sucia (eduction/education.1/marital_status duplicada).
+  4) eeg_segments_index.csv -> concatena segmentos por (subject, page, product_id), descarta segmentos <0.5s si hay fs.
+  5) Marca columnas con <=50 valores únicos como category.
+  6) Guarda CSV final con rutas a embeddings y eeg_concat_path/eeg_shape.
 
 Uso (desde dataset_neuma):
   python -m mains.build_multimodal_join \
     --products ./data/processed/products_all_with_images.csv \
     --embeddings-dir ./data/processed/image_embeddings \
-    --tabular /mnt/otra_particion/home/israel_gpu_data/dataset_neuma/processed/data_latente_neuma.csv \
+    --profiles ./data/processed/profiles_all.csv \
     --eeg-index ./data/processed/eeg_segments_index.csv \
     --out-csv ./data/processed/multimodal_join.csv \
     --eeg-concat-dir ./data/processed/eeg_concat
@@ -25,62 +22,49 @@ Uso (desde dataset_neuma):
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List
+import re
 
 import numpy as np
 import pandas as pd
 
-# Permite ejecución desde carpeta dataset_neuma
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
 
 def page_num(val: str) -> int:
-    import re
-
     m = re.match(r"page(\d+)", str(val).lower())
     return int(m.group(1)) if m else None
 
 
 def prod_num(val: str) -> int:
-    import re
-
     m = re.match(r"product(\d+)", str(val).lower())
     return int(m.group(1)) if m else None
 
 
 def subj_num(val: str) -> str:
-    import re
-
     m = re.match(r"s0*(\d+)", str(val).lower())
     return m.group(1) if m else str(val)
 
 
-def concat_eeg_segments(
-    df_idx: pd.DataFrame,
-    eeg_concat_dir: Path,
-    min_duration_s: float = 0.5,
-) -> pd.DataFrame:
-    """
-    df_idx: eeg_segments_index (columnas: subject, page, product_id, npy_path, start, end, bought...)
-    Retorna df con columnas subject_norm, page, product_id, eeg_concat_path, eeg_shape
-    """
+def concat_eeg_segments(df_idx: pd.DataFrame, eeg_concat_dir: Path, min_duration_s: float = 0.5) -> pd.DataFrame:
     df = df_idx.copy()
     df.columns = df.columns.str.lower()
-    if "subject" in df.columns:
-        df["subject_norm"] = df["subject"].apply(subj_num)
-    else:
+    if "subject" not in df.columns:
         raise SystemExit("eeg_segments_index no contiene 'subject'")
-    # Para orden, usar start asc
+    df["subject_norm"] = df["subject"].apply(subj_num)
     df = df.sort_values(["subject_norm", "page", "product_id", "start"])
 
     eeg_concat_dir.mkdir(parents=True, exist_ok=True)
     rows = []
     cache: Dict[str, np.ndarray] = {}
+
+    fs_global = None
+    if "fs" in df.columns and df["fs"].notna().any():
+        fs_global = df["fs"].dropna().iloc[0]
 
     for (subj, page, prod), grp in df.groupby(["subject_norm", "page", "product_id"]):
         segments = []
@@ -92,14 +76,10 @@ def concat_eeg_segments(
             start, end = int(r["start"]), int(r["end"])
             end = min(end, arr.shape[1] - 1)
             seg = arr[:, start : end + 1]
-            # Filtrar por duración mínima (Fs viene en meta?)
-            duration_s = None
-            if "fs" in df_idx.columns:
-                fs_val = df_idx["fs"].dropna().iloc[0]
-                duration_s = (seg.shape[1]) / fs_val if fs_val else None
-            if duration_s is not None and duration_s < min_duration_s:
-                continue
-            # Si no hay fs en df_idx, no se puede filtrar; se concatena de todos modos
+            if fs_global:
+                duration_s = seg.shape[1] / fs_global
+                if duration_s < min_duration_s:
+                    continue
             segments.append(seg)
         if not segments:
             continue
@@ -119,7 +99,7 @@ def concat_eeg_segments(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Construye join multimodal (perfil+imagen+EEG concatenado).")
+    parser = argparse.ArgumentParser(description="Construye join multimodal (imagen + perfiles + EEG concatenado).")
     parser.add_argument("--products", type=Path, default=Path("./data/processed/products_all_with_images.csv"))
     parser.add_argument("--embeddings-dir", type=Path, default=Path("./data/processed/image_embeddings"))
     parser.add_argument("--profiles", type=Path, default=Path("./data/processed/profiles_all.csv"))
@@ -128,44 +108,39 @@ def main() -> None:
     parser.add_argument("--eeg-concat-dir", type=Path, default=Path("./data/processed/eeg_concat"))
     args = parser.parse_args()
 
+    # Carga y diagnóstico inicial
     prod_df = pd.read_csv(args.products)
     prod_df.columns = prod_df.columns.str.lower()
     emb_index = pd.read_csv(args.embeddings_dir / "embeddings_index.csv")
     emb_index.columns = emb_index.columns.str.lower()
     prof_df = pd.read_csv(args.profiles)
-    # Eliminar columna errónea si existe
-    if "eduction" in prof_df.columns:
-        prof_df = prof_df.drop(columns=["eduction"])
     prof_df.columns = prof_df.columns.str.lower()
-    
 
+    print(f"[diag] products rows={len(prod_df)} cols={len(prod_df.columns)}")
+    print(f"[diag] embeddings_index rows={len(emb_index)} cols={len(emb_index.columns)}")
+    print(f"[diag] profiles rows={len(prof_df)} cols={len(prof_df.columns)}")
+
+    # Limpiar columnas sucias en perfiles
+    for bad in ["eduction", "education.1", "marital_status"]:
+        if bad in prof_df.columns:
+            prof_df = prof_df.drop(columns=[bad])
+
+    # Normalización de llaves
     prod_df["subject_norm"] = prod_df["subject"].astype(str).apply(subj_num)
-    prof_df["subject_norm"] = prof_df["subject"].astype(str).apply(lambda s: subj_num(s))
+    prof_df["subject_norm"] = prof_df["subject"].astype(str).apply(subj_num)
     if "subject" in emb_index.columns:
         emb_index["subject_norm"] = emb_index["subject"].astype(str).apply(subj_num)
 
-    # keys num
     prod_df["page_num"] = prod_df["page"].apply(page_num)
     prod_df["prod_num"] = prod_df["product_id"].apply(prod_num)
-    prod_df["id_prod_key"] = prod_df.apply(
-        lambda r: 24 * (r["page_num"] - 1) + r["prod_num"] if pd.notna(r["page_num"]) and pd.notna(r["prod_num"]) else np.nan,
-        axis=1,
-    )
 
-    # merge embeddings (left)
+    # Merge embeddings
     merged = prod_df.merge(emb_index[["page", "product_id", "embedding_path"]], on=["page", "product_id"], how="left")
 
-    # merge perfiles por sujeto (solo subject_norm)
-    if "subject_norm" not in prof_df.columns:
-        raise SystemExit("El CSV de perfiles no tiene subject_norm/subject.")
-    merged = merged.merge(
-        prof_df,
-        on="subject_norm",
-        how="left",
-        suffixes=("", "_prof"),
-    )
+    # Merge perfiles por subject_norm
+    merged = merged.merge(prof_df, on="subject_norm", how="left", suffixes=("", "_prof"))
 
-    # agregar EEG concatenado
+    # Agregar EEG concatenado
     eeg_idx = pd.read_csv(args.eeg_index)
     eeg_concat_df = concat_eeg_segments(eeg_idx, args.eeg_concat_dir)
     merged = merged.merge(
@@ -174,24 +149,27 @@ def main() -> None:
         how="left",
     )
 
-    # Convertir columnas con pocos valores únicos a category (para etapas futuras de OHE)
+    # Convertir columnas con <=50 valores únicos a category
     for col in merged.columns:
         if col in ["subject_norm", "subject", "page", "product_id", "embedding_path", "eeg_concat_path", "eeg_shape"]:
             continue
         try:
-            nunq = merged[col].nunique(dropna=True)
-            if nunq <= 50:
+            if merged[col].nunique(dropna=True) <= 50:
                 merged[col] = merged[col].astype("category")
         except Exception:
-            # si la columna no permite nunique, la dejamos tal cual
             pass
-    
-    # Eliminamos columna sucia
-    if 'education.1' in merged.columns:
-        merged.drop('education.1',axis=1)
-    # Imprimimos nulos para verificar el merge
-    for col in merged.columns:
-        print("Columna: "+str(col),merged[col].isna().sum())
+
+    # Eliminar columnas duplicadas residuales
+    drop_cols = [c for c in merged.columns if c.endswith(".1") or c.endswith("_prof")]
+    for dc in drop_cols:
+        if dc in merged.columns and dc.replace(".1", "") in merged.columns:
+            merged = merged.drop(columns=[dc])
+
+    # Diagnóstico de nulos clave
+    print(f"[diag] rows after merge: {len(merged)}")
+    for key in ["embedding_path", "eeg_concat_path", "education", "maritalstatus"]:
+        if key in merged.columns:
+            print(f"[diag] nulls {key}: {merged[key].isna().sum()}")
 
     args.out_csv.parent.mkdir(parents=True, exist_ok=True)
     merged.to_csv(args.out_csv, index=False)
@@ -201,3 +179,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
