@@ -177,8 +177,13 @@ def main() -> None:
     for col in merged.columns:
         if col in ["subject_norm", "subject", "page", "product_id", "embedding_path", "eeg_concat_path", "eeg_shape"]:
             continue
-        if merged[col].nunique(dropna=True) <= 50:
-            merged[col] = merged[col].astype("category")
+        try:
+            nunq = merged[col].nunique(dropna=True)
+            if nunq <= 50:
+                merged[col] = merged[col].astype("category")
+        except Exception:
+            # si la columna no permite nunique, la dejamos tal cual
+            pass
 
     args.out_csv.parent.mkdir(parents=True, exist_ok=True)
     merged.to_csv(args.out_csv, index=False)
