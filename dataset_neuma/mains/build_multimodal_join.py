@@ -133,10 +133,11 @@ def main() -> None:
     emb_index = pd.read_csv(args.embeddings_dir / "embeddings_index.csv")
     emb_index.columns = emb_index.columns.str.lower()
     prof_df = pd.read_csv(args.profiles)
-    prof_df.columns = prof_df.columns.str.lower()
     # Eliminar columna errónea si existe
     if "eduction" in prof_df.columns:
         prof_df = prof_df.drop(columns=["eduction"])
+    prof_df.columns = prof_df.columns.str.lower()
+    
 
     prod_df["subject_norm"] = prod_df["subject"].astype(str).apply(subj_num)
     prof_df["subject_norm"] = prof_df["subject"].astype(str).apply(lambda s: subj_num(s))
