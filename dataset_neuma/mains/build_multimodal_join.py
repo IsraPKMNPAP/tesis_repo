@@ -114,6 +114,10 @@ def main() -> None:
     emb_index = pd.read_csv(args.embeddings_dir / "embeddings_index.csv")
     emb_index.columns = emb_index.columns.str.lower()
     prof_df = pd.read_csv(args.profiles)
+    # eliminar columnas sucias antes de normalizar
+    for bad in ["education", "Education", "eduction", "education.1", "marital_status"]:
+        if bad in prof_df.columns:
+            prof_df = prof_df.drop(columns=[bad])
     prof_df.columns = prof_df.columns.str.lower()
 
     print(f"[diag] products rows={len(prod_df)} cols={len(prod_df.columns)}")
@@ -149,6 +153,9 @@ def main() -> None:
         how="left",
     )
 
+    # Filtrar filas sin EEG concatenado (mantenemos solo multimodal completo)
+    merged = merged.dropna(subset=["eeg_concat_path"])
+
     # Convertir columnas con <=50 valores únicos a category
     for col in merged.columns:
         if col in ["subject_norm", "subject", "page", "product_id", "embedding_path", "eeg_concat_path", "eeg_shape"]:
@@ -159,6 +166,14 @@ def main() -> None:
         except Exception:
             pass
 
+    # Imputar vacíos en columnas categóricas con la moda
+    for col in merged.columns:
+        if str(merged[col].dtype) == "category" or merged[col].dtype == object:
+            if merged[col].isna().any():
+                mode = merged[col].mode(dropna=True)
+                if not mode.empty:
+                    merged[col] = merged[col].fillna(mode.iloc[0])
+
     # Eliminar columnas duplicadas residuales
     drop_cols = [c for c in merged.columns if c.endswith(".1") or c.endswith("_prof")]
     for dc in drop_cols:
@@ -166,7 +181,7 @@ def main() -> None:
             merged = merged.drop(columns=[dc])
 
     # Diagnóstico de nulos clave
-    print(f"[diag] rows after merge: {len(merged)}")
+    print(f"[diag] rows after merge (and drop no-EEG): {len(merged)}")
     for key in ["embedding_path", "eeg_concat_path", "education", "maritalstatus"]:
         if key in merged.columns:
             print(f"[diag] nulls {key}: {merged[key].isna().sum()}")
@@ -179,4 +194,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
