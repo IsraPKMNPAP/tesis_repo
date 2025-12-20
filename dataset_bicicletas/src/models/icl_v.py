@@ -10,7 +10,14 @@ from torch.nn.utils import parameters_to_vector, vector_to_parameters
 
 
 class DeterministicICLV(nn.Module):
-    """Deterministic amortized ICLV (sin integracion Monte Carlo)."""
+    """Deterministic amortized ICLV (sin integracion Monte Carlo).
+
+    Estructura:
+      - Latentes (LT): LT = Gamma(OBS_LT)
+      - Indicadores (OBS_I): I_hat = Lambda(LT)
+      - Utilidad por alternativa j: U_j = ASC_j + beta^T OBS_U_j + delta_j^T LT
+      - P(y=j) = softmax(U)_j
+    """
 
     def __init__(
         self,

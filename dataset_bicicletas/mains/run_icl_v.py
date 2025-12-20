@@ -99,6 +99,28 @@ def encode_indicator_blocks(
     return tr_mat, val_mat
 
 
+def resolve_cols(
+    df: pd.DataFrame,
+    base_features_file: str | None,
+    explicit_cols: Sequence[str] | None,
+    cols_file: str | None,
+    drop_cols: set,
+) -> List[str]:
+    """Resuelve columnas a usar, con prioridad: explicit -> file -> base features file -> infer numeric."""
+    if explicit_cols:
+        cols = list(explicit_cols)
+    elif cols_file:
+        cols = load_features_file(cols_file)
+    elif base_features_file:
+        cols = load_features_file(base_features_file)
+    else:
+        cols = []
+    if not cols:
+        cols = [c for c in df.columns if c not in drop_cols and pd.api.types.is_numeric_dtype(df[c])]
+    cols = [c for c in cols if c in df.columns]
+    return cols
+
+
 def build_datasets(
     df_tr: pd.DataFrame,
     df_val: pd.DataFrame,
@@ -194,8 +216,11 @@ def main():
     ap.add_argument("--label-col", type=str, default="action_proc")
     ap.add_argument("--features-file", type=str, default="utils/feature_sets/exp1.json", help="Archivo con columnas base")
     ap.add_argument("--obs-lt-cols", nargs="*", default=None, help="Columnas observables para latentes")
+    ap.add_argument("--obs-lt-cols-file", type=str, default=None, help="Archivo con columnas OBS_LT (json/txt)")
     ap.add_argument("--obs-u-cols", nargs="*", default=None, help="Columnas observables para utilidad")
-    ap.add_argument("--indicator-cols", nargs="*", default=None, help="Indicadores para el bloque de medicion")
+    ap.add_argument("--obs-u-cols-file", type=str, default=None, help="Archivo con columnas OBS_U (json/txt)")
+    ap.add_argument("--indicator-cols", nargs="*", default=None, help="Indicadores OBS_I para el bloque de medicion")
+    ap.add_argument("--indicator-cols-file", type=str, default=None, help="Archivo con columnas OBS_I (json/txt)")
     ap.add_argument("--n-latent", type=int, default=3, help="Numero de variables latentes")
     ap.add_argument("--alpha", type=float, default=1.0, help="Peso de la loss de medicion")
     ap.add_argument("--delta-shared", action="store_true", help="Usar un delta compartido en vez de por alternativa")
@@ -217,15 +242,6 @@ def main():
     df = pd.read_pickle(pkl_path).reset_index(drop=True)
 
     # Resolver columnas
-    base_features = []
-    if args.features_file:
-        loaded = load_features_file(args.features_file)
-        if loaded:
-            base_features = loaded
-    obs_lt_cols = args.obs_lt_cols or base_features
-    obs_u_cols = args.obs_u_cols or base_features
-    indicator_cols = args.indicator_cols if args.indicator_cols is not None else base_features
-
     drop_cols = {
         args.label_col,
         "frames_route",
@@ -235,13 +251,30 @@ def main():
         "participant",
         "session_id",
     }
-    if not obs_lt_cols:
-        obs_lt_cols = [c for c in df.columns if c not in drop_cols and pd.api.types.is_numeric_dtype(df[c])]
-    if not obs_u_cols:
-        obs_u_cols = obs_lt_cols
-    obs_lt_cols = [c for c in obs_lt_cols if c in df.columns]
-    obs_u_cols = [c for c in obs_u_cols if c in df.columns]
-    indicator_cols = [c for c in (indicator_cols or []) if c in df.columns]
+
+    obs_lt_cols = resolve_cols(
+        df=df,
+        base_features_file=args.features_file,
+        explicit_cols=args.obs_lt_cols,
+        cols_file=args.obs_lt_cols_file,
+        drop_cols=drop_cols,
+    )
+    obs_u_cols = resolve_cols(
+        df=df,
+        base_features_file=args.features_file,
+        explicit_cols=args.obs_u_cols,
+        cols_file=args.obs_u_cols_file,
+        drop_cols=drop_cols,
+    )
+    indicator_cols = resolve_cols(
+        df=df,
+        base_features_file=args.features_file,
+        explicit_cols=args.indicator_cols,
+        cols_file=args.indicator_cols_file,
+        drop_cols=set(),  # para indicadores permitimos non-numeric; se codifican
+    )
+    if not indicator_cols:
+        indicator_cols = []
 
     if not obs_lt_cols or not obs_u_cols:
         raise ValueError("No se encontraron columnas validas para obs_lt u obs_u.")
@@ -329,6 +362,9 @@ def main():
         "obs_lt_cols": list(obs_lt_cols),
         "obs_u_cols": list(obs_u_cols),
         "indicator_cols": list(indicator_cols),
+        "obs_lt_cols_file": args.obs_lt_cols_file,
+        "obs_u_cols_file": args.obs_u_cols_file,
+        "indicator_cols_file": args.indicator_cols_file,
         "n_latent": args.n_latent,
         "alpha": args.alpha,
         "delta_shared": args.delta_shared,
