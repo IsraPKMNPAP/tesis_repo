@@ -185,6 +185,13 @@ def main() -> None:
         except Exception:
             # si la columna no permite nunique, la dejamos tal cual
             pass
+    
+    # Eliminamos columna sucia
+    if 'education.1' in merged.columns:
+        merged.drop('education.1',axis=1)
+    # Imprimimos nulos para verificar el merge
+    for col in merged.columns:
+        print("Columna: "+str(col),merged[col].isna().sum())
 
     args.out_csv.parent.mkdir(parents=True, exist_ok=True)
     merged.to_csv(args.out_csv, index=False)
