@@ -119,10 +119,10 @@ def concat_eeg_segments(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Construye join multimodal (tabular+imagen+EEG concatenado).")
+    parser = argparse.ArgumentParser(description="Construye join multimodal (perfil+imagen+EEG concatenado).")
     parser.add_argument("--products", type=Path, default=Path("./data/processed/products_all_with_images.csv"))
     parser.add_argument("--embeddings-dir", type=Path, default=Path("./data/processed/image_embeddings"))
-    parser.add_argument("--tabular", type=Path, default=Path("/mnt/otra_particion/home/israel_gpu_data/dataset_neuma/processed/data_latente_neuma.csv"))
+    parser.add_argument("--profiles", type=Path, default=Path("./data/processed/profiles_all.csv"))
     parser.add_argument("--eeg-index", type=Path, default=Path("./data/processed/eeg_segments_index.csv"))
     parser.add_argument("--out-csv", type=Path, default=Path("./data/processed/multimodal_join.csv"))
     parser.add_argument("--eeg-concat-dir", type=Path, default=Path("./data/processed/eeg_concat"))
@@ -132,13 +132,14 @@ def main() -> None:
     prod_df.columns = prod_df.columns.str.lower()
     emb_index = pd.read_csv(args.embeddings_dir / "embeddings_index.csv")
     emb_index.columns = emb_index.columns.str.lower()
-    tab_df = pd.read_csv(args.tabular)
-    tab_df.columns = tab_df.columns.str.lower()
-    if "id_sub" in tab_df.columns:
-        tab_df = tab_df.rename(columns={"id_sub": "subject"})
+    prof_df = pd.read_csv(args.profiles)
+    prof_df.columns = prof_df.columns.str.lower()
+    # Eliminar columna errónea si existe
+    if "eduction" in prof_df.columns:
+        prof_df = prof_df.drop(columns=["eduction"])
 
     prod_df["subject_norm"] = prod_df["subject"].astype(str).apply(subj_num)
-    tab_df["subject_norm"] = tab_df["subject"].astype(str).apply(lambda s: subj_num(s))
+    prof_df["subject_norm"] = prof_df["subject"].astype(str).apply(lambda s: subj_num(s))
     if "subject" in emb_index.columns:
         emb_index["subject_norm"] = emb_index["subject"].astype(str).apply(subj_num)
 
@@ -153,15 +154,14 @@ def main() -> None:
     # merge embeddings (left)
     merged = prod_df.merge(emb_index[["page", "product_id", "embedding_path"]], on=["page", "product_id"], how="left")
 
-    # merge tabular por sujeto + id_prod
-    if "id_prod" not in tab_df.columns:
-        raise SystemExit("El tabular no contiene 'id_prod' para la llave de producto.")
+    # merge perfiles por sujeto (solo subject_norm)
+    if "subject_norm" not in prof_df.columns:
+        raise SystemExit("El CSV de perfiles no tiene subject_norm/subject.")
     merged = merged.merge(
-        tab_df,
-        left_on=["subject_norm", "id_prod_key"],
-        right_on=["subject_norm", "id_prod"],
+        prof_df,
+        on="subject_norm",
         how="left",
-        suffixes=("", "_tab"),
+        suffixes=("", "_prof"),
     )
 
     # agregar EEG concatenado
@@ -172,6 +172,13 @@ def main() -> None:
         on=["subject_norm", "page", "product_id"],
         how="left",
     )
+
+    # Convertir columnas con pocos valores únicos a category (para etapas futuras de OHE)
+    for col in merged.columns:
+        if col in ["subject_norm", "subject", "page", "product_id", "embedding_path", "eeg_concat_path", "eeg_shape"]:
+            continue
+        if merged[col].nunique(dropna=True) <= 50:
+            merged[col] = merged[col].astype("category")
 
     args.out_csv.parent.mkdir(parents=True, exist_ok=True)
     merged.to_csv(args.out_csv, index=False)
