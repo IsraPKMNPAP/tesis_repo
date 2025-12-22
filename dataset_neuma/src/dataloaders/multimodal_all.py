@@ -103,7 +103,18 @@ def prepare_feature_lists(df: pd.DataFrame, label_col: str) -> Tuple[List[str], 
     df = df.copy()
     df.columns = df.columns.str.lower()
     label_col = label_col.lower()
-    exclude = {"subject", "subject_norm", "page", "product_id", "embedding_path", "eeg_concat_path", "eeg_shape", label_col}
+    exclude = {
+        "subject",
+        "subject_norm",
+        "page",
+        "page_num",
+        "product_id",
+        "prod_num",
+        "embedding_path",
+        "eeg_concat_path",
+        "eeg_shape",
+        label_col,
+    }
     cat_cols = []
     num_cols = []
     for c in df.columns:
@@ -150,4 +161,3 @@ def load_multimodal(
     clip_dim = len(np.load(ds.clip_paths[0]))
     eeg_ch = np.load(ds.eeg_paths[0]).shape[0]
     return loader, ds.ohe, ds.scaler, tab_dim, clip_dim, eeg_ch
-

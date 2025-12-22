@@ -105,6 +105,7 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--val-size", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--split-by-subject", action="store_true", help="Si se activa, split se hace por sujeto (subject_norm) para evitar fuga directa.")
     parser.add_argument("--eeg-len", type=int, default=2048)
     parser.add_argument("--img-proj", type=int, default=0, help="Si >0, proyecta el embedding CLIP a esa dimensión.")
     parser.add_argument("--beta-kl", type=float, default=1e-3, help="Peso del término KL en modo VAE.")
@@ -118,14 +119,17 @@ def main() -> None:
     full_df = full_df.dropna(subset=["embedding_path", "eeg_concat_path", "bought"])
     full_df["bought"] = full_df["bought"].astype(int)
 
-    y_all = full_df["bought"].to_numpy()
-
-
-    idxs = np.arange(len(full_df))
-    train_idx, val_idx = train_test_split(idxs, test_size=args.val_size, random_state=args.seed, stratify=y_all)
-
-    train_df = full_df.iloc[train_idx].reset_index(drop=True)
-    val_df = full_df.iloc[val_idx].reset_index(drop=True)
+    if args.split_by_subject and "subject" in full_df.columns:
+        subjects = full_df["subject"].unique()
+        train_subj, val_subj = train_test_split(subjects, test_size=args.val_size, random_state=args.seed)
+        train_df = full_df[full_df["subject"].isin(train_subj)].reset_index(drop=True)
+        val_df = full_df[full_df["subject"].isin(val_subj)].reset_index(drop=True)
+    else:
+        y_all = full_df["bought"].to_numpy()
+        idxs = np.arange(len(full_df))
+        train_idx, val_idx = train_test_split(idxs, test_size=args.val_size, random_state=args.seed, stratify=y_all)
+        train_df = full_df.iloc[train_idx].reset_index(drop=True)
+        val_df = full_df.iloc[val_idx].reset_index(drop=True)
 
     def make_loader(df: pd.DataFrame, ohe=None, scaler=None, shuffle=True):
         # quitar cualquier columna que contenga 'bought' salvo la etiqueta principal
