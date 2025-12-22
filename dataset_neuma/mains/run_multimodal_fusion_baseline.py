@@ -128,12 +128,6 @@ def main() -> None:
         train_df = full_df[full_df["subject"].isin(train_subj)].reset_index(drop=True)
         val_df = full_df[full_df["subject"].isin(val_subj)].reset_index(drop=True)
     else:
-    if args.split_by_subject and "subject" in full_df.columns:
-        subjects = full_df["subject"].unique()
-        train_subj, val_subj = train_test_split(subjects, test_size=args.val_size, random_state=args.seed)
-        train_df = full_df[full_df["subject"].isin(train_subj)].reset_index(drop=True)
-        val_df = full_df[full_df["subject"].isin(val_subj)].reset_index(drop=True)
-    else:
         y_all = full_df["bought"].to_numpy()
         idxs = np.arange(len(full_df))
         train_idx, val_idx = train_test_split(idxs, test_size=args.val_size, random_state=args.seed, stratify=y_all)
