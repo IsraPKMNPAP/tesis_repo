@@ -158,7 +158,7 @@ def main() -> None:
 
     # Convertir columnas con <=50 valores únicos a category
     for col in merged.columns:
-        if col in ["subject_norm", "subject", "page", "product_id", "embedding_path", "eeg_concat_path", "eeg_shape"]:
+        if col in ["subject_norm", "subject", "page", "product_id", "embedding_path", "eeg_concat_path", "eeg_shape", "bought"]:
             continue
         try:
             if merged[col].nunique(dropna=True) <= 50:
