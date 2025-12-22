@@ -120,8 +120,7 @@ def main() -> None:
 
     y_all = full_df["bought"].to_numpy()
 
-    full_df.drop(['bought'],inplace=True)
-    
+
     idxs = np.arange(len(full_df))
     train_idx, val_idx = train_test_split(idxs, test_size=args.val_size, random_state=args.seed, stratify=y_all)
 
