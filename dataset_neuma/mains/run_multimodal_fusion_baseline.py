@@ -100,6 +100,9 @@ def main() -> None:
     parser.add_argument("--data", type=Path, default=Path("./data/processed/multimodal_join.csv"))
     parser.add_argument("--results-dir", type=Path, default=Path("./results/multimodal_fusion_baseline"))
     parser.add_argument("--mode", type=str, default="deterministic", choices=["deterministic", "vae"])
+    parser.add_argument("--use-tabular", action="store_true", help="Usar tabular (si no, se anula tab).")
+    parser.add_argument("--use-clip", action="store_true", help="Usar embeddings CLIP (si no, se anula clip).")
+    parser.add_argument("--use-eeg", action="store_true", help="Usar EEG (si no, se anula EEG).")
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -119,6 +122,12 @@ def main() -> None:
     full_df = full_df.dropna(subset=["embedding_path", "eeg_concat_path", "bought"])
     full_df["bought"] = full_df["bought"].astype(int)
 
+    if args.split_by_subject and "subject" in full_df.columns:
+        subjects = full_df["subject"].unique()
+        train_subj, val_subj = train_test_split(subjects, test_size=args.val_size, random_state=args.seed)
+        train_df = full_df[full_df["subject"].isin(train_subj)].reset_index(drop=True)
+        val_df = full_df[full_df["subject"].isin(val_subj)].reset_index(drop=True)
+    else:
     if args.split_by_subject and "subject" in full_df.columns:
         subjects = full_df["subject"].unique()
         train_subj, val_subj = train_test_split(subjects, test_size=args.val_size, random_state=args.seed)
@@ -156,9 +165,9 @@ def main() -> None:
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if args.mode == "vae":
-        model = FusionVAE(tab_dim=tab_dim, clip_dim=clip_dim, eeg_ch=eeg_ch, img_proj=args.img_proj).to(device)
+        model = FusionVAE(tab_dim=tab_dim if args.use_tabular else 0, clip_dim=clip_dim if args.use_clip else 0, eeg_ch=eeg_ch if args.use_eeg else 0, img_proj=args.img_proj).to(device)
     else:
-        model = FusionClassifier(tab_dim=tab_dim, clip_dim=clip_dim, eeg_ch=eeg_ch, img_proj=args.img_proj).to(device)
+        model = FusionClassifier(tab_dim=tab_dim if args.use_tabular else 0, clip_dim=clip_dim if args.use_clip else 0, eeg_ch=eeg_ch if args.use_eeg else 0, img_proj=args.img_proj).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     criterion = nn.BCEWithLogitsLoss()
 
