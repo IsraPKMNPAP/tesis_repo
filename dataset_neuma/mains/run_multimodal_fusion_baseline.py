@@ -128,6 +128,10 @@ def main() -> None:
     val_df = full_df.iloc[val_idx].reset_index(drop=True)
 
     def make_loader(df: pd.DataFrame, ohe=None, scaler=None, shuffle=True):
+        # quitar cualquier columna que contenga 'bought' salvo la etiqueta principal
+        drop_cols = [c for c in df.columns if ("bought" in c) and (c != "bought")]
+        if drop_cols:
+            df = df.drop(columns=drop_cols)
         cat_cols, num_cols = prepare_feature_lists(df, "bought")
         ds = MultimodalDataset(
             df=df,
