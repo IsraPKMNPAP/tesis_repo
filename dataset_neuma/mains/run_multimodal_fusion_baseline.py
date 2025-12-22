@@ -53,11 +53,17 @@ def collate_fn(batch):
     )
 
 
-def train_one_epoch(model, loader, optimizer, criterion, device, mode="deterministic", beta_kl: float = 1e-3):
+def train_one_epoch(model, loader, optimizer, criterion, device, mode="deterministic", beta_kl: float = 1e-3, use_tab=True, use_clip=True, use_eeg=True):
     model.train()
     total_loss = 0.0
     for tab, clip, eeg, y in loader:
         tab, clip, eeg, y = tab.to(device), clip.to(device), eeg.to(device), y.to(device)
+        if not use_tab:
+            tab = torch.zeros(tab.shape[0], 0, device=device, dtype=tab.dtype)
+        if not use_clip:
+            clip = torch.zeros(clip.shape[0], 0, device=device, dtype=clip.dtype)
+        if not use_eeg:
+            eeg = torch.zeros(eeg.shape[0], 0, device=device, dtype=eeg.dtype)
         optimizer.zero_grad()
         if mode == "vae":
             logits, mu, logvar = model(tab, clip, eeg)
@@ -73,12 +79,18 @@ def train_one_epoch(model, loader, optimizer, criterion, device, mode="determini
     return total_loss / len(loader.dataset)
 
 
-def evaluate(model, loader, device, mode="deterministic"):
+def evaluate(model, loader, device, mode="deterministic", use_tab=True, use_clip=True, use_eeg=True):
     model.eval()
     ys, ps = [], []
     with torch.no_grad():
         for tab, clip, eeg, y in loader:
             tab, clip, eeg = tab.to(device), clip.to(device), eeg.to(device)
+            if not use_tab:
+                tab = torch.zeros(tab.shape[0], 0, device=device, dtype=tab.dtype)
+            if not use_clip:
+                clip = torch.zeros(clip.shape[0], 0, device=device, dtype=clip.dtype)
+            if not use_eeg:
+                eeg = torch.zeros(eeg.shape[0], 0, device=device, dtype=eeg.dtype)
             if mode == "vae":
                 logits, _, _ = model(tab, clip, eeg)
             else:
@@ -166,11 +178,11 @@ def main() -> None:
     criterion = nn.BCEWithLogitsLoss()
 
     for epoch in range(1, args.epochs + 1):
-        train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device, mode=args.mode, beta_kl=args.beta_kl)
-        acc, f1, auc = evaluate(model, val_loader, device, mode=args.mode)
+        train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device, mode=args.mode, beta_kl=args.beta_kl, use_tab=args.use_tabular, use_clip=args.use_clip, use_eeg=args.use_eeg)
+        acc, f1, auc = evaluate(model, val_loader, device, mode=args.mode, use_tab=args.use_tabular, use_clip=args.use_clip, use_eeg=args.use_eeg)
         print(f"Epoch {epoch}/{args.epochs} | loss={train_loss:.4f} acc={acc:.4f} f1={f1:.4f} auc={auc:.4f}")
 
-    acc, f1, auc = evaluate(model, val_loader, device, mode=args.mode)
+    acc, f1, auc = evaluate(model, val_loader, device, mode=args.mode, use_tab=args.use_tabular, use_clip=args.use_clip, use_eeg=args.use_eeg)
     metrics = {"acc": acc, "f1": f1, "auc": auc}
 
     args.results_dir.mkdir(parents=True, exist_ok=True)
