@@ -202,7 +202,7 @@ def build_datasets(
     return train_ds, val_ds, preproc_lt, preproc_u
 
 
-def run_epoch(model, loader, device, train: bool = True, optimizer=None):
+def run_epoch(model, loader, device, train: bool = True, optimizer=None, grad_clip: float = 0.0):
     if train:
         model.train()
     else:
@@ -222,6 +222,8 @@ def run_epoch(model, loader, device, train: bool = True, optimizer=None):
         if train:
             optimizer.zero_grad()
             loss.backward()
+            if grad_clip and grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
             optimizer.step()
 
         bsz = x_tab.size(0)
@@ -260,6 +262,7 @@ def main():
     ap.add_argument("--batch-size", type=int, default=4)
     ap.add_argument("--epochs", type=int, default=5)
     ap.add_argument("--lr", type=float, default=1e-4)
+    ap.add_argument("--grad-clip", type=float, default=1.0)
     ap.add_argument("--val-split", type=float, default=0.2)
     ap.add_argument("--device", type=str, default="cpu")
     ap.add_argument("--seed", type=int, default=42)
@@ -279,6 +282,8 @@ def main():
     ap.add_argument("--audio-duration", type=float, default=5.0)
     ap.add_argument("--audio-norm", type=str, default="per_channel", choices=["per_channel", "none"])
     ap.add_argument("--fuse-dropout", type=float, default=0.0)
+    ap.add_argument("--freeze-video", action="store_true", help="Congela el encoder de video para acelerar")
+    ap.add_argument("--freeze-audio", action="store_true", help="Congela el encoder de audio")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -346,6 +351,8 @@ def main():
         alpha=args.alpha,
         delta_per_alt=not args.delta_shared,
         fuse_dropout=args.fuse_dropout,
+        freeze_video=args.freeze_video,
+        freeze_audio=args.freeze_audio,
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
@@ -354,8 +361,8 @@ def main():
 
     history = []
     for epoch in range(1, args.epochs + 1):
-        tr_metrics = run_epoch(model, train_loader, device=device, train=True, optimizer=optimizer)
-        val_metrics = run_epoch(model, val_loader, device=device, train=False)
+        tr_metrics = run_epoch(model, train_loader, device=device, train=True, optimizer=optimizer, grad_clip=args.grad_clip)
+        val_metrics = run_epoch(model, val_loader, device=device, train=False, grad_clip=0.0)
         history.append({"epoch": epoch, "train": tr_metrics, "val": val_metrics})
         print(
             f"Epoch {epoch:03d} | "
@@ -384,6 +391,9 @@ def main():
         "tabular_scaler": args.tabular_scaler,
         "seed": args.seed,
         "device": str(device),
+        "freeze_video": args.freeze_video,
+        "freeze_audio": args.freeze_audio,
+        "grad_clip": args.grad_clip,
     }
     run_hash = compute_run_hash(base_config, sys.argv, model="MM_ICLV")
 

@@ -186,11 +186,15 @@ class MultimodalICLVDeterministic(nn.Module):
         alpha: float = 1.0,
         delta_per_alt: bool = True,
         fuse_dropout: float = 0.0,
+        freeze_video: bool = True,
+        freeze_audio: bool = False,
     ):
         super().__init__()
         self.alpha = float(alpha)
         self.n_indicators = int(n_indicators)
         self.n_choices = int(n_choices)
+        self.freeze_video = bool(freeze_video)
+        self.freeze_audio = bool(freeze_audio)
 
         self.tab_enc = TabularEncoder(tab_in_dim, tab_emb_dim, dropout=fuse_dropout)
         self.vid_enc = VideoEncoderWrapper(backbone_model=vid_backbone)
@@ -253,8 +257,13 @@ class MultimodalICLVDeterministic(nn.Module):
         choice: torch.Tensor,
     ):
         z_tab = self.tab_enc(x_tab_lt)
-        z_vid = self.vid_enc(x_vid)
-        z_aud = self.audio_enc(x_aud) if x_aud is not None else torch.zeros_like(z_tab)
+        with torch.no_grad() if self.freeze_video else torch.enable_grad():
+            z_vid = self.vid_enc(x_vid)
+        if x_aud is None:
+            z_aud = torch.zeros_like(z_tab)
+        else:
+            with torch.no_grad() if self.freeze_audio else torch.enable_grad():
+                z_aud = self.audio_enc(x_aud)
         z = torch.cat([z_tab, z_vid, z_aud], dim=1)
         z = self.fuse(z)
 
