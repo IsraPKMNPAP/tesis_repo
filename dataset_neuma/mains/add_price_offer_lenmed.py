@@ -20,23 +20,34 @@ def main():
     base.columns = base.columns.str.lower()
     src.columns = src.columns.str.lower()
 
-    needed = ["subject", "page", "product_id"]
-    for col in needed:
-        if col not in base.columns or col not in src.columns:
-            raise ValueError(f"Falta columna clave '{col}' en base o source.")
+    # derivar llaves compatibles
+    def parse_page(s: str) -> int:
+        try:
+            return int(str(s).replace("page", "").strip())
+        except Exception:
+            return pd.NA
 
-    # columnas a traer
-    cols_to_add = [c for c in ["price", "offer", "len_med"] if c in src.columns]
-    if not cols_to_add:
-        raise ValueError("No se encontraron columnas price/offer/len_med en el source CSV.")
+    def parse_prod(s: str) -> int:
+        try:
+            return int(str(s).replace("product", "").strip())
+        except Exception:
+            return pd.NA
 
-    src_small = src[needed + cols_to_add].copy()
-    # asegurar claves en str para evitar problemas de tipos
-    for col in needed:
-        base[col] = base[col].astype(str)
-        src_small[col] = src_small[col].astype(str)
+    base["subject_num"] = base["subject"].astype(str).str.replace("s", "", case=False).astype(int)
+    base["page_num"] = base["page"].apply(parse_page).astype(int)
+    base["prod_num"] = base["product_id"].apply(parse_prod).astype(int)
+    base["id_prod_key"] = (base["page_num"] - 1) * 24 + base["prod_num"]
 
-    merged = base.merge(src_small, on=needed, how="left")
+    if not {"id_sub", "id_prod"}.issubset(src.columns):
+        raise ValueError("El CSV source debe contener columnas id_sub e id_prod.")
+    src_small = src[["id_sub", "id_prod"] + [c for c in ["price", "offer", "len_med"] if c in src.columns]].copy()
+    src_small = src_small.rename(columns={"id_sub": "subject_num", "id_prod": "id_prod_key"})
+
+    merged = base.merge(src_small, on=["subject_num", "id_prod_key"], how="left")
+
+    # limpiar columnas auxiliares
+    merged = merged.drop(columns=["subject_num", "page_num", "prod_num", "id_prod_key"])
+
     args.out_csv.parent.mkdir(parents=True, exist_ok=True)
     merged.to_csv(args.out_csv, index=False)
     print(f"Guardado: {args.out_csv} (filas: {len(merged)})")
