@@ -158,6 +158,8 @@ def run_epoch(model, loader, device, train: bool = True, optimizer=None):
     total_ll = 0.0
     correct = 0
     total = 0
+    y_true_all = []
+    y_pred_all = []
     for obs_lt, obs_u, indicators, choice in loader:
         obs_lt = obs_lt.to(device)
         obs_u = obs_u.to(device)
@@ -178,10 +180,18 @@ def run_epoch(model, loader, device, train: bool = True, optimizer=None):
         preds = out["logp"].argmax(dim=1)
         correct += int((preds == choice_t).sum().item())
         total += obs_lt.size(0)
+        y_true_all.append(choice_t.detach().cpu())
+        y_pred_all.append(preds.detach().cpu())
 
     avg_loss = total_loss / max(1, total)
     avg_choice = total_choice / max(1, total)
     avg_meas = total_meas / max(1, total)
+    if y_true_all:
+        y_true_cat = torch.cat(y_true_all).numpy()
+        y_pred_cat = torch.cat(y_pred_all).numpy()
+    else:
+        y_true_cat = np.array([])
+        y_pred_cat = np.array([])
     acc = correct / max(1, total)
     return {
         "loss": avg_loss,
@@ -190,6 +200,8 @@ def run_epoch(model, loader, device, train: bool = True, optimizer=None):
         "acc": acc,
         "log_likelihood": total_ll,
         "n": total,
+        "y_true": y_true_cat,
+        "y_pred": y_pred_cat,
     }
 
 
@@ -287,6 +299,27 @@ def main():
 
     hess = compute_hessian_stats(model, loss_closure)
 
+    # Métricas adicionales: F1 y pseudo-R2 (McFadden) en train y val
+    from sklearn.metrics import f1_score
+
+    def pseudo_r2(ll_model: float, y_true: np.ndarray, num_choices: int) -> float:
+        if len(y_true) == 0:
+            return float("nan")
+        if num_choices == 2:
+            p = np.clip(y_true.mean(), 1e-6, 1 - 1e-6)
+            ll_null = (y_true * np.log(p) + (1 - y_true) * np.log(1 - p)).sum()
+        else:
+            counts = np.bincount(y_true.astype(int), minlength=num_choices)
+            probs = counts / counts.sum()
+            probs = np.clip(probs, 1e-6, 1.0)
+            ll_null = np.log(probs[y_true.astype(int)]).sum()
+        return 1 - (ll_model / ll_null)
+
+    f1_tr = f1_score(tr_metrics["y_true"], tr_metrics["y_pred"], zero_division=0) if len(tr_metrics["y_true"]) else float("nan")
+    f1_val = f1_score(val_metrics["y_true"], val_metrics["y_pred"], zero_division=0) if len(val_metrics["y_true"]) else float("nan")
+    r2_tr = pseudo_r2(tr_metrics["log_likelihood"], tr_metrics["y_true"], args.num_choices)
+    r2_val = pseudo_r2(val_metrics["log_likelihood"], val_metrics["y_true"], args.num_choices)
+
     args.results_dir.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), args.results_dir / "model.pt")
     with open(args.results_dir / "metrics.json", "w", encoding="utf-8") as f:
@@ -294,8 +327,14 @@ def main():
             {
                 "train_loss": tr_metrics["loss"],
                 "train_acc": tr_metrics["acc"],
+                "train_f1": f1_tr,
+                "train_log_likelihood": tr_metrics["log_likelihood"],
+                "train_pseudo_r2": r2_tr,
                 "val_loss": val_metrics["loss"],
                 "val_acc": val_metrics["acc"],
+                "val_f1": f1_val,
+                "val_log_likelihood": val_metrics["log_likelihood"],
+                "val_pseudo_r2": r2_val,
                 "obs_lt_cols": obs_lt_cols,
                 "obs_u_cols": obs_u_cols,
                 "obs_i_cols": obs_i_cols,
