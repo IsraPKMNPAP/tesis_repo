@@ -21,21 +21,21 @@ def main():
     src.columns = src.columns.str.lower()
 
     # derivar llaves compatibles
-    def parse_page(s: str) -> int:
-        try:
-            return int(str(s).replace("page", "").strip())
-        except Exception:
-            return pd.NA
+    def parse_page(s: str):
+        return pd.to_numeric(str(s).lower().replace("page", "").strip(), errors="coerce")
 
-    def parse_prod(s: str) -> int:
-        try:
-            return int(str(s).replace("product", "").strip())
-        except Exception:
-            return pd.NA
+    def parse_prod(s: str):
+        return pd.to_numeric(str(s).lower().replace("product", "").strip(), errors="coerce")
 
-    base["subject_num"] = base["subject"].astype(str).str.replace("s", "", case=False).astype(int)
-    base["page_num"] = base["page"].apply(parse_page).astype(int)
-    base["prod_num"] = base["product_id"].apply(parse_prod).astype(int)
+    base["subject_num"] = pd.to_numeric(base["subject"].astype(str).str.replace("s", "", case=False), errors="coerce")
+    base["page_num"] = base["page"].apply(parse_page)
+    base["prod_num"] = base["product_id"].apply(parse_prod)
+
+    # manejar faltantes
+    base = base.dropna(subset=["subject_num", "page_num", "prod_num"])
+    base["subject_num"] = base["subject_num"].astype(int)
+    base["page_num"] = base["page_num"].astype(int)
+    base["prod_num"] = base["prod_num"].astype(int)
     base["id_prod_key"] = (base["page_num"] - 1) * 24 + base["prod_num"]
 
     if not {"id_sub", "id_prod"}.issubset(src.columns):
