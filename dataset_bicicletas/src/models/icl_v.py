@@ -288,3 +288,106 @@ class MultimodalICLVDeterministic(nn.Module):
             "I_hat": I_hat,
             "log_likelihood": ll,
         }
+
+
+class PrecomputedEmbeddingICLV(nn.Module):
+    """ICLV que recibe embeddings precalculados (video/audio) y tabular OBS_LT."""
+
+    def __init__(
+        self,
+        tab_in_dim: int,
+        dim_obs_u: int,
+        n_indicators: int,
+        n_choices: int,
+        emb_vid_dim: int,
+        emb_aud_dim: int,
+        shared_dim: int = 64,
+        alpha: float = 1.0,
+        delta_per_alt: bool = True,
+        fuse_dropout: float = 0.0,
+    ):
+        super().__init__()
+        self.alpha = float(alpha)
+        self.n_indicators = int(n_indicators)
+        self.n_choices = int(n_choices)
+
+        self.tab_enc = TabularEncoder(tab_in_dim, shared_dim, dropout=fuse_dropout)
+        fuse_in = shared_dim + emb_vid_dim + emb_aud_dim
+        fuse_hidden = max(shared_dim * 2, fuse_in // 2 + 1)
+        self.fuse = nn.Sequential(
+            nn.Linear(fuse_in, fuse_hidden),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=fuse_dropout) if fuse_dropout and fuse_dropout > 0 else nn.Identity(),
+            nn.Linear(fuse_hidden, shared_dim),
+        )
+
+        self.Lambda = nn.Linear(shared_dim, n_indicators) if n_indicators > 0 else None
+        self.beta = nn.Linear(dim_obs_u, 1, bias=False)
+        if delta_per_alt:
+            self.delta = nn.Parameter(torch.zeros(n_choices, shared_dim))
+        else:
+            self.delta = nn.Parameter(torch.zeros(shared_dim))
+        self.ASC = nn.Parameter(torch.zeros(n_choices))
+
+        self._reset_parameters()
+
+    def _reset_parameters(self):
+        nn.init.xavier_uniform_(self.tab_enc.net[-1].weight)
+        if hasattr(self.tab_enc.net[-1], "bias") and self.tab_enc.net[-1].bias is not None:
+            nn.init.zeros_(self.tab_enc.net[-1].bias)
+        if self.Lambda is not None:
+            nn.init.xavier_uniform_(self.Lambda.weight)
+            if self.Lambda.bias is not None:
+                nn.init.zeros_(self.Lambda.bias)
+        nn.init.xavier_uniform_(self.beta.weight)
+        nn.init.zeros_(self.ASC)
+        nn.init.zeros_(self.delta)
+
+    def compute_utilities(self, obs_u: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
+        if obs_u.dim() != 3:
+            raise ValueError(f"Se espera obs_u con shape [B, J, dim_obs_u]; se recibio {obs_u.shape}")
+        beta_term = self.beta(obs_u).squeeze(-1)
+        if self.delta.dim() == 2:
+            delta_term = z @ self.delta.t()
+        else:
+            delta_term = (z @ self.delta).unsqueeze(1).expand_as(beta_term)
+        asc_term = self.ASC.unsqueeze(0)
+        return beta_term + delta_term + asc_term
+
+    def forward(
+        self,
+        x_tab_lt: torch.Tensor,
+        vid_emb: torch.Tensor | None,
+        aud_emb: torch.Tensor | None,
+        obs_u: torch.Tensor,
+        indicators: torch.Tensor,
+        choice: torch.Tensor,
+    ):
+        z_tab = self.tab_enc(x_tab_lt)
+        if vid_emb is None:
+            vid_emb = torch.zeros(z_tab.size(0), 0, device=z_tab.device)
+        if aud_emb is None:
+            aud_emb = torch.zeros(z_tab.size(0), 0, device=z_tab.device)
+        z = torch.cat([z_tab, vid_emb, aud_emb], dim=1)
+        z = self.fuse(z)
+
+        I_hat = self.Lambda(z) if (self.Lambda is not None and self.n_indicators > 0) else None
+        V = self.compute_utilities(obs_u, z)
+        logp = F.log_softmax(V, dim=1)
+
+        loss_choice = F.nll_loss(logp, choice, reduction="mean")
+        loss_meas = F.mse_loss(I_hat, indicators, reduction="mean") if I_hat is not None else torch.tensor(
+            0.0, device=z.device, dtype=z.dtype
+        )
+        loss = loss_choice + self.alpha * loss_meas
+        ll = logp.gather(1, choice.view(-1, 1)).sum()
+
+        return {
+            "loss": loss,
+            "loss_choice": loss_choice,
+            "loss_meas": loss_meas,
+            "logp": logp,
+            "z": z,
+            "I_hat": I_hat,
+            "log_likelihood": ll,
+        }

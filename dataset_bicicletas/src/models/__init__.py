@@ -5,4 +5,10 @@ from .embeddings import ArkoudiStyleLogit
 from .video_backbone_lstm import FrameBackboneLSTM
 from .video_torch import VideoCNNLSTM, ArkoudiHead
 from .mm_vae import DeterministicMMVAE, VariationalMMVAE
-from .icl_v import DeterministicICLV, MultimodalICLVDeterministic, compute_hessian_stats, param_names
+from .icl_v import (
+    DeterministicICLV,
+    MultimodalICLVDeterministic,
+    PrecomputedEmbeddingICLV,
+    compute_hessian_stats,
+    param_names,
+)
