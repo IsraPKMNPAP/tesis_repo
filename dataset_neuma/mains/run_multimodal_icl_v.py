@@ -51,7 +51,7 @@ def resolve_cols(df: pd.DataFrame, file_path: str | None, fallback_numeric: bool
     return cols
 
 
-def run_epoch(model, loader, device, train=True, optimizer=None, alpha=1.0):
+def run_epoch(model, loader, device, train=True, optimizer=None, alpha=1.0, pos_weight=None):
     if train:
         model.train()
     else:
@@ -73,6 +73,14 @@ def run_epoch(model, loader, device, train=True, optimizer=None, alpha=1.0):
 
             out = model(obs_lt, obs_u, eeg_emb, img_emb, choice_t)
             loss = out["loss"]
+            if pos_weight is not None:
+                # Reemplazar pérdida de elección por BCE ponderado sobre logits de choice (binario)
+                # En binario, usamos logp para prob. de clase 1
+                if out["logp"].shape[1] == 2:
+                    prob1 = torch.exp(out["logp"][:, 1])
+                    choice_float = choice_t.float()
+                    bce = torch.nn.functional.binary_cross_entropy(prob1, choice_float, weight=pos_weight.expand_as(choice_float))
+                    loss = bce + alpha * out["loss_meas"]
             if train:
                 optimizer.zero_grad()
                 loss.backward()
@@ -119,6 +127,8 @@ def main():
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--weight-decay", type=float, default=0.0)
+    parser.add_argument("--balance", action="store_true", help="Balancear clases con pos_weight en pérdida de elección.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--results-dir", type=Path, default=Path("./results/multimodal_icl_v"))
     args = parser.parse_args()
@@ -139,6 +149,21 @@ def main():
     obs_u_cols = resolve_cols(df, args.obs_u_cols, fallback_numeric=True, drop_cols=drop_cols)
 
     train_df, val_df = split_train_val(df, label_col=label_col, val_split=args.val_split, seed=args.seed)
+
+    # Estandarizar obs_lt y obs_u numéricas en train y aplicar a val
+    def standardize_cols(df_fit, df_apply, cols):
+        means = df_fit[cols].mean()
+        stds = df_fit[cols].std().replace(0, 1)
+        return (df_apply[cols] - means) / stds
+
+    train_df = train_df.copy()
+    val_df = val_df.copy()
+    if obs_lt_cols:
+        train_df[obs_lt_cols] = standardize_cols(train_df, train_df, obs_lt_cols)
+        val_df[obs_lt_cols] = standardize_cols(train_df, val_df, obs_lt_cols)
+    if obs_u_cols:
+        train_df[obs_u_cols] = standardize_cols(train_df, train_df, obs_u_cols)
+        val_df[obs_u_cols] = standardize_cols(train_df, val_df, obs_u_cols)
 
     train_ds = MultimodalICLVDataset(train_df, obs_lt_cols, obs_u_cols, label_col, img_emb_col, eeg_emb_col, num_choices=args.num_choices)
     val_ds = MultimodalICLVDataset(val_df, obs_lt_cols, obs_u_cols, label_col, img_emb_col, eeg_emb_col, num_choices=args.num_choices)
@@ -164,12 +189,20 @@ def main():
         alpha=args.alpha,
         img_proj_dim=args.img_proj_dim,
     ).to(device)
-    optim = torch.optim.Adam(model.parameters(), lr=args.lr)
+    # pos_weight si balance
+    pos_weight = None
+    if args.balance:
+        pos = (train_df[label_col] == 1).sum()
+        neg = (train_df[label_col] == 0).sum()
+        if pos > 0:
+            pos_weight = torch.tensor([neg / pos], dtype=torch.float32, device=device)
+
+    optim = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     best_val = None
     for epoch in range(1, args.epochs + 1):
-        tr = run_epoch(model, train_loader, device, train=True, optimizer=optim, alpha=args.alpha)
-        val = run_epoch(model, val_loader, device, train=False, optimizer=None, alpha=args.alpha)
+        tr = run_epoch(model, train_loader, device, train=True, optimizer=optim, alpha=args.alpha, pos_weight=pos_weight)
+        val = run_epoch(model, val_loader, device, train=False, optimizer=None, alpha=args.alpha, pos_weight=pos_weight)
         print(
             f"Epoch {epoch}/{args.epochs} | "
             f"tr_loss={tr['loss']:.4f} tr_acc={tr['acc']:.3f} tr_f1={tr['f1']:.3f} "
