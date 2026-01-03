@@ -8,7 +8,12 @@ import pandas as pd
 
 
 def guess_existing_path(p: Path) -> Optional[Path]:
-    """Si p no existe, intenta variantes sin doble sufijo .pt."""
+    """Intenta resolver el archivo correcto manejando doble sufijo .pt."""
+    # Caso: nombre termina en .pt.pt -> preferir quitar un sufijo
+    if p.suffix == ".pt" and p.name.endswith(".pt.pt"):
+        cand = p.with_suffix("")  # quita un .pt
+        if cand.exists():
+            return cand
     if p.exists():
         return p
     # Caso .pt.pt -> quitar un sufijo
@@ -51,23 +56,29 @@ def main():
             fixed_paths.append(raw)
             continue
         p = Path(str(raw))
-        if p.exists():
-            fixed_paths.append(str(p))
-            continue
+        # Si termina en .pt.pt, preferimos normalizar aunque exista
+        target = p
         cand = guess_existing_path(p)
         if cand is None:
             n_missing += 1
             fixed_paths.append(raw)
             continue
-        n_fixed += 1
-        if args.rename_files and not args.dry_run and cand != p:
+        # Si el nombre original ya es "raro", proponer nombre limpio
+        if p.suffix == ".pt" and p.name.endswith(".pt.pt"):
+            target = p.with_suffix("")
+        # Si no vamos a renombrar, igual guardamos la ruta encontrada/limpia
+        if args.rename_files and not args.dry_run and cand != target:
             try:
-                cand.rename(p)
-                fixed_paths.append(str(p))
+                cand.rename(target)
+                fixed_paths.append(str(target))
+                n_fixed += 1
             except Exception:
                 fixed_paths.append(str(cand))
+                n_fixed += 1
         else:
-            fixed_paths.append(str(cand))
+            fixed_paths.append(str(target if cand.exists() else cand))
+            if str(target) != str(raw):
+                n_fixed += 1
 
     print(f"Entradas corregidas: {n_fixed}, faltantes: {n_missing}")
     if args.dry_run:
