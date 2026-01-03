@@ -79,7 +79,7 @@ class PrecomputedICLVDataset(Dataset):
 def collate_precomputed_icl_v(batch: List):
     obs_lt, vid_embs, aud_embs, obs_us, indicators, choices = zip(*batch)
     obs_lt_t = torch.stack(list(obs_lt), dim=0)
-    obs_u_t = torch.stack(list(obs_us), dim=0)
+    obs_u_t = torch.stack(list(obs_us), dim=0)  # [B, dim_obs_u]
     indicators_t = torch.stack(list(indicators), dim=0)
     choice_t = torch.tensor(list(choices), dtype=torch.long)
 
@@ -103,6 +103,11 @@ def collate_precomputed_icl_v(batch: List):
 
     vid_t = pad_stack(vid_embs)
     aud_t = pad_stack(aud_embs)
+
+    # Expandir obs_u a [B, J, dim_obs_u] si viene [B, dim_obs_u]
+    if obs_u_t.dim() == 2:
+        num_choices = int(choice_t.max().item() + 1) if choice_t.numel() > 0 else 1
+        obs_u_t = obs_u_t.unsqueeze(1).expand(-1, num_choices, -1)
 
     class B:
         def __init__(self, x_tab, vid, aud, obs_u, indicators, y):
