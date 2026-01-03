@@ -95,7 +95,15 @@ def main():
             continue
         try:
             with torch.no_grad():
-                feats = model.extract_features(seg.to(args.device))[0]
+                res = model.extract_features(seg.to(args.device))
+                feats = res
+                if isinstance(res, (list, tuple)):
+                    feats = res[0]
+                if isinstance(feats, (list, tuple)):
+                    # torchaudio devuelve lista de capas; usar la última
+                    feats = feats[-1]
+                if not isinstance(feats, torch.Tensor):
+                    raise TypeError(f"extract_features retornó {type(feats)}")
                 z = feats.mean(dim=1).squeeze(0).cpu()
             torch.save(z, out_path)
             out_paths.append(str(out_path))
