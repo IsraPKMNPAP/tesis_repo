@@ -87,8 +87,9 @@ def main():
         if args.window_col in df.columns and pd.notna(df.iloc[idx][args.window_col]):
             base_name = str(df.iloc[idx][args.window_col])
         else:
-            base_name = f"idx_{idx}"
-        out_path = out_dir / f"{base_name}.pt"
+            base_name = f"{idx}"
+        base_name = base_name.replace(".pt", "")
+        out_path = out_dir / f"emb_window_{base_name}.pt"
         if out_path.exists() and not args.overwrite:
             out_paths.append(str(out_path))
             n_ok += 1
