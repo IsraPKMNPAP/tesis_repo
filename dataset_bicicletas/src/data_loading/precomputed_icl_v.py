@@ -47,6 +47,7 @@ class PrecomputedICLVDataset(Dataset):
         choice_array: np.ndarray,
         vid_emb_col: Optional[str] = None,
         aud_emb_col: Optional[str] = None,
+        num_choices: Optional[int] = None,
     ):
         self.df = df.reset_index(drop=True)
         self.obs_lt = torch.tensor(obs_lt_array, dtype=torch.float32)
@@ -55,6 +56,7 @@ class PrecomputedICLVDataset(Dataset):
         self.choice = torch.tensor(choice_array, dtype=torch.long)
         self.vid_emb_col = vid_emb_col
         self.aud_emb_col = aud_emb_col
+        self.num_choices = int(num_choices) if num_choices is not None else int(self.choice.max().item() + 1)
 
     def __len__(self):
         return len(self.df)
@@ -73,11 +75,12 @@ class PrecomputedICLVDataset(Dataset):
             self.obs_u[idx],
             self.indicators[idx],
             int(self.choice[idx]),
+            self.num_choices,
         )
 
 
 def collate_precomputed_icl_v(batch: List):
-    obs_lt, vid_embs, aud_embs, obs_us, indicators, choices = zip(*batch)
+    obs_lt, vid_embs, aud_embs, obs_us, indicators, choices, n_choices_list = zip(*batch)
     obs_lt_t = torch.stack(list(obs_lt), dim=0)
     obs_u_t = torch.stack(list(obs_us), dim=0)  # [B, dim_obs_u]
     indicators_t = torch.stack(list(indicators), dim=0)
@@ -106,7 +109,7 @@ def collate_precomputed_icl_v(batch: List):
 
     # Expandir obs_u a [B, J, dim_obs_u] si viene [B, dim_obs_u]
     if obs_u_t.dim() == 2:
-        num_choices = int(choice_t.max().item() + 1) if choice_t.numel() > 0 else 1
+        num_choices = int(n_choices_list[0]) if n_choices_list else (int(choice_t.max().item() + 1) if choice_t.numel() > 0 else 1)
         obs_u_t = obs_u_t.unsqueeze(1).expand(-1, num_choices, -1)
 
     class B:

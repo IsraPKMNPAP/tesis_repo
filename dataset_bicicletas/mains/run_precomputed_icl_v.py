@@ -183,6 +183,7 @@ def main():
         choice_array=y_tr,
         vid_emb_col=args.vid_emb_col,
         aud_emb_col=args.aud_emb_col,
+        num_choices=num_choices,
     )
     val_ds = PrecomputedICLVDataset(
         df=df_val,
@@ -192,6 +193,7 @@ def main():
         choice_array=y_val,
         vid_emb_col=args.vid_emb_col,
         aud_emb_col=args.aud_emb_col,
+        num_choices=num_choices,
     )
 
     device = torch.device(args.device if args.device == "cpu" or torch.cuda.is_available() else "cpu")
