@@ -3,10 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 import re
+from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
-
-import pandas as pd
 
 
 def parse_run_index(idx_path: Path) -> Dict[str, dict]:
@@ -144,7 +143,36 @@ def infer_modalities(model: Optional[str], cmd: Optional[str], config: Optional[
     return sorted(mods), is_multimodal
 
 
-def collect_eval_reports(results_dir: Path) -> pd.DataFrame:
+def parse_eval_report_stats(path: Path) -> Tuple[Optional[float], Dict[str, float], int]:
+    """Parse accuracy and per-class f1 from a sklearn classification_report-like txt."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return None, {}, 0
+
+    f1_by_class: Dict[str, float] = {}
+    pattern = re.compile(
+        r"^\s*(?P<label>\S+)\s+(?P<prec>\d*\.\d+)\s+(?P<rec>\d*\.\d+)\s+(?P<f1>\d*\.\d+)\s+(?P<supp>\d+)",
+        flags=re.MULTILINE,
+    )
+    for m in pattern.finditer(text):
+        label = m.group("label")
+        f1 = float(m.group("f1"))
+        f1_by_class[label] = f1
+
+    acc = None
+    m_acc = re.search(r"accuracy\s+([0-9]*\.\d+)", text)
+    if m_acc:
+        try:
+            acc = float(m_acc.group(1))
+        except Exception:
+            acc = None
+
+    non_zero_f1 = sum(1 for v in f1_by_class.values() if v > 0)
+    return acc, f1_by_class, non_zero_f1
+
+
+def collect_runs(results_dir: Path) -> List[dict]:
     idx_path = results_dir / "run_index.txt"
     run_index = parse_run_index(idx_path)
     eval_paths = sorted(results_dir.rglob("*eval_report*.txt"))
@@ -153,63 +181,93 @@ def collect_eval_reports(results_dir: Path) -> pd.DataFrame:
     for rpt in eval_paths:
         model_from_name, run_hash = parse_eval_report_name(rpt)
         info = run_index.get(run_hash, {})
-        model = info.get("model") or model_from_name
+        model = info.get("model") or model_from_name or "unknown_model"
         cmd = info.get("cmd")
         config = info.get("config")
         dataset = infer_dataset(config, cmd)
         arch = infer_architecture(model, cmd, config)
         modalities, is_multimodal = infer_modalities(model, cmd, config, arch)
+        acc, f1_by_class, non_zero_f1 = parse_eval_report_stats(rpt)
+
         rows.append(
             {
                 "model": model,
                 "run_hash": run_hash,
                 "arch": arch,
-                "modalities": "+".join(modalities),
+                "modalities": modalities,
                 "multimodal": is_multimodal,
                 "dataset": dataset,
                 "report_path": str(rpt),
                 "timestamp": info.get("timestamp"),
                 "cmd": cmd,
+                "metrics": {
+                    "accuracy": acc,
+                    "f1_by_class": f1_by_class,
+                    "non_zero_f1_classes": non_zero_f1,
+                },
+                "eligibility": {
+                    "has_accuracy": acc is not None,
+                    "f1_classes_ge_3": non_zero_f1 >= 3,
+                },
             }
         )
 
-    return pd.DataFrame(rows)
+    return rows
+
+
+def mark_representative(runs: List[dict]) -> None:
+    """Flag one representative per model: max accuracy among eligible runs."""
+    by_model: Dict[str, List[dict]] = defaultdict(list)
+    for r in runs:
+        by_model[r["model"]].append(r)
+
+    for model, items in by_model.items():
+        # Filter eligible: has accuracy and at least 3 non-zero class f1
+        eligible = [
+            r
+            for r in items
+            if r.get("metrics", {}).get("accuracy") is not None and r.get("metrics", {}).get("non_zero_f1_classes", 0) >= 3
+        ]
+        if not eligible:
+            for r in items:
+                r["representative"] = False
+            continue
+        best = max(eligible, key=lambda r: r["metrics"].get("accuracy", float("-inf")))
+        for r in items:
+            r["representative"] = r is best
 
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Recopila todos los eval_report* de results y genera un DataFrame con arquitectura, modalidades y dataset."
+        description="Agrega eval_report* de results, infiere metadatos y genera un JSON (dataset_bicicletas)."
     )
     ap.add_argument("--results-dir", type=str, default="results", help="Directorio donde viven los artefactos.")
-    ap.add_argument("--save-csv", type=str, default=None, help="Ruta opcional para guardar el resumen en CSV.")
+    ap.add_argument("--save-json", type=str, default="utils/resumen_runs.json", help="Ruta para guardar el resumen en JSON.")
     ap.add_argument(
         "--save-datasets",
         type=str,
         default=None,
         help="Ruta opcional para guardar la lista de datasets detectados (uno por linea).",
     )
-    ap.add_argument("--no-print", action="store_true", help="No imprimir el DataFrame en consola.")
+    ap.add_argument("--no-print", action="store_true", help="No imprimir el resumen en consola.")
     args = ap.parse_args()
 
     results_dir = Path(args.results_dir)
-    df = collect_eval_reports(results_dir)
+    runs = collect_runs(results_dir)
+    mark_representative(runs)
 
     if not args.no_print:
-        if df.empty:
-            print("No se encontraron eval_report en", results_dir)
+        if not runs:
+            print(f"No se encontraron eval_report en {results_dir}")
         else:
-            try:
-                print(df.to_markdown(index=False))
-            except Exception:
-                print(df)
+            print(json.dumps(runs, indent=2, ensure_ascii=False))
 
-    if args.save_csv:
-        out_csv = Path(args.save_csv)
-        out_csv.parent.mkdir(parents=True, exist_ok=True)
-        df.to_csv(out_csv, index=False)
+    out_json = Path(args.save_json)
+    out_json.parent.mkdir(parents=True, exist_ok=True)
+    out_json.write_text(json.dumps(runs, indent=2, ensure_ascii=False), encoding="utf-8")
 
     if args.save_datasets:
-        datasets = sorted({d for d in df["dataset"].tolist() if isinstance(d, str) and d})
+        datasets = sorted({r["dataset"] for r in runs if isinstance(r.get("dataset"), str) and r["dataset"]})
         out_ds = Path(args.save_datasets)
         out_ds.parent.mkdir(parents=True, exist_ok=True)
         out_ds.write_text("\n".join(datasets), encoding="utf-8")
