@@ -133,7 +133,7 @@ def infer_modalities(model: Optional[str], cmd: Optional[str], config: Optional[
     # Textual hints (fallback)
     if _matches_any(text, ["audio", "wav2vec", "mel", "spectrogram"]):
         mods.add("audio")
-    if _matches_any(text, ["video", "frame", "clip", "lstm"]):
+    if _matches_any(text, ["video", "frame", "clip"]):
         mods.add("video")
     if _matches_any(text, ["feature", "tabular", "mnlogit", "scaler", "csv"]):
         mods.add("tabular")
