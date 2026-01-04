@@ -15,6 +15,17 @@ def load_json_safe(path: Path) -> Optional[dict]:
         return None
 
 
+def parse_metrics(metrics: Optional[dict]) -> Tuple[dict, str, str, str]:
+    """Return metrics values plus status and missing/extra keys."""
+    expected = {"acc@0.5", "f1@0.5", "auc", "best_thr", "best_acc", "best_f1"}
+    if not isinstance(metrics, dict):
+        return {}, "missing_or_invalid", "", ""
+    missing = sorted(list(expected - set(metrics.keys())))
+    extra = sorted(list(set(metrics.keys()) - expected))
+    status = "ok" if not missing else "incomplete"
+    return metrics, status, ",".join(missing), ",".join(extra)
+
+
 def _matches_any(text: str, needles: Iterable[str]) -> bool:
     return any(n in text for n in needles)
 
@@ -106,8 +117,13 @@ def collect_runs(results_dir: Path) -> pd.DataFrame:
 
         metrics = load_json_safe(metrics_path) if metrics_path else None
         metadata = load_json_safe(meta_path) if meta_path else None
+        metrics_vals, metrics_status, metrics_missing, metrics_extra = parse_metrics(metrics)
 
-        model_name = run_dir.name
+        # Use relative path to keep nested runs distinguishable
+        try:
+            model_name = str(run_dir.relative_to(results_dir))
+        except Exception:
+            model_name = run_dir.name
         arch = infer_architecture(model_name, metadata, metrics)
         modalities, is_multimodal = infer_modalities(model_name, metadata, metrics, arch)
         dataset = infer_dataset(metadata, metrics, run_dir)
@@ -129,6 +145,15 @@ def collect_runs(results_dir: Path) -> pd.DataFrame:
                 "eval_report": str(eval_path) if eval_path else None,
                 "metadata_path": str(meta_path) if meta_path else None,
                 "missing": ",".join(missing) if missing else "",
+                "metrics_status": metrics_status,
+                "metrics_missing": metrics_missing,
+                "metrics_extra": metrics_extra,
+                "acc@0.5": metrics_vals.get("acc@0.5"),
+                "f1@0.5": metrics_vals.get("f1@0.5"),
+                "auc": metrics_vals.get("auc"),
+                "best_thr": metrics_vals.get("best_thr"),
+                "best_acc": metrics_vals.get("best_acc"),
+                "best_f1": metrics_vals.get("best_f1"),
             }
         )
 
