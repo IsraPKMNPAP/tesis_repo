@@ -94,9 +94,9 @@ def encode_indicator_blocks(df_tr: pd.DataFrame, df_val: pd.DataFrame, cols: Seq
 
 
 def resolve_cols(df: pd.DataFrame, cols_file: str | None, fallback_numeric: bool, drop_cols: set) -> List[str]:
-    """Si cols_file está definido, se usa; si no, opcionalmente se infieren numéricas."""
+    """Si cols_file está definido, se usa; normaliza a minúsculas para compatibilidad."""
     if cols_file:
-        cols = load_features_file(cols_file)
+        cols = [c.strip().lower() for c in load_features_file(cols_file)]
     else:
         cols = []
     if not cols and fallback_numeric:
