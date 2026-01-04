@@ -183,6 +183,14 @@ def main():
     label_col = args.label_col.lower()
     img_emb_col = args.img_emb_col.lower()
     eeg_emb_col = args.eeg_emb_col.lower()
+    # Imputar columnas clave detectadas con NaN
+    cat_impute = ["gender", "maritalstatus", "supermarketvisitduration", "shoppinglist", "offer"]
+    num_impute = ["price", "len_med"]
+    df[cat_impute] = df[cat_impute].apply(lambda s: s.fillna(s.mode().iloc[0] if not s.mode().empty else "missing"))
+    for c in num_impute:
+        if c in df.columns:
+            df[c] = df[c].fillna(df[c].median())
+
     df = df.dropna(subset=[label_col, img_emb_col, eeg_emb_col])
 
     drop_cols = {label_col}
