@@ -5,8 +5,6 @@ import json
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
-import pandas as pd
-
 
 def load_json_safe(path: Path) -> Optional[dict]:
     try:
@@ -15,19 +13,19 @@ def load_json_safe(path: Path) -> Optional[dict]:
         return None
 
 
-def parse_metrics(metrics: Optional[dict]) -> Tuple[dict, str, str, str]:
+def _matches_any(text: str, needles: Iterable[str]) -> bool:
+    return any(n in text for n in needles)
+
+
+def parse_metrics(metrics: Optional[dict]) -> Tuple[dict, str, List[str], List[str]]:
     """Return metrics values plus status and missing/extra keys."""
     expected = {"acc@0.5", "f1@0.5", "auc", "best_thr", "best_acc", "best_f1"}
     if not isinstance(metrics, dict):
-        return {}, "missing_or_invalid", "", ""
+        return {}, "missing_or_invalid", sorted(list(expected)), []
     missing = sorted(list(expected - set(metrics.keys())))
     extra = sorted(list(set(metrics.keys()) - expected))
     status = "ok" if not missing else "incomplete"
-    return metrics, status, ",".join(missing), ",".join(extra)
-
-
-def _matches_any(text: str, needles: Iterable[str]) -> bool:
-    return any(n in text for n in needles)
+    return metrics, status, missing, extra
 
 
 def infer_dataset(meta: Optional[dict], extra: Optional[dict], path: Path) -> Optional[str]:
@@ -98,7 +96,7 @@ def infer_modalities(model: str, meta: Optional[dict], extra: Optional[dict], ar
     return sorted(mods), is_multi
 
 
-def collect_runs(results_dir: Path) -> pd.DataFrame:
+def collect_runs(results_dir: Path) -> List[dict]:
     # Consider directories that contain metrics.json, metadata.json, or eval_report-like files
     candidates: Dict[Path, Dict[str, Optional[Path]]] = {}
 
@@ -137,27 +135,22 @@ def collect_runs(results_dir: Path) -> pd.DataFrame:
             {
                 "model": model_name,
                 "arch": arch,
-                "modalities": "+".join(modalities),
+                "modalities": modalities,
                 "multimodal": is_multimodal,
                 "dataset": dataset,
                 "run_dir": str(run_dir),
                 "metrics_path": str(metrics_path) if metrics_path else None,
                 "eval_report": str(eval_path) if eval_path else None,
                 "metadata_path": str(meta_path) if meta_path else None,
-                "missing": ",".join(missing) if missing else "",
+                "missing": missing,
                 "metrics_status": metrics_status,
                 "metrics_missing": metrics_missing,
                 "metrics_extra": metrics_extra,
-                "acc@0.5": metrics_vals.get("acc@0.5"),
-                "f1@0.5": metrics_vals.get("f1@0.5"),
-                "auc": metrics_vals.get("auc"),
-                "best_thr": metrics_vals.get("best_thr"),
-                "best_acc": metrics_vals.get("best_acc"),
-                "best_f1": metrics_vals.get("best_f1"),
+                "metrics": metrics_vals,
             }
         )
 
-    return pd.DataFrame(rows)
+    return rows
 
 
 def main():
@@ -165,35 +158,31 @@ def main():
         description="Agrega resultados de dataset_neuma buscando metrics.json/eval_report y resumiendo arquitectura y modalidades."
     )
     ap.add_argument("--results-dir", type=str, default="results", help="Directorio base de resultados.")
-    ap.add_argument("--save-csv", type=str, default=None, help="Ruta opcional para guardar el resumen en CSV.")
+    ap.add_argument("--save-json", type=str, default="utils/resumen_runs_neuma.json", help="Ruta para guardar el resumen en JSON.")
     ap.add_argument(
         "--save-datasets",
         type=str,
         default=None,
         help="Ruta opcional para guardar la lista de datasets detectados (uno por linea).",
     )
-    ap.add_argument("--no-print", action="store_true", help="No imprimir el DataFrame en consola.")
+    ap.add_argument("--no-print", action="store_true", help="No imprimir el resumen en consola.")
     args = ap.parse_args()
 
     results_dir = Path(args.results_dir)
-    df = collect_runs(results_dir)
+    runs = collect_runs(results_dir)
 
     if not args.no_print:
-        if df.empty:
+        if not runs:
             print(f"No se encontraron runs en {results_dir}")
         else:
-            try:
-                print(df.to_markdown(index=False))
-            except Exception:
-                print(df)
+            print(json.dumps(runs, indent=2, ensure_ascii=False))
 
-    if args.save_csv:
-        out_csv = Path(args.save_csv)
-        out_csv.parent.mkdir(parents=True, exist_ok=True)
-        df.to_csv(out_csv, index=False)
+    out_json = Path(args.save_json)
+    out_json.parent.mkdir(parents=True, exist_ok=True)
+    out_json.write_text(json.dumps(runs, indent=2, ensure_ascii=False), encoding="utf-8")
 
     if args.save_datasets:
-        datasets = sorted({d for d in df["dataset"].tolist() if isinstance(d, str) and d})
+        datasets = sorted({r["dataset"] for r in runs if isinstance(r.get("dataset"), str) and r["dataset"]})
         out_ds = Path(args.save_datasets)
         out_ds.parent.mkdir(parents=True, exist_ok=True)
         out_ds.write_text("\n".join(datasets), encoding="utf-8")
