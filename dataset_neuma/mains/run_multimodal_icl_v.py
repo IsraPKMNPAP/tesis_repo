@@ -42,7 +42,7 @@ def split_train_val(df: pd.DataFrame, label_col: str, val_split: float = 0.2, se
 
 def resolve_cols(df: pd.DataFrame, file_path: str | None, fallback_numeric: bool, drop_cols: set) -> List[str]:
     if file_path:
-        cols = load_features_file(file_path)
+        cols = [c.strip().lower() for c in load_features_file(file_path)]
     else:
         cols = []
     if not cols and fallback_numeric:
