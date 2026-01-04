@@ -51,6 +51,47 @@ def resolve_cols(df: pd.DataFrame, file_path: str | None, fallback_numeric: bool
     return cols
 
 
+def preprocess_block(train_df: pd.DataFrame, val_df: pd.DataFrame, cols: List[str], prefix: str) -> tuple[pd.DataFrame, pd.DataFrame, List[str]]:
+    """One-hot para categóricas + estándar para numéricas. Devuelve dataframes con columnas nuevas y la lista de nombres."""
+    import pandas.api.types as ptypes
+
+    num_cols = [c for c in cols if ptypes.is_numeric_dtype(train_df[c])]
+    cat_cols = [c for c in cols if c not in num_cols]
+
+    out_tr_parts = []
+    out_val_parts = []
+    new_names = []
+
+    if num_cols:
+        means = train_df[num_cols].mean()
+        stds = train_df[num_cols].std().replace(0, 1)
+        tr_num = (train_df[num_cols] - means) / stds
+        val_num = (val_df[num_cols] - means) / stds
+        new_names.extend([f"{prefix}{c}" for c in num_cols])
+        tr_num.columns = new_names[: len(num_cols)]
+        val_num.columns = new_names[: len(num_cols)]
+        out_tr_parts.append(tr_num)
+        out_val_parts.append(val_num)
+
+    if cat_cols:
+        tr_cat = pd.get_dummies(train_df[cat_cols].astype(str), prefix=[f"{prefix}{c}" for c in cat_cols])
+        val_cat = pd.get_dummies(val_df[cat_cols].astype(str), prefix=[f"{prefix}{c}" for c in cat_cols])
+        # Alinear columnas
+        tr_cols = tr_cat.columns
+        val_cat = val_cat.reindex(columns=tr_cols, fill_value=0)
+        new_names.extend(tr_cols.tolist())
+        out_tr_parts.append(tr_cat)
+        out_val_parts.append(val_cat)
+
+    if out_tr_parts:
+        tr_block = pd.concat(out_tr_parts, axis=1)
+        val_block = pd.concat(out_val_parts, axis=1)
+    else:
+        tr_block = pd.DataFrame(index=train_df.index)
+        val_block = pd.DataFrame(index=val_df.index)
+    return tr_block, val_block, new_names
+
+
 def run_epoch(model, loader, device, train=True, optimizer=None, alpha=1.0, pos_weight=None):
     if train:
         model.train()
@@ -150,20 +191,16 @@ def main():
 
     train_df, val_df = split_train_val(df, label_col=label_col, val_split=args.val_split, seed=args.seed)
 
-    # Estandarizar obs_lt y obs_u numéricas en train y aplicar a val
-    def standardize_cols(df_fit, df_apply, cols):
-        means = df_fit[cols].mean()
-        stds = df_fit[cols].std().replace(0, 1)
-        return (df_apply[cols] - means) / stds
-
     train_df = train_df.copy()
     val_df = val_df.copy()
-    if obs_lt_cols:
-        train_df[obs_lt_cols] = standardize_cols(train_df, train_df, obs_lt_cols)
-        val_df[obs_lt_cols] = standardize_cols(train_df, val_df, obs_lt_cols)
-    if obs_u_cols:
-        train_df[obs_u_cols] = standardize_cols(train_df, train_df, obs_u_cols)
-        val_df[obs_u_cols] = standardize_cols(train_df, val_df, obs_u_cols)
+
+    # Preprocesar obs_lt y obs_u con numéricas estandarizadas + one-hot para categóricas
+    lt_tr, lt_val, lt_names = preprocess_block(train_df, val_df, obs_lt_cols, prefix="lt_")
+    u_tr, u_val, u_names = preprocess_block(train_df, val_df, obs_u_cols, prefix="u_")
+    train_df = train_df.join(lt_tr).join(u_tr)
+    val_df = val_df.join(lt_val).join(u_val)
+    obs_lt_cols = lt_names
+    obs_u_cols = u_names
 
     train_ds = MultimodalICLVDataset(train_df, obs_lt_cols, obs_u_cols, label_col, img_emb_col, eeg_emb_col, num_choices=args.num_choices)
     val_ds = MultimodalICLVDataset(val_df, obs_lt_cols, obs_u_cols, label_col, img_emb_col, eeg_emb_col, num_choices=args.num_choices)
