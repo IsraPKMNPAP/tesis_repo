@@ -28,7 +28,7 @@ def build_pipe(numeric, categorical):
             ("cat", OneHotEncoder(handle_unknown="ignore"), categorical),
         ]
     )
-    clf = LogisticRegression(max_iter=1000, n_jobs=-1, multi_class="auto")
+    clf = LogisticRegression(max_iter=1000, n_jobs=-1)
     return Pipeline([("pre", pre), ("clf", clf)])
 
 
@@ -98,6 +98,7 @@ def main():
     # Guardar split info
     info_path = results_dir / "TabularBaseline" / "split_info.txt"
     info_path.write_text(format_split_report(info), encoding="utf-8")
+    print(f"Resultados guardados en: {results_dir / 'TabularBaseline'}")
 
 
 if __name__ == "__main__":
