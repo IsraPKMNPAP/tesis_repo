@@ -35,7 +35,10 @@ class Wav2VecDataset(Dataset):
         row = self.df.iloc[idx]
         path = Path(str(row[self.audio_col]))
         try:
-            seg = torch.load(path, map_location="cpu")
+            try:
+                seg = torch.load(path, map_location="cpu", weights_only=True)
+            except TypeError:
+                seg = torch.load(path, map_location="cpu")
         except Exception:
             seg = torch.zeros(1, int(self.target_sr * 5))
         if isinstance(seg, list):
@@ -76,6 +79,9 @@ class Wav2VecClassifier(nn.Module):
         self.head = nn.Sequential(nn.Dropout(dropout), nn.Linear(enc_dim, num_classes))
 
     def forward(self, wave: torch.Tensor):
+        # wav2vec2 espera [B, T]
+        if wave.dim() == 3 and wave.size(1) == 1:
+            wave = wave.squeeze(1)
         with torch.no_grad():
             feats = self.encoder.extract_features(wave)[0]
         if isinstance(feats, (list, tuple)):
