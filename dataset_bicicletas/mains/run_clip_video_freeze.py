@@ -21,9 +21,9 @@ from utils.results_io import ensure_dir
 from PIL import Image
 
 
-def load_frame(path: Path) -> Image.Image:
+def load_frames(path: Path) -> list[Image.Image]:
     if path.suffix.lower() in {".jpg", ".jpeg", ".png"}:
-        return Image.open(path).convert("RGB")
+        return [Image.open(path).convert("RGB")]
     try:
         t = torch.load(path, map_location="cpu", weights_only=True)
     except TypeError:
@@ -36,23 +36,26 @@ def load_frame(path: Path) -> Image.Image:
     if not isinstance(t, torch.Tensor):
         raise ValueError(f"No se pudo cargar tensor de {path}")
     if t.dim() == 4:
-        t = t[0]
-    elif t.dim() != 3:
+        frames = t
+    elif t.dim() == 3:
+        frames = t.unsqueeze(0)
+    else:
         raise ValueError(f"Dimensión no soportada: {t.shape}")
-    if t.max() <= 1.0:
-        t = (t * 255.0).clamp(0, 255)
-    t = t.byte()
-    img = Image.fromarray(t.permute(1, 2, 0).cpu().numpy())
-    return img
+    imgs = []
+    if frames.max() <= 1.0:
+        frames = (frames * 255.0).clamp(0, 255)
+    frames = frames.byte()
+    for f in frames:
+        imgs.append(Image.fromarray(f.permute(1, 2, 0).cpu().numpy()))
+    return imgs
 
 
 class ClipDataset(Dataset):
-    def __init__(self, df: pd.DataFrame, path_col: str, label_col: str, preprocess, device: torch.device):
+    def __init__(self, df: pd.DataFrame, path_col: str, label_col: str, preprocess):
         self.df = df.reset_index(drop=True)
         self.path_col = path_col
         self.label_col = label_col
         self.preprocess = preprocess
-        self.device = device
 
     def __len__(self):
         return len(self.df)
@@ -60,15 +63,24 @@ class ClipDataset(Dataset):
     def __getitem__(self, idx: int):
         row = self.df.iloc[idx]
         p = Path(str(row[self.path_col]))
-        img = load_frame(p)
-        x = self.preprocess(img)
+        imgs = load_frames(p)
+        frames = [self.preprocess(img) for img in imgs]  # list of [C,H,W]
+        x = torch.stack(frames, dim=0)  # [T,C,H,W]
         y = int(row[self.label_col])
         return x, y
 
 
 def collate_clip(batch):
     xs, ys = zip(*batch)
-    X = torch.stack(xs, dim=0)
+    # Pad to max T if variable length (though windows suelen tener T fijo)
+    max_t = max(x.shape[0] for x in xs)
+    padded = []
+    for x in xs:
+        if x.shape[0] < max_t:
+            pad = torch.zeros((max_t - x.shape[0],) + x.shape[1:], dtype=x.dtype)
+            x = torch.cat([x, pad], dim=0)
+        padded.append(x)
+    X = torch.stack(padded, dim=0)  # [B,T,C,H,W]
     y = torch.tensor(ys, dtype=torch.long)
     return X, y
 
@@ -82,8 +94,12 @@ class ClipClassifier(nn.Module):
         self.head = nn.Linear(self.model.visual.output_dim, num_classes)
 
     def forward(self, x):
+        # x: [B,T,C,H,W]
+        b, t, c, h, w = x.shape
+        x = x.view(b * t, c, h, w)
         with torch.no_grad():
-            z = self.model.encode_image(x)
+            z = self.model.encode_image(x)  # [B*T, D]
+        z = z.view(b, t, -1).mean(dim=1)  # promedio sobre frames
         return self.head(z)
 
 
@@ -131,7 +147,7 @@ def main():
             model.train()
         else:
             model.eval()
-        dataset = ClipDataset(df_split, args.path_col, args.label_col, preprocess=model.preprocess, device=device)
+        dataset = ClipDataset(df_split, args.path_col, args.label_col, preprocess=model.preprocess)
         loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=train_flag, collate_fn=collate_clip)
         ys, preds, logps = [], [], []
         total_loss = 0.0
