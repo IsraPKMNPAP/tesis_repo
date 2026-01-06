@@ -62,6 +62,7 @@ def main():
     ap.add_argument("--timestamp-col", type=str, default="timestamp")
     ap.add_argument("--window-id-col", type=str, default="window")
     ap.add_argument("--participant-col", type=str, default="participant")
+    ap.add_argument("--participant-frac", type=float, default=0.5, help="Fracción de participantes a usar (para acelerar). 0-1.")
     ap.add_argument("--batch-size", type=int, default=8)
     ap.add_argument("--epochs", type=int, default=10)
     ap.add_argument("--lr", type=float, default=1e-4)
@@ -159,6 +160,15 @@ def main():
     if df[args.label_col].dtype == object:
         df[args.label_col] = df[args.label_col].map(default_class_map)
     num_classes = int(pd.Series(df[args.label_col]).nunique())
+
+    # Submuestreo de participantes para acelerar (por defecto 50%)
+    if 0 < args.participant_frac < 1.0:
+        rng = np.random.RandomState(args.seed)
+        parts = pd.Index(df[args.participant_col].dropna().unique())
+        k = max(1, int(np.ceil(len(parts) * args.participant_frac)))
+        keep_parts = rng.choice(parts, size=k, replace=False)
+        df = df[df[args.participant_col].isin(keep_parts)].reset_index(drop=True)
+        print(f"Subconjunto de participantes: {len(keep_parts)}/{len(parts)} (frac={args.participant_frac})")
 
     # Split
     df_tr, df_val, df_te, info = split_by_participant(
@@ -365,6 +375,8 @@ def main():
             x_tab = b.x_tab.to(device)
             x_vid = b.x_vid.to(device)
             y = b.y.to(device)
+            if x_vid.dim() == 5:
+                x_vid = x_vid[:, :1]  # usa solo el primer frame para acelerar
 
             # Warmup and modality toggles
             use_tab = use_tab_default
@@ -438,6 +450,8 @@ def main():
                 x_tab = b.x_tab.to(device)
                 x_vid = b.x_vid.to(device)
                 y = b.y.to(device)
+                if x_vid.dim() == 5:
+                    x_vid = x_vid[:, :1]
                 if not use_tab_default:
                     x_tab = torch.zeros_like(x_tab)
                 if not use_vid_default:
@@ -552,6 +566,8 @@ def main():
         for b in dl_all:
             x_tab = b.x_tab.to(device)
             x_vid = b.x_vid.to(device)
+            if x_vid.dim() == 5:
+                x_vid = x_vid[:, :1]
             out = model(x_tab, x_vid)
             z = out["z"].detach().cpu().numpy()
             zs.append(z)

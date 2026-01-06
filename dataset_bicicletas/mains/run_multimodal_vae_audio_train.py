@@ -82,6 +82,7 @@ def main():
     ap.add_argument("--timestamp-col", type=str, default="timestamp")
     ap.add_argument("--window-id-col", type=str, default="window")
     ap.add_argument("--participant-col", type=str, default="participant")
+    ap.add_argument("--participant-frac", type=float, default=0.5, help="Fracción de participantes a usar (para acelerar)")
     ap.add_argument("--freeze-video", action="store_true", help="Congela backbone de video")
     ap.add_argument("--freeze-audio", action="store_true", help="Congela encoder de audio")
     ap.add_argument("--batch-size", type=int, default=8)
@@ -154,7 +155,7 @@ def main():
     ap.add_argument("--tabular-scaler", type=str, default="robust", choices=["standard", "robust"])
     ap.add_argument("--video-norm", type=str, default="imagenet", choices=["imagenet", "per_channel", "none"])
     ap.add_argument("--audio-sr", type=int, default=16000)
-    ap.add_argument("--audio-duration", type=float, default=5.0)
+    ap.add_argument("--audio-duration", type=float, default=2.0)
     ap.add_argument("--audio-norm", type=str, default="per_channel", choices=["per_channel", "none"])
     ap.add_argument("--audio-encoder", type=str, default="simple", choices=["simple", "cnn", "tcn", "wav2vec"])
     ap.add_argument("--audio-n-mels", type=int, default=64)
@@ -217,6 +218,15 @@ def main():
     if df[args.label_col].dtype == object:
         df[args.label_col] = df[args.label_col].map(default_class_map)
     num_classes = int(pd.Series(df[args.label_col]).nunique())
+
+    # Submuestreo de participantes para acelerar (por defecto 50%)
+    if 0 < args.participant_frac < 1.0:
+        rng = np.random.RandomState(args.seed)
+        parts = pd.Index(df[args.participant_col].dropna().unique())
+        k = max(1, int(np.ceil(len(parts) * args.participant_frac)))
+        keep_parts = rng.choice(parts, size=k, replace=False)
+        df = df[df[args.participant_col].isin(keep_parts)].reset_index(drop=True)
+        print(f\"Subconjunto de participantes: {len(keep_parts)}/{len(parts)} (frac={args.participant_frac})\")
 
     # Split por participante
     df_tr, df_val, df_te, info = split_by_participant(
@@ -490,6 +500,12 @@ def main():
             x_vid = b.x_vid.to(device)
             x_aud = b.x_aud.to(device) if b.x_aud is not None else None
             y = b.y.to(device)
+            if x_vid.dim() == 5:
+                x_vid = x_vid[:, :1]  # solo primer frame
+            if x_aud is not None:
+                max_len = int(args.audio_sr * args.audio_duration)
+                if x_aud.dim() >= 2:
+                    x_aud = x_aud[..., :max_len]
 
             use_tab = use_tab_default
             use_vid = use_vid_default
@@ -598,6 +614,12 @@ def main():
                 x_vid = b.x_vid.to(device)
                 x_aud = b.x_aud.to(device) if b.x_aud is not None else None
                 y = b.y.to(device)
+                if x_vid.dim() == 5:
+                    x_vid = x_vid[:, :1]
+                if x_aud is not None:
+                    max_len = int(args.audio_sr * args.audio_duration)
+                    if x_aud.dim() >= 2:
+                        x_aud = x_aud[..., :max_len]
                 if not use_tab_default:
                     x_tab = torch.zeros_like(x_tab)
                 if not use_vid_default:
@@ -727,6 +749,12 @@ def main():
                 x_vid = b.x_vid.to(device)
                 x_aud = b.x_aud.to(device) if b.x_aud is not None else None
                 y = b.y.to(device)
+                if x_vid.dim() == 5:
+                    x_vid = x_vid[:, :1]
+                if x_aud is not None:
+                    max_len = int(args.audio_sr * args.audio_duration)
+                    if x_aud.dim() >= 2:
+                        x_aud = x_aud[..., :max_len]
                 if not use_tab_default:
                     x_tab = torch.zeros_like(x_tab)
                 if not use_vid_default:
