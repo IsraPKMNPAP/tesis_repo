@@ -65,9 +65,9 @@ class FrameBackboneLSTM(nn.Module):
             x = x.unsqueeze(0).unsqueeze(1)
 
         B, T, C, H, W = x.shape
-        xt = x.view(B * T, C, H, W)
+        xt = x.contiguous().view(B * T, C, H, W)
         feat = self.frame_encoder(xt)  # [B*T, enc_dim]
-        feat = feat.view(B, T, -1)
+        feat = feat.contiguous().view(B, T, -1)
         out, _ = self.lstm(feat)
         z = out[:, -1, :]
         logits = self.head(self.dropout(z))
