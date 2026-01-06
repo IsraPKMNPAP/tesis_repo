@@ -24,23 +24,24 @@ def main():
     root = Path(__file__).resolve().parent.parent  # dataset_bicicletas/
 
     # Config más exigente pero aún moderada
-    epochs = "12"
+    epochs = "16"
     base_common = [
         "--epochs", epochs,
         "--batch-size", "24",
         "--val-split", "0.2",
         "--test-split", "0.1",
-        "--participant-frac", "0.75",
+        "--participant-frac", "0.9",
         "--participant-col", "participant",
         "--path-col", "frames_route",
         "--features-file", "utils/feature_sets/exp1.json",
         "--label-col", "action_proc",
         "--seed", "42",
         "--freeze-video",  # seguimos congelando para no disparar cómputo
-        "--lr", "3e-4",
-        "--weight-decay", "1e-4",
-        "--dropout", "0.2",
-        "--label-smoothing", "0.05",
+        "--lr", "5e-4",
+        "--weight-decay", "5e-5",
+        "--dropout", "0.1",
+        "--label-smoothing", "0.02",
+        "--class-weighted",
         "--early-stop-patience", epochs,  # desactivar early stop
     ]
 
