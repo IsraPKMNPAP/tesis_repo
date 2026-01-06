@@ -504,7 +504,7 @@ def main():
             x_aud = b.x_aud.to(device) if b.x_aud is not None else None
             y = b.y.to(device)
             if x_vid.dim() == 5:
-                x_vid = x_vid[:, :1]  # solo primer frame
+                x_vid = x_vid[:, :3]  # usar 3 frames para algo de secuencia
             if x_aud is not None:
                 max_len = int(args.audio_sr * args.audio_duration)
                 if x_aud.dim() >= 2:
@@ -618,7 +618,7 @@ def main():
                 x_aud = b.x_aud.to(device) if b.x_aud is not None else None
                 y = b.y.to(device)
                 if x_vid.dim() == 5:
-                    x_vid = x_vid[:, :1]
+                    x_vid = x_vid[:, :3]
                 if x_aud is not None:
                     max_len = int(args.audio_sr * args.audio_duration)
                     if x_aud.dim() >= 2:
@@ -753,7 +753,7 @@ def main():
                 x_aud = b.x_aud.to(device) if b.x_aud is not None else None
                 y = b.y.to(device)
                 if x_vid.dim() == 5:
-                    x_vid = x_vid[:, :1]
+                    x_vid = x_vid[:, :3]
                 if x_aud is not None:
                     max_len = int(args.audio_sr * args.audio_duration)
                     if x_aud.dim() >= 2:

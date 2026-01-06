@@ -378,7 +378,7 @@ def main():
             x_vid = b.x_vid.to(device)
             y = b.y.to(device)
             if x_vid.dim() == 5:
-                x_vid = x_vid[:, :1]  # usa solo el primer frame para acelerar
+                x_vid = x_vid[:, :3]  # usa 3 frames para algo de secuencia
 
             # Warmup and modality toggles
             use_tab = use_tab_default
@@ -453,7 +453,7 @@ def main():
                 x_vid = b.x_vid.to(device)
                 y = b.y.to(device)
                 if x_vid.dim() == 5:
-                    x_vid = x_vid[:, :1]
+                    x_vid = x_vid[:, :3]
                 if not use_tab_default:
                     x_tab = torch.zeros_like(x_tab)
                 if not use_vid_default:
@@ -569,7 +569,7 @@ def main():
             x_tab = b.x_tab.to(device)
             x_vid = b.x_vid.to(device)
             if x_vid.dim() == 5:
-                x_vid = x_vid[:, :1]
+                x_vid = x_vid[:, :3]
             out = model(x_tab, x_vid)
             z = out["z"].detach().cpu().numpy()
             zs.append(z)
