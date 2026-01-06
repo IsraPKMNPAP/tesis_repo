@@ -347,6 +347,12 @@ class VariationalMMVAEAudio(DeterministicMMVAEAudio):
         z = mu + eps * std
         return z, mu, logvar
 
+    def _kl_weight(self, step: int) -> float:
+        if self._kl_anneal_steps <= 0:
+            return self._kl_anneal_end
+        t = max(0, min(step, self._kl_anneal_steps)) / float(self._kl_anneal_steps)
+        return (1 - t) * self._kl_anneal_start + t * self._kl_anneal_end
+
     def forward(self, x_tab: torch.Tensor, x_vid: torch.Tensor, x_aud: Optional[torch.Tensor] = None):
         z_tab, z_vid = self.encode_modalities(x_tab, x_vid)
         z_aud = self.encode_audio(x_aud)
