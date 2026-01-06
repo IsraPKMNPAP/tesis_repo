@@ -24,7 +24,10 @@ from PIL import Image
 def load_frame(path: Path) -> Image.Image:
     if path.suffix.lower() in {".jpg", ".jpeg", ".png"}:
         return Image.open(path).convert("RGB")
-    t = torch.load(path, map_location="cpu")
+    try:
+        t = torch.load(path, map_location="cpu", weights_only=True)
+    except TypeError:
+        t = torch.load(path, map_location="cpu")
     if isinstance(t, dict):
         for k in ("frames", "video", "x"):
             if k in t:
