@@ -11,11 +11,14 @@ import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 from sklearn.metrics import classification_report
+
+# Ensure package root on path (dataset_bicicletas/)
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from utils.splits import split_by_participant, format_split_report
 from utils.metrics_eval import classification_report_basic, save_metrics
-
-# Ensure package root on path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.data_loading.multimodal import MultimodalDataset, collate_multimodal
 from src.models.mm_vae import DeterministicMMVAE, VariationalMMVAE

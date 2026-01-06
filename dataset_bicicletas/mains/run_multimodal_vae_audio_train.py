@@ -14,8 +14,10 @@ from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import StandardScaler, OneHotEncoder, RobustScaler
 
-# Ensure package root on path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Ensure package root on path (dataset_bicicletas/)
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from src.data_loading.multimodal_audio import MultimodalAudioDataset, collate_multimodal_audio
 from src.models.mm_vae_audio import DeterministicMMVAEAudio, VariationalMMVAEAudio
