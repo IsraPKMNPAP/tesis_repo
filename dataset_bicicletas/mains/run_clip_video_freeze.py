@@ -44,26 +44,29 @@ def load_frame(path: Path) -> Image.Image:
 
 
 class ClipDataset(Dataset):
-    def __init__(self, df: pd.DataFrame, path_col: str, label_col: str):
+    def __init__(self, df: pd.DataFrame, path_col: str, label_col: str, preprocess, device: torch.device):
         self.df = df.reset_index(drop=True)
         self.path_col = path_col
         self.label_col = label_col
+        self.preprocess = preprocess
+        self.device = device
 
     def __len__(self):
         return len(self.df)
 
     def __getitem__(self, idx: int):
         row = self.df.iloc[idx]
-        return Path(str(row[self.path_col])), int(row[self.label_col])
+        p = Path(str(row[self.path_col]))
+        img = load_frame(p)
+        x = self.preprocess(img)
+        y = int(row[self.label_col])
+        return x, y
 
 
-def collate_clip(batch, preprocess, device):
-    imgs, ys = zip(*batch)
-    tensors = []
-    for p in imgs:
-        tensors.append(preprocess(load_frame(p)))
-    X = torch.stack(tensors, dim=0).to(device)
-    y = torch.tensor(ys, dtype=torch.long, device=device)
+def collate_clip(batch):
+    xs, ys = zip(*batch)
+    X = torch.stack(xs, dim=0)
+    y = torch.tensor(ys, dtype=torch.long)
     return X, y
 
 
@@ -125,11 +128,14 @@ def main():
             model.train()
         else:
             model.eval()
-        loader = DataLoader(ClipDataset(df_split, args.path_col, args.label_col), batch_size=args.batch_size, shuffle=train_flag)
+        dataset = ClipDataset(df_split, args.path_col, args.label_col, preprocess=model.preprocess, device=device)
+        loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=train_flag, collate_fn=collate_clip)
         ys, preds, logps = [], [], []
         total_loss = 0.0
         for batch in loader:
-            X, y = collate_clip(batch, model.preprocess, device)
+            X, y = batch
+            X = X.to(device)
+            y = y.to(device)
             logits = model(X)
             loss = criterion(logits, y)
             if train_flag:
