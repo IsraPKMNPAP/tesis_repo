@@ -429,27 +429,28 @@ def main():
         history["loss"].append(tr_loss / max(1, len(dl_tr)))
         history["acc"].append(tr_acc)
 
-    # Validation
-    model.eval()
-    v_total, v_correct = 0, 0
-    v_probs = []
-    with torch.no_grad():
-        for b in dl_val:
-            x_tab = b.x_tab.to(device)
-            x_vid = b.x_vid.to(device)
-            y = b.y.to(device)
-            if not use_tab_default:
-                x_tab = torch.zeros_like(x_tab)
-            if not use_vid_default:
-                x_vid = torch.zeros_like(x_vid)
-            out = model(x_tab, x_vid)
-            logits = out["logits"]
-            v_probs.append(torch.softmax(logits, dim=1).cpu().numpy())
-            pred = logits.argmax(dim=1)
-            v_correct += int((pred == y).sum().item())
-            v_total += int(y.numel())
-    val_acc = v_correct / max(1, v_total)
-    val_hist.append(val_acc)
+        # Validation
+        model.eval()
+        v_total, v_correct = 0, 0
+        v_probs = []
+        with torch.no_grad():
+            for b in dl_val:
+                x_tab = b.x_tab.to(device)
+                x_vid = b.x_vid.to(device)
+                y = b.y.to(device)
+                if not use_tab_default:
+                    x_tab = torch.zeros_like(x_tab)
+                if not use_vid_default:
+                    x_vid = torch.zeros_like(x_vid)
+                out = model(x_tab, x_vid)
+                logits = out["logits"]
+                v_probs.append(torch.softmax(logits, dim=1).cpu().numpy())
+                pred = logits.argmax(dim=1)
+                v_correct += int((pred == y).sum().item())
+                v_total += int(y.numel())
+        val_acc = v_correct / max(1, v_total)
+        val_hist.append(val_acc)
+
         # Scheduler step
         if sched is not None:
             if isinstance(sched, torch.optim.lr_scheduler.ReduceLROnPlateau):
