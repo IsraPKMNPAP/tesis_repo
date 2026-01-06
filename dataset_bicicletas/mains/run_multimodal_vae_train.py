@@ -72,6 +72,7 @@ def main():
     ap.add_argument("--weight-decay", type=float, default=1e-5)
     ap.add_argument("--val-split", type=float, default=0.2)
     ap.add_argument("--test-split", type=float, default=0.0)
+    ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--deterministic", action="store_true", help="Usar VAE determinista (por defecto, variacional)")
     ap.add_argument("--tab-emb", type=int, default=128)
     ap.add_argument("--shared-dim", type=int, default=64)
