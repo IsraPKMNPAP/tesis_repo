@@ -19,6 +19,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.data_loading.multimodal_audio import MultimodalAudioDataset, collate_multimodal_audio
 from src.models.mm_vae_audio import DeterministicMMVAEAudio, VariationalMMVAEAudio
+from utils.splits import split_by_participant, format_split_report
+from utils.metrics_eval import classification_report_basic, save_metrics
 from utils.results_io import (
     ensure_dir,
     save_text,
@@ -70,21 +72,24 @@ def split_train_val(df: pd.DataFrame, label_col: str, val_split: float = 0.2, se
 
 def main():
     ap = argparse.ArgumentParser(description="Train multimodal VAE (tabular + video + audio) end-to-end")
-    ap.add_argument("--pkl", type=str, default="data/processed/multimodal_join.pkl", help="Ruta al pickle multimodal")
+    ap.add_argument("--pkl", type=str, default="data/processed/multimodal_av_join_audio_cached.pkl", help="Ruta al pickle multimodal")
     ap.add_argument("--label-col", type=str, default="action_proc")
     ap.add_argument("--features", nargs="*", default=None, help="Columnas tabulares a usar")
     ap.add_argument("--features-file", type=str, default="utils/feature_sets/exp1.json", help="Archivo con lista de features")
-    ap.add_argument("--path-col", type=str, default="gpu_tensor_path")
+    ap.add_argument("--path-col", type=str, default="frames_route")
     ap.add_argument("--video-root", type=str, default=None, help="Raíz para prefijar paths de video si son relativos (ej: /mnt/.../video_tensors)")
     ap.add_argument("--audio-col", type=str, default="audio_path", help="Columna con ruta directa al audio (opcional)")
     ap.add_argument("--timestamp-col", type=str, default="timestamp")
     ap.add_argument("--window-id-col", type=str, default="window")
     ap.add_argument("--participant-col", type=str, default="participant")
+    ap.add_argument("--freeze-video", action="store_true", help="Congela backbone de video")
+    ap.add_argument("--freeze-audio", action="store_true", help="Congela encoder de audio")
     ap.add_argument("--batch-size", type=int, default=8)
-    ap.add_argument("--epochs", type=int, default=20)
+    ap.add_argument("--epochs", type=int, default=10)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--weight-decay", type=float, default=1e-5)
     ap.add_argument("--val-split", type=float, default=0.2)
+    ap.add_argument("--test-split", type=float, default=0.0)
     ap.add_argument("--deterministic", action="store_true", help="Usar VAE determinista (por defecto, variacional)")
     ap.add_argument("--tab-emb", type=int, default=128)
     ap.add_argument("--shared-dim", type=int, default=64)
@@ -213,14 +218,19 @@ def main():
         df[args.label_col] = df[args.label_col].map(default_class_map)
     num_classes = int(pd.Series(df[args.label_col]).nunique())
 
-    # Split
-    df_tr, df_val = split_train_val(df, label_col=args.label_col, val_split=args.val_split)
+    # Split por participante
+    df_tr, df_val, df_te, info = split_by_participant(
+        df, participant_col=args.participant_col, val_frac=args.val_split, test_frac=args.test_split, seed=args.seed
+    )
+    print(format_split_report(info))
 
     # Preprocesamiento tabular
     X_tr_raw = df_tr[tab_cols].copy()
     X_val_raw = df_val[tab_cols].copy()
+    X_te_raw = df_te[tab_cols].copy() if len(df_te) else pd.DataFrame(columns=tab_cols)
     X_tr_prep = convertir_a_categorico(categorias_a_str(X_tr_raw))
     X_val_prep = convertir_a_categorico(categorias_a_str(X_val_raw))
+    X_te_prep = convertir_a_categorico(categorias_a_str(X_te_raw)) if len(df_te) else X_te_raw
     numeric = X_tr_prep.select_dtypes(include=["int64", "float64", "int32", "float32"]).columns.tolist()
     categorical = X_tr_prep.select_dtypes(include=["category"]).columns.tolist()
     scaler_cls = RobustScaler if args.tabular_scaler == "robust" else StandardScaler
@@ -232,6 +242,7 @@ def main():
     )
     X_tr_mat = preprocessor.fit_transform(X_tr_prep)
     X_val_mat = preprocessor.transform(X_val_prep)
+    X_te_mat = preprocessor.transform(X_te_prep) if len(df_te) else None
 
     results_dir = Path("results")
     ensure_dir(results_dir)
@@ -302,9 +313,33 @@ def main():
         audio_duration=args.audio_duration,
         audio_norm=args.audio_norm,
     )
+    ds_te = None
+    if len(df_te):
+        ds_te = MultimodalAudioDataset(
+            df_te,
+            tab_columns=tab_cols,
+            X_tab_array=_to_float_tensor(X_te_mat),
+            path_col=args.path_col,
+            participant_col=args.participant_col,
+            audio_start_col=args.audio_start_col,
+            audio_cached_col=args.audio_cached_col,
+            audio_root=args.audio_root if has_audio else None,
+            audio_template=args.audio_template,
+            audio_fallback_template=args.audio_fallback_template,
+            label_col=args.label_col,
+            timestamp_col=args.timestamp_col,
+            window_id_col=args.window_id_col,
+            prefer_df_label=True,
+            class_map=default_class_map,
+            video_transform=_video_transform,
+            audio_sr=args.audio_sr,
+            audio_duration=args.audio_duration,
+            audio_norm=args.audio_norm,
+        )
 
     dl_tr = DataLoader(ds_tr, batch_size=args.batch_size, shuffle=True, num_workers=0, collate_fn=collate_multimodal_audio)
     dl_val = DataLoader(ds_val, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate_multimodal_audio)
+    dl_te = DataLoader(ds_te, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate_multimodal_audio) if ds_te is not None else None
 
     # Modality defaults
     use_tab_default = (not args.disable_tabular) and (args.use_tabular or (not args.use_tabular and not args.use_video and not args.use_audio))
@@ -328,7 +363,7 @@ def main():
     video_kwargs = dict(
         backbone=args.video_backbone,
         backbone_name=args.video_name,
-        backbone_trainable=args.video_trainable,
+        backbone_trainable=bool(args.video_trainable and not args.freeze_video),
         backbone_unfreeze_last=args.video_unfreeze_last,
         target_size=args.video_target_size,
         lstm_hidden=args.video_lstm_hidden,
@@ -363,7 +398,7 @@ def main():
                 kernel_size=args.audio_tcn_kernel,
                 dropout=args.audio_encoder_dropout,
                 bundle_name=args.audio_wav2vec_bundle,
-                trainable=args.audio_wav2vec_trainable,
+                trainable=bool(args.audio_wav2vec_trainable and not args.freeze_audio),
             ),
         )
     else:
@@ -390,11 +425,18 @@ def main():
                 cnn_channels=args.audio_cnn_channels,
                 tcn_channels=args.audio_tcn_channels,
                 kernel_size=args.audio_tcn_kernel,
-                dropout=args.audio_encoder_drop,
+                dropout=args.audio_encoder_dropout,
                 bundle_name=args.audio_wav2vec_bundle,
-                trainable=args.audio_wav2vec_trainable,
+                trainable=bool(args.audio_wav2vec_trainable and not args.freeze_audio),
             ),
         )
+
+    if args.freeze_video:
+        for p in model.vid_enc.parameters():
+            p.requires_grad = False
+    if args.freeze_audio and hasattr(model, "audio_enc"):
+        for p in model.audio_enc.parameters():
+            p.requires_grad = False
 
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     model = model.to(device)
@@ -660,6 +702,12 @@ def main():
         "audio_sr": args.audio_sr,
         "audio_duration": args.audio_duration,
         "audio_norm": args.audio_norm,
+        "participant_col": args.participant_col,
+        "val_split": args.val_split,
+        "test_split": args.test_split,
+        "freeze_video": args.freeze_video,
+        "freeze_audio": args.freeze_audio,
+        "argv": sys.argv,
     }
     run_hash = compute_run_hash(cfg, sys.argv, model=model_name)
     ensure_dir(results_dir)
@@ -668,12 +716,13 @@ def main():
     if epoch_metrics:
         pd.DataFrame(epoch_metrics).to_csv(results_dir / artifact_name(model_name, "metrics", run_hash, "csv"), index=False)
 
-    # Validation report + confusion matrix + embeddings
-    if len(df_val) > 0:
-        all_true, all_pred, all_probs = [], [], []
+    def eval_loader(loader):
+        if loader is None:
+            return {}
+        ys, preds, logps = [], [], []
         model.eval()
         with torch.no_grad():
-            for b in dl_val:
+            for b in loader:
                 x_tab = b.x_tab.to(device)
                 x_vid = b.x_vid.to(device)
                 x_aud = b.x_aud.to(device) if b.x_aud is not None else None
@@ -686,27 +735,24 @@ def main():
                     x_aud = torch.zeros_like(x_aud)
                 out = model(x_tab, x_vid, x_aud)
                 logits = out["logits"]
-                probs = torch.softmax(logits, dim=1).cpu().numpy()
-                pred = logits.argmax(dim=1).cpu().numpy().tolist()
-                all_true.extend(y.cpu().numpy().tolist())
-                all_pred.extend(pred)
-                all_probs.append(probs)
-        report = classification_report(all_true, all_pred, zero_division=0)
-        print("\n=== Validation (Multimodal Audio VAE) ===")
-        print(report)
-        save_text(report, results_dir / artifact_name(model_name, "eval_report", run_hash, "txt"))
-        if all_probs:
-            probs = np.concatenate(all_probs, axis=0)
-            pd.DataFrame(probs, columns=[f"class_{i}" for i in range(probs.shape[1])]).to_csv(
-                results_dir / artifact_name(model_name, "eval_proba", run_hash, "csv"), index=False
-            )
-        try:
-            cm = confusion_matrix(all_true, all_pred)
-            pd.DataFrame(cm).to_csv(results_dir / artifact_name(model_name, "confusion_matrix", run_hash, "csv"), index=False)
-        except Exception as e:
-            save_text(f"confusion_matrix failed: {e}", results_dir / artifact_name(model_name, "confusion_matrix_error", run_hash, "txt"))
+                lp = torch.log_softmax(logits, dim=1).cpu()
+                ys.append(y.cpu())
+                logps.append(lp)
+                preds.append(lp.argmax(dim=1))
+        if not ys:
+            return {}
+        y_true = torch.cat(ys).numpy()
+        y_pred = torch.cat(preds).numpy()
+        logp_np = torch.cat(logps).numpy()
+        return classification_report_basic(y_true, y_pred, log_probs=logp_np)
 
-    # Save config
+    metrics_val = eval_loader(dl_val)
+    metrics_test = eval_loader(dl_te) if dl_te is not None else {}
+    all_metrics = {f"val_{k}": v for k, v in metrics_val.items()}
+    all_metrics.update({f"test_{k}": v for k, v in metrics_test.items()})
+    save_metrics(all_metrics, results_dir, model_name=model_name, config=cfg)
+    split_path = results_dir / model_name / "split_info.txt"
+    split_path.write_text(format_split_report(info), encoding="utf-8")
     (results_dir / artifact_name(model_name, "config", run_hash, "json")).write_text(
         json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8"
     )

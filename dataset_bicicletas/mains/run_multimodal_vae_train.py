@@ -11,6 +11,8 @@ import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 from sklearn.metrics import classification_report
+from utils.splits import split_by_participant, format_split_report
+from utils.metrics_eval import classification_report_basic, save_metrics
 
 # Ensure package root on path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -45,35 +47,9 @@ def _to_float_tensor(mat):
     return torch.tensor(arr.astype(np.float32), dtype=torch.float32)
 
 
-def split_train_val(df: pd.DataFrame, label_col: str, val_split: float = 0.2, seed: int = 42):
-    rng = np.random.RandomState(seed)
-    if val_split <= 0 or val_split >= 1:
-        return df.reset_index(drop=True), df.iloc[0:0].copy()
-    y = pd.to_numeric(df[label_col], errors='coerce') if df[label_col].dtype != object else df[label_col]
-    # Stratified split by label when possible
-    if y.notna().all():
-        labels = y
-        uniq = pd.Series(labels).unique()
-        val_idx = []
-        for c in uniq:
-            idx = np.where(labels == c)[0]
-            k = int(max(1, round(len(idx) * val_split)))
-            val_idx.extend(rng.choice(idx, size=min(k, len(idx)), replace=False))
-        val_idx = sorted(set(val_idx))
-    else:
-        n = len(df)
-        k = int(round(n * val_split))
-        val_idx = sorted(rng.choice(np.arange(n), size=k, replace=False).tolist())
-    mask = np.zeros(len(df), dtype=bool)
-    mask[val_idx] = True
-    df_val = df.iloc[mask].reset_index(drop=True)
-    df_tr = df.iloc[~mask].reset_index(drop=True)
-    return df_tr, df_val
-
-
 def main():
     ap = argparse.ArgumentParser(description="Train Multimodal VAE (tabular + video) end-to-end")
-    ap.add_argument("--pkl", type=str, default="data/processed/multimodal_join.pkl", help="Ruta al pickle multimodal")
+    ap.add_argument("--pkl", type=str, default="data/processed/multimodal_av_join_audio_cached.pkl", help="Ruta al pickle multimodal")
     ap.add_argument("--label-col", type=str, default="action_proc")
     ap.add_argument("--features", nargs="*", default=None, help="Columnas tabulares a usar")
     ap.add_argument(
@@ -82,14 +58,16 @@ def main():
         default="utils/feature_sets/exp1.json",
         help="Archivo con lista de features (json o txt)",
     )
-    ap.add_argument("--path-col", type=str, default="gpu_tensor_path")
+    ap.add_argument("--path-col", type=str, default="frames_route")
     ap.add_argument("--timestamp-col", type=str, default="timestamp")
     ap.add_argument("--window-id-col", type=str, default="window")
+    ap.add_argument("--participant-col", type=str, default="participant")
     ap.add_argument("--batch-size", type=int, default=8)
-    ap.add_argument("--epochs", type=int, default=20)
+    ap.add_argument("--epochs", type=int, default=10)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--weight-decay", type=float, default=1e-5)
     ap.add_argument("--val-split", type=float, default=0.2)
+    ap.add_argument("--test-split", type=float, default=0.0)
     ap.add_argument("--deterministic", action="store_true", help="Usar VAE determinista (por defecto, variacional)")
     ap.add_argument("--tab-emb", type=int, default=128)
     ap.add_argument("--shared-dim", type=int, default=64)
@@ -116,6 +94,7 @@ def main():
     ap.add_argument("--video-backbone", type=str, default="vit", choices=["vit", "clip"])
     ap.add_argument("--video-name", type=str, default="vit_b_16")
     ap.add_argument("--video-trainable", action="store_true", default=True)
+    ap.add_argument("--freeze-video", action="store_true", help="Congela el backbone de video (ignora video-trainable)")
     ap.add_argument("--video-unfreeze-last", type=int, default=1)
     ap.add_argument("--video-target-size", type=int, default=224)
     ap.add_argument("--video-lstm-hidden", type=int, default=256)
@@ -182,14 +161,19 @@ def main():
     num_classes = int(pd.Series(df[args.label_col]).nunique())
 
     # Split
-    df_tr, df_val = split_train_val(df, label_col=args.label_col, val_split=args.val_split)
+    df_tr, df_val, df_te, info = split_by_participant(
+        df, participant_col=args.participant_col, val_frac=args.val_split, test_frac=args.test_split, seed=args.seed
+    )
+    print(format_split_report(info))
 
     # Preprocesamiento tabular (StandardScaler + OneHot) similar al pipeline baseline
     X_tr_raw = df_tr[tab_cols].copy()
     X_val_raw = df_val[tab_cols].copy()
+    X_te_raw = df_te[tab_cols].copy() if len(df_te) else pd.DataFrame(columns=tab_cols)
     # Convertir objetos a categorías para que OneHotEncoder las procese
     X_tr_prep = convertir_a_categorico(categorias_a_str(X_tr_raw))
     X_val_prep = convertir_a_categorico(categorias_a_str(X_val_raw))
+    X_te_prep = convertir_a_categorico(categorias_a_str(X_te_raw)) if len(df_te) else X_te_raw
     # Build preprocessor with chosen scaler
     numeric = X_tr_prep.select_dtypes(include=["int64", "float64", "int32", "float32"]).columns.tolist()
     categorical = X_tr_prep.select_dtypes(include=["category"]).columns.tolist()
@@ -202,6 +186,7 @@ def main():
     )
     X_tr_mat = preprocessor.fit_transform(X_tr_prep)
     X_val_mat = preprocessor.transform(X_val_prep)
+    X_te_mat = preprocessor.transform(X_te_prep) if len(df_te) else None
 
     # Persistir preprocessor para reproducibilidad
     results_dir = Path("results")
@@ -259,9 +244,26 @@ def main():
         class_map=default_class_map,
         video_transform=_video_transform,
     )
+    ds_te = None
+    dl_te = None
+    if len(df_te):
+        ds_te = MultimodalDataset(
+            df_te,
+            tab_columns=tab_cols,
+            X_tab_array=_to_float_tensor(X_te_mat),
+            path_col=args.path_col,
+            label_col=args.label_col,
+            timestamp_col=args.timestamp_col,
+            window_id_col=args.window_id_col,
+            prefer_df_label=True,
+            class_map=default_class_map,
+            video_transform=_video_transform,
+        )
 
     dl_tr = DataLoader(ds_tr, batch_size=args.batch_size, shuffle=True, num_workers=0, collate_fn=collate_multimodal)
     dl_val = DataLoader(ds_val, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate_multimodal)
+    if ds_te is not None:
+        dl_te = DataLoader(ds_te, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate_multimodal)
 
     # Set defaults for modality usage: if none specified, use both
     use_tab_default = args.use_tabular or (not args.use_tabular and not args.use_video)
@@ -284,7 +286,7 @@ def main():
     video_kwargs = dict(
         backbone=args.video_backbone,
         backbone_name=args.video_name,
-        backbone_trainable=args.video_trainable,
+        backbone_trainable=bool(args.video_trainable and not args.freeze_video),
         backbone_unfreeze_last=args.video_unfreeze_last,
         target_size=args.video_target_size,
         lstm_hidden=args.video_lstm_hidden,
@@ -427,28 +429,27 @@ def main():
         history["loss"].append(tr_loss / max(1, len(dl_tr)))
         history["acc"].append(tr_acc)
 
-        # Validation
-        model.eval()
-        v_total, v_correct = 0, 0
-        v_probs = []
-        with torch.no_grad():
-            for b in dl_val:
-                x_tab = b.x_tab.to(device)
-                x_vid = b.x_vid.to(device)
-                y = b.y.to(device)
-                # Use the default (non-warmup) modality toggles for validation
-                if not use_tab_default:
-                    x_tab = torch.zeros_like(x_tab)
-                if not use_vid_default:
-                    x_vid = torch.zeros_like(x_vid)
-                out = model(x_tab, x_vid)
-                logits = out["logits"]
-                v_probs.append(torch.softmax(logits, dim=1).cpu().numpy())
-                pred = logits.argmax(dim=1)
-                v_correct += int((pred == y).sum().item())
-                v_total += int(y.numel())
-        val_acc = v_correct / max(1, v_total)
-        val_hist.append(val_acc)
+    # Validation
+    model.eval()
+    v_total, v_correct = 0, 0
+    v_probs = []
+    with torch.no_grad():
+        for b in dl_val:
+            x_tab = b.x_tab.to(device)
+            x_vid = b.x_vid.to(device)
+            y = b.y.to(device)
+            if not use_tab_default:
+                x_tab = torch.zeros_like(x_tab)
+            if not use_vid_default:
+                x_vid = torch.zeros_like(x_vid)
+            out = model(x_tab, x_vid)
+            logits = out["logits"]
+            v_probs.append(torch.softmax(logits, dim=1).cpu().numpy())
+            pred = logits.argmax(dim=1)
+            v_correct += int((pred == y).sum().item())
+            v_total += int(y.numel())
+    val_acc = v_correct / max(1, v_total)
+    val_hist.append(val_acc)
         # Scheduler step
         if sched is not None:
             if isinstance(sched, torch.optim.lr_scheduler.ReduceLROnPlateau):
@@ -514,6 +515,11 @@ def main():
         "w_cls": args.w_cls,
         "w_kl": args.w_kl,
         "kl_anneal_steps": args.kl_anneal_steps,
+        "participant_col": args.participant_col,
+        "val_split": args.val_split,
+        "test_split": args.test_split,
+        "freeze_video": args.freeze_video,
+        "argv": sys.argv,
     }
     run_hash = compute_run_hash(cfg, sys.argv, model=model_name)
     torch.save(model.state_dict(), results_dir / artifact_name(model_name, "model", run_hash, "pt"))
@@ -522,39 +528,6 @@ def main():
         pd.DataFrame(epoch_metrics).to_csv(results_dir / artifact_name(model_name, "metrics", run_hash, "csv"), index=False)
     # Save preprocessor tied to this run as well
     save_model_pickle(preprocessor, results_dir / artifact_name(model_name, "preprocessor", run_hash, "pkl"))
-
-    # Validation report + Confusion matrix + Guardado de embeddings
-    if len(df_val) > 0:
-        # Re-run validation to gather predictions
-        all_true, all_pred, all_probs = [], [], []
-        model.eval()
-        with torch.no_grad():
-            for b in dl_val:
-                x_tab = b.x_tab.to(device)
-                x_vid = b.x_vid.to(device)
-                y = b.y.to(device)
-                out = model(x_tab, x_vid)
-                logits = out["logits"]
-                probs = torch.softmax(logits, dim=1).cpu().numpy()
-                pred = logits.argmax(dim=1).cpu().numpy().tolist()
-                all_true.extend(y.cpu().numpy().tolist())
-                all_pred.extend(pred)
-                all_probs.append(probs)
-        report = classification_report(all_true, all_pred, zero_division=0)
-        print("\n=== Validation (Multimodal VAE) ===")
-        print(report)
-        save_text(report, results_dir / artifact_name(model_name, "eval_report", run_hash, "txt"))
-        if all_probs:
-            probs = np.concatenate(all_probs, axis=0)
-            pd.DataFrame(probs, columns=[f"class_{i}" for i in range(probs.shape[1])]).to_csv(
-                results_dir / artifact_name(model_name, "eval_proba", run_hash, "csv"), index=False
-            )
-        # Confusion matrix
-        try:
-            cm = confusion_matrix(all_true, all_pred)
-            pd.DataFrame(cm).to_csv(results_dir / artifact_name(model_name, "confusion_matrix", run_hash, "csv"), index=False)
-        except Exception as e:
-            save_text(f"confusion_matrix failed: {e}", results_dir / artifact_name(model_name, "confusion_matrix_error", run_hash, "txt"))
 
     # Extraer y guardar embeddings finales (para análisis econométrico)
     X_all_raw = df[tab_cols].copy()
@@ -609,11 +582,46 @@ def main():
     emb_df = pd.concat(concat_list, axis=1)
     emb_df.to_csv(results_dir / artifact_name(model_name, "embeddings", run_hash, "csv"), index=False)
 
-    # Save run config
+    # Save run config and metrics
+    val_metrics = classification_report_basic(np.array(all_true := []), np.array(all_pred := []), None) if False else {}
+    # Re-evaluate val/test for metrics with log_probs
+    def eval_loader(loader):
+        ys, preds, logps = [], [], []
+        model.eval()
+        with torch.no_grad():
+            for b in loader:
+                x_tab = b.x_tab.to(device)
+                x_vid = b.x_vid.to(device)
+                y = b.y.to(device)
+                if not use_tab_default:
+                    x_tab = torch.zeros_like(x_tab)
+                if not use_vid_default:
+                    x_vid = torch.zeros_like(x_vid)
+                out = model(x_tab, x_vid)
+                logits = out["logits"]
+                ys.append(y.cpu())
+                lp = torch.log_softmax(logits, dim=1).cpu()
+                logps.append(lp)
+                preds.append(lp.argmax(dim=1))
+        if not ys:
+            return {}
+        y_true = torch.cat(ys).numpy()
+        y_pred = torch.cat(preds).numpy()
+        logp_np = torch.cat(logps).numpy()
+        return classification_report_basic(y_true, y_pred, log_probs=logp_np)
+
+    metrics_val = eval_loader(dl_val)
+    metrics_test = eval_loader(dl_te) if dl_te is not None else {}
+    all_metrics = {f"val_{k}": v for k, v in metrics_val.items()}
+    all_metrics.update({f"test_{k}": v for k, v in metrics_test.items()})
+    save_metrics(all_metrics, results_dir, model_name=model_name, config=cfg)
+    split_path = results_dir / model_name / "split_info.txt"
+    split_path.write_text(format_split_report(info), encoding="utf-8")
     (results_dir / artifact_name(model_name, "config", run_hash, "json")).write_text(
         json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     register_run(results_dir, run_hash, model_name, cmd=" ".join(sys.argv), config=cfg)
+    print(f"Resultados guardados en: {results_dir / model_name}")
 
 
 if __name__ == "__main__":
