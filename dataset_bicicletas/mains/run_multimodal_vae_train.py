@@ -339,8 +339,6 @@ def main():
             proj_dim=args.proj_dim,
             contrastive_temp=args.contrastive_temp,
             modality_dropout_p=args.modality_dropout,
-            fusion_type=args.fusion,
-            late_alpha=args.late_alpha,
         )
 
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
