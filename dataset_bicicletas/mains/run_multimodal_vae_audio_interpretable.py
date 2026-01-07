@@ -12,15 +12,19 @@ import torch
 from torch.utils.data import DataLoader
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import StandardScaler, OneHotEncoder, RobustScaler
-from sklearn.metrics import classification_report, confusion_matrix
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Ensure package root on path (dataset_bicicletas/)
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from src.data_loading.multimodal_audio import MultimodalAudioDataset, collate_multimodal_audio
 from src.models.mm_vae_audio_interpretable import (
     InterpretableMMVAEAudioDeterministic,
     InterpretableMMVAEAudioVariational,
 )
+from utils.splits import split_by_participant, format_split_report
+from utils.metrics_eval import classification_report_basic, save_metrics
 from utils.results_io import (
     ensure_dir,
     save_text,
@@ -46,31 +50,6 @@ def _to_float_tensor(mat):
     return torch.tensor(arr.astype(np.float32), dtype=torch.float32)
 
 
-def split_train_val(df: pd.DataFrame, label_col: str, val_split: float = 0.2, seed: int = 42):
-    rng = np.random.RandomState(seed)
-    if val_split <= 0 or val_split >= 1:
-        return df.reset_index(drop=True), df.iloc[0:0].copy()
-    y = pd.to_numeric(df[label_col], errors="coerce") if df[label_col].dtype != object else df[label_col]
-    if y.notna().all():
-        labels = y
-        uniq = pd.Series(labels).unique()
-        val_idx = []
-        for c in uniq:
-            idx = np.where(labels == c)[0]
-            k = int(max(1, round(len(idx) * val_split)))
-            val_idx.extend(rng.choice(idx, size=min(k, len(idx)), replace=False))
-        val_idx = sorted(set(val_idx))
-    else:
-        n = len(df)
-        k = int(round(n * val_split))
-        val_idx = sorted(rng.choice(np.arange(n), size=k, replace=False).tolist())
-    mask = np.zeros(len(df), dtype=bool)
-    mask[val_idx] = True
-    df_val = df.iloc[mask].reset_index(drop=True)
-    df_tr = df.iloc[~mask].reset_index(drop=True)
-    return df_tr, df_val
-
-
 def main():
     ap = argparse.ArgumentParser(
         description="Entrena MM-VAE multimodal (tab + video + audio) con embedding interpretable (Arkoudi et al.)"
@@ -91,6 +70,8 @@ def main():
     ap.add_argument("--timestamp-col", type=str, default="timestamp")
     ap.add_argument("--window-id-col", type=str, default="window")
     ap.add_argument("--participant-col", type=str, default="participant")
+    ap.add_argument("--participant-frac", type=float, default=1.0, help="Fracción de participantes a usar (1.0 = todos)")
+    ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--audio-start-col", type=str, default="audio_segment_start")
     ap.add_argument("--audio-cached-col", type=str, default="audio_cached_path", help="Columna con segmento .pt precalculado")
     ap.add_argument("--audio-root", type=str, default="data/processed/audio_segments_cached", help="Raíz donde viven los segmentos cacheados")
@@ -102,6 +83,7 @@ def main():
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--weight-decay", type=float, default=1e-5)
     ap.add_argument("--val-split", type=float, default=0.2)
+    ap.add_argument("--test-split", type=float, default=0.0)
     ap.add_argument("--deterministic", action="store_true", help="Usar VAE determinista (por defecto, variacional)")
     ap.add_argument("--tab-emb", type=int, default=128)
     ap.add_argument("--shared-dim", type=int, default=None, help="Dim del embedding interpretable; default=num_classes")
@@ -163,7 +145,7 @@ def main():
     ap.add_argument("--tabular-scaler", type=str, default="robust", choices=["standard", "robust"])
     ap.add_argument("--video-norm", type=str, default="imagenet", choices=["imagenet", "per_channel", "none"])
     ap.add_argument("--audio-sr", type=int, default=16000)
-    ap.add_argument("--audio-duration", type=float, default=5.0)
+    ap.add_argument("--audio-duration", type=float, default=2.0)
     ap.add_argument("--audio-norm", type=str, default="per_channel", choices=["per_channel", "none"])
     ap.add_argument("--audio-encoder", type=str, default="simple", choices=["simple", "cnn", "tcn", "wav2vec"])
     ap.add_argument("--audio-n-mels", type=int, default=64)
@@ -231,8 +213,20 @@ def main():
             lambda p: str(aroot / p) if p not in ("", "nan", "None") and not Path(p).is_absolute() else p
         )
 
-    # Split
-    df_tr, df_val = split_train_val(df, label_col=args.label_col, val_split=args.val_split)
+    # Submuestreo de participantes si se solicita
+    if 0 < args.participant_frac < 1.0:
+        rng = np.random.RandomState(args.seed)
+        parts = pd.Index(df[args.participant_col].dropna().unique())
+        k = max(1, int(np.ceil(len(parts) * args.participant_frac)))
+        keep_parts = rng.choice(parts, size=k, replace=False)
+        df = df[df[args.participant_col].isin(keep_parts)].reset_index(drop=True)
+        print(f\"Subconjunto de participantes: {len(keep_parts)}/{len(parts)} (frac={args.participant_frac})\")
+
+    # Split por participante
+    df_tr, df_val, df_te, info = split_by_participant(
+        df, participant_col=args.participant_col, val_frac=args.val_split, test_frac=args.test_split, seed=args.seed
+    )
+    print(format_split_report(info))
 
     # Preprocesamiento tabular
     X_tr_raw = df_tr[tab_cols].copy()
@@ -324,8 +318,37 @@ def main():
         audio_norm=args.audio_norm,
     )
 
+    ds_te = None
+    dl_te = None
+    if len(df_te):
+        X_te_prep = convertir_a_categorico(categorias_a_str(df_te[tab_cols])) if len(df_te) else df_te[tab_cols]
+        X_te_mat = preprocessor.transform(X_te_prep) if len(df_te) else None
+        ds_te = MultimodalAudioDataset(
+            df_te,
+            tab_columns=tab_cols,
+            X_tab_array=_to_float_tensor(X_te_mat) if X_te_mat is not None else None,
+            path_col=args.path_col,
+            label_col=args.label_col,
+            timestamp_col=args.timestamp_col,
+            window_id_col=args.window_id_col,
+            participant_col=args.participant_col,
+            audio_start_col=args.audio_start_col,
+            audio_cached_col=args.audio_cached_col,
+            audio_root=args.audio_root if has_audio else None,
+            audio_template=args.audio_template,
+            audio_fallback_template=args.audio_fallback_template,
+            prefer_df_label=True,
+            class_map=default_class_map,
+            video_transform=_video_transform,
+            audio_sr=args.audio_sr,
+            audio_duration=args.audio_duration,
+            audio_norm=args.audio_norm,
+        )
+
     dl_tr = DataLoader(ds_tr, batch_size=args.batch_size, shuffle=True, num_workers=0, collate_fn=collate_multimodal_audio)
     dl_val = DataLoader(ds_val, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate_multimodal_audio)
+    if ds_te:
+        dl_te = DataLoader(ds_te, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate_multimodal_audio)
 
     # Modality defaults
     use_tab_default = args.use_tabular or (not args.use_tabular and not args.use_video and not args.use_audio)
@@ -431,6 +454,11 @@ def main():
             x_vid = b.x_vid.to(device)
             x_aud = b.x_aud.to(device) if b.x_aud is not None else None
             y = b.y.to(device)
+            if x_vid.dim() == 5:
+                x_vid = x_vid[:, :3]
+            if x_aud is not None:
+                max_len = int(args.audio_sr * args.audio_duration)
+                x_aud = x_aud[..., :max_len]
 
             use_tab = use_tab_default
             use_vid = use_vid_default
@@ -528,6 +556,11 @@ def main():
                 x_vid = b.x_vid.to(device)
                 x_aud = b.x_aud.to(device) if b.x_aud is not None else None
                 y = b.y.to(device)
+                if x_vid.dim() == 5:
+                    x_vid = x_vid[:, :3]
+                if x_aud is not None:
+                    max_len = int(args.audio_sr * args.audio_duration)
+                    x_aud = x_aud[..., :max_len]
                 if not use_tab_default:
                     x_tab = torch.zeros_like(x_tab)
                 if not use_vid_default:
@@ -608,6 +641,10 @@ def main():
         "audio_root": args.audio_root if has_audio else None,
         "audio_start_col": args.audio_start_col,
         "participant_col": args.participant_col,
+        "participant_frac": args.participant_frac,
+        "val_split": args.val_split,
+        "test_split": args.test_split,
+        "seed": args.seed,
         "features": tab_cols,
         "batch_size": args.batch_size,
         "epochs": args.epochs,
@@ -661,17 +698,22 @@ def main():
     if epoch_metrics:
         pd.DataFrame(epoch_metrics).to_csv(results_dir / artifact_name(model_name, "metrics", run_hash, "csv"), index=False)
 
-    # Validation report + confusion matrix + embeddings
-    if len(df_val) > 0:
-        all_true, all_pred, all_probs = [], [], []
-        z_rows = []
+    def eval_loader(loader):
+        if loader is None:
+            return {}
+        ys, preds, logps = [], [], []
         model.eval()
         with torch.no_grad():
-            for b in dl_val:
+            for b in loader:
                 x_tab = b.x_tab.to(device)
                 x_vid = b.x_vid.to(device)
                 x_aud = b.x_aud.to(device) if b.x_aud is not None else None
                 y = b.y.to(device)
+                if x_vid.dim() == 5:
+                    x_vid = x_vid[:, :3]
+                if x_aud is not None:
+                    max_len = int(args.audio_sr * args.audio_duration)
+                    x_aud = x_aud[..., :max_len]
                 if not use_tab_default:
                     x_tab = torch.zeros_like(x_tab)
                 if not use_vid_default:
@@ -680,38 +722,24 @@ def main():
                     x_aud = torch.zeros_like(x_aud)
                 out = model(x_tab, x_vid, x_aud)
                 logits = out["logits"]
-                probs = torch.softmax(logits, dim=1).cpu().numpy()
-                pred = logits.argmax(dim=1).cpu().numpy().tolist()
-                all_true.extend(y.cpu().numpy().tolist())
-                all_pred.extend(pred)
-                all_probs.append(probs)
-                if args.save_embeddings:
-                    z_rows.append(
-                        pd.DataFrame(
-                            out["z"].detach().cpu().numpy(),
-                            columns=[f"z_dim_{i}" for i in range(out["z"].shape[1])],
-                        )
-                    )
-        report = classification_report(all_true, all_pred, zero_division=0)
-        print("\n=== Validation (Multimodal Audio VAE Interpretable) ===")
-        print(report)
-        save_text(report, results_dir / artifact_name(model_name, "eval_report", run_hash, "txt"))
-        if all_probs:
-            probs = np.concatenate(all_probs, axis=0)
-            pd.DataFrame(probs, columns=[f"class_{i}" for i in range(probs.shape[1])]).to_csv(
-                results_dir / artifact_name(model_name, "eval_proba", run_hash, "csv"), index=False
-            )
-        try:
-            cm = confusion_matrix(all_true, all_pred)
-            pd.DataFrame(cm).to_csv(results_dir / artifact_name(model_name, "confusion_matrix", run_hash, "csv"), index=False)
-        except Exception as e:
-            save_text(f"confusion_matrix failed: {e}", results_dir / artifact_name(model_name, "confusion_matrix_error", run_hash, "txt"))
-        if args.save_embeddings and z_rows:
-            pd.concat(z_rows, ignore_index=True).to_csv(
-                results_dir / artifact_name(model_name, "embeddings", run_hash, "csv"), index=False
-            )
+                lp = torch.log_softmax(logits, dim=1).cpu()
+                ys.append(y.cpu())
+                preds.append(lp.argmax(dim=1))
+                logps.append(lp)
+        if not ys:
+            return {}
+        y_true = torch.cat(ys).numpy()
+        y_pred = torch.cat(preds).numpy()
+        logp_np = torch.cat(logps).numpy()
+        return classification_report_basic(y_true, y_pred, log_probs=logp_np)
 
-    # Save config
+    metrics_val = eval_loader(dl_val)
+    metrics_test = eval_loader(dl_te)
+    all_metrics = {f"val_{k}": v for k, v in metrics_val.items()}
+    all_metrics.update({f"test_{k}": v for k, v in metrics_test.items()})
+    save_metrics(all_metrics, results_dir, model_name=model_name, config=cfg)
+    split_path = results_dir / model_name / "split_info.txt"
+    split_path.write_text(format_split_report(info), encoding="utf-8")
     (results_dir / artifact_name(model_name, "config", run_hash, "json")).write_text(
         json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8"
     )

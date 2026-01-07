@@ -14,38 +14,28 @@ from torch.utils.data import DataLoader
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import StandardScaler, OneHotEncoder, RobustScaler
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from src.data_loading.multimodal_icl_v import MultimodalICLVDataset, collate_multimodal_icl_v
 from src.data_loading.multimodal_audio import MultimodalAudioDataset
 from src.models.icl_v import MultimodalICLVDeterministic
 from utils.features import load_features_file
+from utils.splits import split_by_participant, format_split_report
+from utils.metrics_eval import (
+    classification_report_basic,
+    pseudo_r2_mcfadden,
+    save_metrics,
+)
 from utils.results_io import (
     ensure_dir,
     save_model_pickle,
-    save_text,
     compute_run_hash,
     artifact_name,
     register_run,
 )
 from src.data_cleaning.cleaning import categorias_a_str, convertir_a_categorico
-
-
-def split_train_val(df: pd.DataFrame, label_col: str, val_split: float = 0.2, seed: int = 42) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    rng = np.random.RandomState(seed)
-    if val_split <= 0 or val_split >= 1:
-        return df.reset_index(drop=True), df.iloc[0:0].copy()
-    labels = pd.to_numeric(df[label_col], errors="coerce")
-    uniq = labels.dropna().unique()
-    val_idx: List[int] = []
-    for c in uniq:
-        idx = np.where(labels == c)[0]
-        k = int(max(1, round(len(idx) * val_split)))
-        val_idx.extend(rng.choice(idx, size=min(k, len(idx)), replace=False))
-    val_idx = sorted(set(val_idx))
-    mask = np.zeros(len(df), dtype=bool)
-    mask[val_idx] = True
-    return df.iloc[~mask].reset_index(drop=True), df.iloc[mask].reset_index(drop=True)
 
 
 def to_float_array(mat) -> np.ndarray:
@@ -216,6 +206,13 @@ def run_epoch(model, loader, device, train: bool = True, optimizer=None, grad_cl
         obs_u = batch.obs_u.to(device)
         indicators = batch.indicators.to(device)
         y = batch.y.to(device)
+        if x_vid.dim() == 5:
+            x_vid = x_vid[:, :3]  # usar 3 frames
+        if x_aud is not None:
+            max_len = int(loader.dataset.base.audio_duration * loader.dataset.base.audio_sr) if hasattr(loader.dataset, "base") else None
+            if max_len is None:
+                max_len = int(16000 * 2)
+            x_aud = x_aud[..., :max_len]
 
         out = model(x_tab, x_vid, x_aud, obs_u, indicators, y)
         loss = out["loss"]
@@ -245,6 +242,43 @@ def run_epoch(model, loader, device, train: bool = True, optimizer=None, grad_cl
     }
 
 
+def eval_loader_metrics(model, loader, device):
+    if loader is None:
+        return {}
+    ys, preds, logps = [], [], []
+    total_loglik = 0.0
+    model.eval()
+    with torch.no_grad():
+        for batch in loader:
+            x_tab = batch.x_tab.to(device)
+            x_vid = batch.x_vid.to(device)
+            x_aud = batch.x_aud.to(device) if batch.x_aud is not None else None
+            obs_u = batch.obs_u.to(device)
+            indicators = batch.indicators.to(device)
+            y = batch.y.to(device)
+            if x_vid.dim() == 5:
+                x_vid = x_vid[:, :3]
+            if x_aud is not None:
+                max_len = int(loader.dataset.base.audio_duration * loader.dataset.base.audio_sr) if hasattr(loader.dataset, "base") else int(16000 * 2)
+                x_aud = x_aud[..., :max_len]
+            out = model(x_tab, x_vid, x_aud, obs_u, indicators, y)
+            lp = out["logp"].detach().cpu()
+            ys.append(y.cpu())
+            preds.append(lp.argmax(dim=1))
+            logps.append(lp)
+            idx = (torch.arange(lp.size(0)), y.cpu())
+            total_loglik += float(lp[idx].sum().item())
+    if not ys:
+        return {}
+    y_true = torch.cat(ys).numpy()
+    y_pred = torch.cat(preds).numpy()
+    logp_np = torch.cat(logps).numpy()
+    metrics = classification_report_basic(y_true, y_pred, log_probs=logp_np)
+    metrics["log_likelihood"] = total_loglik
+    metrics["pseudo_r2_mcfadden"] = pseudo_r2_mcfadden(total_loglik, y_true)
+    return metrics
+
+
 def main():
     ap = argparse.ArgumentParser(description="ICLV con encoder multimodal determinista (tab OBS_LT + video + audio).")
     ap.add_argument("--pkl", type=str, default="data/processed/multimodal_av_join_audio_cached.pkl")
@@ -264,8 +298,10 @@ def main():
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--grad-clip", type=float, default=1.0)
     ap.add_argument("--val-split", type=float, default=0.2)
+    ap.add_argument("--test-split", type=float, default=0.0)
     ap.add_argument("--device", type=str, default="cpu")
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--participant-frac", type=float, default=1.0)
     ap.add_argument("--tabular-scaler", type=str, default="standard", choices=["standard", "robust"])
     # Video/audio paths
     ap.add_argument("--path-col", type=str, default="frames_route")
@@ -279,7 +315,7 @@ def main():
     ap.add_argument("--audio-template", type=str, default="raw_audio_{participant}.wav")
     ap.add_argument("--audio-fallback-template", type=str, default=None)
     ap.add_argument("--audio-sr", type=int, default=16000)
-    ap.add_argument("--audio-duration", type=float, default=5.0)
+    ap.add_argument("--audio-duration", type=float, default=2.0)
     ap.add_argument("--audio-norm", type=str, default="per_channel", choices=["per_channel", "none"])
     ap.add_argument("--fuse-dropout", type=float, default=0.0)
     ap.add_argument("--freeze-video", action="store_true", help="Congela el encoder de video para acelerar")
@@ -293,6 +329,23 @@ def main():
     if not pkl_path.exists():
         raise FileNotFoundError(f"No existe el pickle {pkl_path}")
     df = pd.read_pickle(pkl_path).reset_index(drop=True)
+    # Submuestreo de participantes si se solicita
+    if 0 < args.participant_frac < 1.0:
+        rng = np.random.RandomState(args.seed)
+        parts = pd.Index(df[args.participant_col].dropna().unique())
+        k = max(1, int(np.ceil(len(parts) * args.participant_frac)))
+        keep_parts = rng.choice(parts, size=k, replace=False)
+        df = df[df[args.participant_col].isin(keep_parts)].reset_index(drop=True)
+        print(f"Subconjunto de participantes: {len(keep_parts)}/{len(parts)} (frac={args.participant_frac})")
+
+    # Submuestreo de participantes
+    if 0 < args.participant_frac < 1.0:
+        rng = np.random.RandomState(args.seed)
+        parts = pd.Index(df[args.participant_col].dropna().unique())
+        k = max(1, int(np.ceil(len(parts) * args.participant_frac)))
+        keep_parts = rng.choice(parts, size=k, replace=False)
+        df = df[df[args.participant_col].isin(keep_parts)].reset_index(drop=True)
+        print(f"Subconjunto de participantes: {len(keep_parts)}/{len(parts)} (frac={args.participant_frac})")
 
     drop_cols = {args.label_col, args.path_col, args.audio_cached_col, args.timestamp_col, args.window_id_col, args.participant_col}
     obs_lt_cols = resolve_cols(df, args.obs_lt_cols, args.obs_lt_cols_file or args.features_file, drop_cols)
@@ -315,7 +368,14 @@ def main():
     df[args.label_col] = df[args.label_col].astype(int)
     num_choices = int(pd.Series(df[args.label_col]).nunique())
 
-    df_tr, df_val = split_train_val(df, label_col=args.label_col, val_split=args.val_split, seed=args.seed)
+    df_tr, df_val, df_te, info = split_by_participant(
+        df,
+        participant_col=args.participant_col,
+        val_frac=args.val_split,
+        test_frac=args.test_split,
+        seed=args.seed,
+    )
+    print(format_split_report(info))
 
     train_ds, val_ds, preproc_lt, preproc_u = build_datasets(
         df_tr=df_tr,
@@ -340,6 +400,34 @@ def main():
         audio_template=args.audio_template,
         audio_fallback_template=args.audio_fallback_template,
     )
+    # Test dataset opcional
+    test_ds = None
+    if len(df_te):
+        X_lt_te_mat = preproc_lt.transform(convertir_a_categorico(categorias_a_str(df_te[obs_lt_cols].copy())))
+        X_u_te_mat = preproc_u.transform(convertir_a_categorico(categorias_a_str(df_te[obs_u_cols].copy())))
+        _, ind_te_mat = encode_indicator_blocks(df_tr[indicator_cols].copy(), df_te[indicator_cols].copy(), indicator_cols)
+
+        base_te = MultimodalAudioDataset(
+            df=df_te,
+            tab_columns=obs_lt_cols,
+            X_tab_array=torch.tensor(to_float_array(X_lt_te_mat)),
+            path_col=args.path_col,
+            label_col=args.label_col,
+            timestamp_col=args.timestamp_col,
+            window_id_col=args.window_id_col,
+            participant_col=args.participant_col,
+            audio_start_col=args.audio_start_col,
+            audio_cached_col=args.audio_cached_col,
+            audio_root=args.audio_root,
+            audio_template=args.audio_template,
+            audio_fallback_template=args.audio_fallback_template,
+            audio_sr=args.audio_sr,
+            audio_duration=args.audio_duration,
+            audio_norm=args.audio_norm,
+        )
+        obs_u_te_t = torch.tensor(to_float_array(X_u_te_mat), dtype=torch.float32)
+        ind_te_t = torch.tensor(ind_te_mat, dtype=torch.float32)
+        test_ds = MultimodalICLVDataset(base_te, obs_u_te_t, ind_te_t, n_choices=num_choices)
 
     device = torch.device(args.device if args.device == "cpu" or torch.cuda.is_available() else "cpu")
     model = MultimodalICLVDeterministic(
@@ -358,6 +446,7 @@ def main():
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, collate_fn=collate_multimodal_icl_v)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, collate_fn=collate_multimodal_icl_v)
+    test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, collate_fn=collate_multimodal_icl_v) if test_ds is not None else None
 
     history = []
     for epoch in range(1, args.epochs + 1):
@@ -388,27 +477,27 @@ def main():
         "epochs": args.epochs,
         "lr": args.lr,
         "val_split": args.val_split,
+        "test_split": args.test_split,
         "tabular_scaler": args.tabular_scaler,
         "seed": args.seed,
         "device": str(device),
         "freeze_video": args.freeze_video,
         "freeze_audio": args.freeze_audio,
         "grad_clip": args.grad_clip,
+        "participant_col": args.participant_col,
+        "participant_frac": args.participant_frac,
+        "argv": sys.argv,
     }
     run_hash = compute_run_hash(base_config, sys.argv, model="MM_ICLV")
 
-    report_lines = []
-    report_lines.append("=== Multimodal ICLV determinista ===")
-    report_lines.append(
-        f"Train acc={history[-1]['train']['acc']:.4f} loglik_sum={history[-1]['train']['log_likelihood']:.4f} "
-        f"loglik_mean={history[-1]['train']['avg_log_likelihood']:.4f}"
-    )
-    report_lines.append(
-        f"Val   acc={history[-1]['val']['acc']:.4f} loglik_sum={history[-1]['val']['log_likelihood']:.4f} "
-        f"loglik_mean={history[-1]['val']['avg_log_likelihood']:.4f}"
-    )
-    save_text("\n".join(report_lines), results_dir / artifact_name("MM_ICLV", "eval_report", run_hash, "txt"))
-    (results_dir / artifact_name("MM_ICLV", "config", run_hash, "json")).write_text(json.dumps(base_config, indent=2), encoding="utf-8")
+    metrics_val = eval_loader_metrics(model, val_loader, device=device)
+    metrics_test = eval_loader_metrics(model, test_loader, device=device) if test_loader is not None else {}
+    all_metrics = {f"val_{k}": v for k, v in metrics_val.items()}
+    all_metrics.update({f"test_{k}": v for k, v in metrics_test.items()})
+    save_metrics(all_metrics, results_dir, model_name="MM_ICLV", config=base_config)
+
+    split_path = results_dir / "MM_ICLV" / "split_info.txt"
+    split_path.write_text(format_split_report(info), encoding="utf-8")
 
     torch.save(model.state_dict(), results_dir / artifact_name("MM_ICLV", "model", run_hash, "pt"))
     save_model_pickle(preproc_lt, results_dir / artifact_name("MM_ICLV", "preproc_lt", run_hash, "pkl"))

@@ -15,39 +15,29 @@ from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import StandardScaler, OneHotEncoder, RobustScaler
 
 # Asegurar import relativo desde dataset_bicicletas
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from src.data_loading.icl_v import ICLVDataset
 from src.models.icl_v import DeterministicICLV, compute_hessian_stats
 from src.data_cleaning.cleaning import categorias_a_str, convertir_a_categorico
 from utils.features import load_features_file
+from utils.splits import split_by_participant, format_split_report
+from utils.metrics_eval import (
+    classification_report_basic,
+    pseudo_r2_mcfadden,
+    save_metrics,
+    iclv_coeff_stats,
+    mean_nll_from_logprobs,
+)
 from utils.results_io import (
     ensure_dir,
     save_model_pickle,
-    save_text,
     compute_run_hash,
     artifact_name,
     register_run,
 )
-
-
-def split_train_val(df: pd.DataFrame, label_col: str, val_split: float = 0.2, seed: int = 42) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    rng = np.random.RandomState(seed)
-    if val_split <= 0 or val_split >= 1:
-        return df.reset_index(drop=True), df.iloc[0:0].copy()
-    labels = pd.to_numeric(df[label_col], errors="coerce")
-    uniq = labels.dropna().unique()
-    val_idx: List[int] = []
-    for c in uniq:
-        idx = np.where(labels == c)[0]
-        k = int(max(1, round(len(idx) * val_split)))
-        val_idx.extend(rng.choice(idx, size=min(k, len(idx)), replace=False))
-    val_idx = sorted(set(val_idx))
-    mask = np.zeros(len(df), dtype=bool)
-    mask[val_idx] = True
-    df_val = df.iloc[mask].reset_index(drop=True)
-    df_tr = df.iloc[~mask].reset_index(drop=True)
-    return df_tr, df_val
 
 
 def to_float_array(mat) -> np.ndarray:
@@ -210,6 +200,36 @@ def run_epoch(model, loader, device, train: bool = True, optimizer=None):
     }
 
 
+def eval_loader_metrics(model, loader, device):
+    if loader is None:
+        return {}
+    ys, preds, logps = [], [], []
+    total_loglik = 0.0
+    model.eval()
+    with torch.no_grad():
+        for obs_lt, obs_u, indicators, choice in loader:
+            obs_lt = obs_lt.to(device)
+            obs_u = obs_u.to(device)
+            indicators = indicators.to(device)
+            choice_t = torch.as_tensor(choice, device=device, dtype=torch.long)
+            out = model(obs_lt, obs_u, indicators, choice_t)
+            lp = out["logp"].detach().cpu()
+            ys.append(choice_t.cpu())
+            preds.append(lp.argmax(dim=1))
+            logps.append(lp)
+            idx = (torch.arange(lp.size(0)), choice_t.cpu())
+            total_loglik += float(lp[idx].sum().item())
+    if not ys:
+        return {}
+    y_true = torch.cat(ys).numpy()
+    y_pred = torch.cat(preds).numpy()
+    logp_np = torch.cat(logps).numpy()
+    metrics = classification_report_basic(y_true, y_pred, log_probs=logp_np)
+    metrics["log_likelihood"] = total_loglik
+    metrics["pseudo_r2_mcfadden"] = pseudo_r2_mcfadden(total_loglik, y_true)
+    return metrics
+
+
 def main():
     ap = argparse.ArgumentParser(description="Entrena un ICLV determinista amortizado (sin integracion Monte Carlo).")
     ap.add_argument("--pkl", type=str, default="data/processed/multimodal_av_join_audio_cached.pkl", help="Pickle multimodal de entrada")
@@ -228,6 +248,9 @@ def main():
     ap.add_argument("--epochs", type=int, default=50)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--val-split", type=float, default=0.2)
+    ap.add_argument("--test-split", type=float, default=0.0)
+    ap.add_argument("--participant-col", type=str, default="participant")
+    ap.add_argument("--participant-frac", type=float, default=1.0, help="Fracción de participantes a usar")
     ap.add_argument("--device", type=str, default="cpu")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--tabular-scaler", type=str, default="standard", choices=["standard", "robust"])
@@ -241,6 +264,15 @@ def main():
         raise FileNotFoundError(f"No existe el pickle {pkl_path}")
     df = pd.read_pickle(pkl_path).reset_index(drop=True)
 
+    # Submuestreo de participantes si se solicita
+    if 0 < args.participant_frac < 1.0:
+        rng = np.random.RandomState(args.seed)
+        parts = pd.Index(df[args.participant_col].dropna().unique())
+        k = max(1, int(np.ceil(len(parts) * args.participant_frac)))
+        keep_parts = rng.choice(parts, size=k, replace=False)
+        df = df[df[args.participant_col].isin(keep_parts)].reset_index(drop=True)
+        print(f"Subconjunto de participantes: {len(keep_parts)}/{len(parts)} (frac={args.participant_frac})")
+
     # Resolver columnas
     drop_cols = {
         args.label_col,
@@ -248,7 +280,7 @@ def main():
         "audio_cached_path",
         "timestamp",
         "window",
-        "participant",
+        args.participant_col,
         "session_id",
     }
 
@@ -294,7 +326,14 @@ def main():
     df[args.label_col] = df[args.label_col].astype(int)
     num_choices = int(pd.Series(df[args.label_col]).nunique())
 
-    df_tr, df_val = split_train_val(df, label_col=args.label_col, val_split=args.val_split, seed=args.seed)
+    df_tr, df_val, df_te, info = split_by_participant(
+        df,
+        participant_col=args.participant_col,
+        val_frac=args.val_split,
+        test_frac=args.test_split,
+        seed=args.seed,
+    )
+    print(format_split_report(info))
 
     train_ds, val_ds, preproc_lt, preproc_u = build_datasets(
         df_tr=df_tr,
@@ -306,6 +345,20 @@ def main():
         num_choices=num_choices,
         scaler=args.tabular_scaler,
     )
+    # Test dataset (opcional)
+    test_ds = None
+    if len(df_te):
+        X_lt_te = preproc_lt.transform(convertir_a_categorico(categorias_a_str(df_te[obs_lt_cols].copy())))
+        X_u_te = preproc_u.transform(convertir_a_categorico(categorias_a_str(df_te[obs_u_cols].copy())))
+        _, ind_te_mat = encode_indicator_blocks(df_tr, df_te, cols=indicator_cols)
+        y_te = df_te[args.label_col].to_numpy(dtype=np.int64)
+        test_ds = ICLVDataset(
+            obs_lt=to_float_array(X_lt_te),
+            obs_u=to_float_array(X_u_te),
+            indicators=ind_te_mat,
+            choices=y_te,
+            num_choices=num_choices,
+        )
 
     device = torch.device(args.device if args.device == "cpu" or torch.cuda.is_available() else "cpu")
     model = DeterministicICLV(
@@ -321,6 +374,7 @@ def main():
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False)
+    test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False) if test_ds is not None else None
 
     history = []
     for epoch in range(1, args.epochs + 1):
@@ -372,31 +426,28 @@ def main():
         "epochs": args.epochs,
         "lr": args.lr,
         "val_split": args.val_split,
+        "test_split": args.test_split,
         "tabular_scaler": args.tabular_scaler,
+        "participant_col": args.participant_col,
+        "participant_frac": args.participant_frac,
         "seed": args.seed,
         "device": str(device),
+        "argv": sys.argv,
     }
     run_hash = compute_run_hash(base_config, sys.argv, model="ICLV")
 
-    report_lines = []
-    report_lines.append("=== ICLV determinista ===")
-    report_lines.append(
-        f"Train acc={history[-1]['train']['acc']:.4f} loglik_sum={history[-1]['train']['log_likelihood']:.4f} "
-        f"loglik_mean={history[-1]['train']['avg_log_likelihood']:.4f}"
-    )
-    report_lines.append(
-        f"Val   acc={history[-1]['val']['acc']:.4f} loglik_sum={history[-1]['val']['log_likelihood']:.4f} "
-        f"loglik_mean={history[-1]['val']['avg_log_likelihood']:.4f}"
-    )
-    report_lines.append("")
-    report_lines.append("Parametros (theta, se, tstat):")
-    for name, theta, se, tstat in zip(hess_res.names, hess_res.theta.tolist(), hess_res.std.tolist(), hess_res.tstat.tolist()):
-        report_lines.append(f"{name}: theta={theta:.6f} se={se:.6f} t={tstat:.3f}")
-    report_text = "\n".join(report_lines)
-    save_text(report_text, results_dir / artifact_name("ICLV", "eval_report", run_hash, "txt"))
+    # Métricas (val/test)
+    metrics_val = eval_loader_metrics(model, val_loader, device=device)
+    metrics_test = eval_loader_metrics(model, test_loader, device=device) if test_loader is not None else {}
+    coeff_stats = iclv_coeff_stats(hess_res, top_k=5)
+    all_metrics = {f"val_{k}": v for k, v in metrics_val.items()}
+    all_metrics.update({f"test_{k}": v for k, v in metrics_test.items()})
+    all_metrics.update({f"hess_{k}": v for k, v in coeff_stats.items()})
+    save_metrics(all_metrics, results_dir, model_name="ICLV", config=base_config)
 
-    config_path = results_dir / artifact_name("ICLV", "config", run_hash, "json")
-    config_path.write_text(json.dumps(base_config, indent=2), encoding="utf-8")
+    # Guardar split info y config
+    split_path = results_dir / "ICLV" / "split_info.txt"
+    split_path.write_text(format_split_report(info), encoding="utf-8")
 
     params_table = pd.DataFrame(
         {
