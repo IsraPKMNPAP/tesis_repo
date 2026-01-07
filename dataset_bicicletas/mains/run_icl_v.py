@@ -215,6 +215,65 @@ def run_epoch(model, loader, device, train: bool = True, optimizer=None):
     }
 
 
+def _pred_distribution(model, loader, device, num_choices: int) -> dict:
+    if loader is None:
+        return {}
+    counts = np.zeros(num_choices, dtype=np.int64)
+    model.eval()
+    with torch.no_grad():
+        for obs_lt, obs_u, indicators, choice in loader:
+            obs_lt = obs_lt.to(device)
+            obs_u = obs_u.to(device)
+            indicators = indicators.to(device)
+            choice_t = torch.as_tensor(choice, device=device, dtype=torch.long)
+            out = model(obs_lt, obs_u, indicators, choice_t)
+            preds = out["logp"].argmax(dim=1).cpu().numpy()
+            for p in preds:
+                if 0 <= int(p) < num_choices:
+                    counts[int(p)] += 1
+    total = counts.sum()
+    if total <= 0:
+        return {"counts": counts.tolist(), "proportions": []}
+    return {
+        "counts": counts.tolist(),
+        "proportions": (counts / total).round(4).tolist(),
+        "majority_class": int(np.argmax(counts)),
+    }
+
+
+def _obs_u_constancy_stats(obs_u: torch.Tensor, tol: float = 1e-8) -> dict:
+    # obs_u shape [N, J, D]
+    if obs_u is None or obs_u.numel() == 0:
+        return {}
+    u = obs_u.detach().cpu().numpy()
+    if u.ndim != 3 or u.shape[1] <= 1:
+        return {}
+    # Max diff across alternatives per sample
+    ref = u[:, :1, :]
+    max_diff = np.max(np.abs(u - ref), axis=(1, 2))
+    frac_const = float((max_diff <= tol).mean())
+    return {
+        "obs_u_const_fraction": frac_const,
+        "obs_u_max_diff_mean": float(max_diff.mean()),
+        "obs_u_max_diff_p95": float(np.percentile(max_diff, 95)),
+    }
+
+
+def _variance_stats(mat: torch.Tensor) -> dict:
+    if mat is None or mat.numel() == 0:
+        return {}
+    x = mat.detach().cpu().numpy()
+    if x.ndim == 3:
+        # [N, J, D] -> var across N*J
+        x = x.reshape(-1, x.shape[-1])
+    var = np.var(x, axis=0)
+    return {
+        "var_mean": float(np.mean(var)),
+        "var_min": float(np.min(var)),
+        "var_zero_frac": float((var <= 1e-12).mean()),
+    }
+
+
 def eval_loader_metrics(model, loader, device):
     if loader is None:
         return {}
@@ -270,6 +329,7 @@ def main():
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--tabular-scaler", type=str, default="standard", choices=["standard", "robust"])
     ap.add_argument("--categorical-max-unique", type=int, default=50, help="Umbral de cardinalidad para tratar columnas como categóricas")
+    ap.add_argument("--debug-diagnostics", action="store_true", help="Imprime diagnósticos de varianza y distribución de predicciones")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -404,6 +464,15 @@ def main():
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False)
     test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False) if test_ds is not None else None
 
+    if args.debug_diagnostics:
+        lt_stats = _variance_stats(train_ds.obs_lt)
+        u_stats = _variance_stats(train_ds.obs_u)
+        const_stats = _obs_u_constancy_stats(train_ds.obs_u)
+        print(f"[Diag] OBS_LT var: {lt_stats}")
+        print(f"[Diag] OBS_U var: {u_stats}")
+        if const_stats:
+            print(f"[Diag] OBS_U constancy: {const_stats}")
+
     history = []
     for epoch in range(1, args.epochs + 1):
         tr_metrics = run_epoch(model, train_loader, device=device, train=True, optimizer=optimizer)
@@ -414,6 +483,11 @@ def main():
             f"train loss={tr_metrics['loss']:.4f} acc={tr_metrics['acc']:.3f} ll={tr_metrics['avg_log_likelihood']:.4f} | "
             f"val loss={val_metrics['loss']:.4f} acc={val_metrics['acc']:.3f} ll={val_metrics['avg_log_likelihood']:.4f}"
         )
+        if args.debug_diagnostics and (epoch == 1 or epoch == args.epochs):
+            tr_dist = _pred_distribution(model, train_loader, device, num_choices)
+            va_dist = _pred_distribution(model, val_loader, device, num_choices)
+            print(f"[Diag] Pred dist train (epoch {epoch}): {tr_dist}")
+            print(f"[Diag] Pred dist val   (epoch {epoch}): {va_dist}")
 
     # Hessiano y estadisticos (sobre train completo)
     full_train = ICLVDataset(
