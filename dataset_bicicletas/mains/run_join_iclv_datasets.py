@@ -23,6 +23,7 @@ def main():
     ap.add_argument("--obs-lt-cols-file", type=str, default="utils/feature_sets/obs_lt.txt")
     ap.add_argument("--obs-u-cols-file", type=str, default="utils/feature_sets/obs_u.txt")
     ap.add_argument("--indicator-cols-file", type=str, default="utils/feature_sets/obs_i.txt")
+    ap.add_argument("--impute-mode", action="store_true", help="Imputa NaN en columnas nuevas con la moda")
     args = ap.parse_args()
 
     all_data_path = Path(args.all_data_csv)
@@ -53,6 +54,15 @@ def main():
     all_subset = df_all[join_cols + keep_cols].copy()
 
     merged = df_mm.merge(all_subset, on=join_cols, how="left")
+
+    if args.impute_mode and keep_cols:
+        for col in keep_cols:
+            if col not in merged.columns:
+                continue
+            if merged[col].isna().any():
+                modes = merged[col].mode(dropna=True)
+                if len(modes) > 0:
+                    merged[col] = merged[col].fillna(modes.iloc[0])
 
     missing = [c for c in need_cols if c not in merged.columns]
     if missing:
