@@ -348,8 +348,12 @@ def main():
         print(f"Subconjunto de participantes: {len(keep_parts)}/{len(parts)} (frac={args.participant_frac})")
 
     drop_cols = {args.label_col, args.path_col, args.audio_cached_col, args.timestamp_col, args.window_id_col, args.participant_col}
-    obs_lt_cols = resolve_cols(df, args.obs_lt_cols, args.obs_lt_cols_file or args.features_file, drop_cols)
-    obs_u_cols = resolve_cols(df, args.obs_u_cols, args.obs_u_cols_file or args.features_file, drop_cols)
+    base_features_file = args.features_file
+    if args.obs_lt_cols_file or args.obs_u_cols_file or args.indicator_cols_file:
+        base_features_file = None
+
+    obs_lt_cols = resolve_cols(df, args.obs_lt_cols, args.obs_lt_cols_file or base_features_file, drop_cols)
+    obs_u_cols = resolve_cols(df, args.obs_u_cols, args.obs_u_cols_file or base_features_file, drop_cols)
     indicator_cols = resolve_cols(df, args.indicator_cols, args.indicator_cols_file, set())
     if not indicator_cols:
         indicator_cols = []
