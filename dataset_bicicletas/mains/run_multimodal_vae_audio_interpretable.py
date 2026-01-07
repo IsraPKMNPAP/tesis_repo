@@ -110,6 +110,7 @@ def main():
     ap.add_argument("--video-backbone", type=str, default="vit", choices=["vit", "clip"])
     ap.add_argument("--video-name", type=str, default="vit_b_16")
     ap.add_argument("--video-trainable", action="store_true", default=True)
+    ap.add_argument("--freeze-video", action="store_true", help="Congela el backbone de video")
     ap.add_argument("--video-unfreeze-last", type=int, default=1)
     ap.add_argument("--video-target-size", type=int, default=224)
     ap.add_argument("--video-lstm-hidden", type=int, default=256)
@@ -155,6 +156,7 @@ def main():
     ap.add_argument("--audio-encoder-dropout", type=float, default=0.2)
     ap.add_argument("--audio-wav2vec-bundle", type=str, default="WAV2VEC2_BASE")
     ap.add_argument("--audio-wav2vec-trainable", action="store_true")
+    ap.add_argument("--freeze-audio", action="store_true", help="Congela el encoder de audio")
     # Interpretabilidad
     ap.add_argument("--w-l1-z", type=float, default=0.05, help="Peso L1 sobre z interpretable")
     ap.add_argument("--w-ortho-proto", type=float, default=0.05, help="Peso de ortogonalidad sobre embeddings de clase")
@@ -369,7 +371,7 @@ def main():
     video_kwargs = dict(
         backbone=args.video_backbone,
         backbone_name=args.video_name,
-        backbone_trainable=args.video_trainable,
+        backbone_trainable=bool(args.video_trainable and not args.freeze_video),
         backbone_unfreeze_last=args.video_unfreeze_last,
         target_size=args.video_target_size,
         lstm_hidden=args.video_lstm_hidden,
@@ -387,7 +389,7 @@ def main():
         kernel_size=args.audio_tcn_kernel,
         dropout=args.audio_encoder_dropout,
         bundle_name=args.audio_wav2vec_bundle,
-        trainable=args.audio_wav2vec_trainable,
+        trainable=bool(args.audio_wav2vec_trainable and not args.freeze_audio),
     )
 
     model_kwargs = dict(
