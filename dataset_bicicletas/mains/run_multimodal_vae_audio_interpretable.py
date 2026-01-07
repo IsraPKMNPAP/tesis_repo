@@ -220,7 +220,7 @@ def main():
         k = max(1, int(np.ceil(len(parts) * args.participant_frac)))
         keep_parts = rng.choice(parts, size=k, replace=False)
         df = df[df[args.participant_col].isin(keep_parts)].reset_index(drop=True)
-        print(f\"Subconjunto de participantes: {len(keep_parts)}/{len(parts)} (frac={args.participant_frac})\")
+        print(f"Subconjunto de participantes: {len(keep_parts)}/{len(parts)} (frac={args.participant_frac})")
 
     # Split por participante
     df_tr, df_val, df_te, info = split_by_participant(
