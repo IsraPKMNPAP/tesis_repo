@@ -63,6 +63,21 @@ def prepare_preprocessor(df: pd.DataFrame, cols: Sequence[str], scaler: str = "s
     return mat, preprocessor
 
 
+def coerce_low_cardinality_cats(df: pd.DataFrame, cols: Sequence[str], max_unique: int = 50) -> pd.DataFrame:
+    """Convierte columnas con baja cardinalidad a categóricas (para OneHot)."""
+    out = df.copy()
+    for col in cols:
+        if col not in out.columns:
+            continue
+        try:
+            nunique = out[col].nunique(dropna=True)
+        except Exception:
+            nunique = None
+        if nunique is not None and nunique <= max_unique:
+            out[col] = out[col].astype(str).astype("category")
+    return out
+
+
 def encode_indicator_blocks(
     df_tr: pd.DataFrame, df_val: pd.DataFrame, cols: Sequence[str]
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -254,6 +269,7 @@ def main():
     ap.add_argument("--device", type=str, default="cpu")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--tabular-scaler", type=str, default="standard", choices=["standard", "robust"])
+    ap.add_argument("--categorical-max-unique", type=int, default=50, help="Umbral de cardinalidad para tratar columnas como categóricas")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -261,8 +277,12 @@ def main():
 
     pkl_path = Path(args.pkl)
     if not pkl_path.exists():
-        raise FileNotFoundError(f"No existe el pickle {pkl_path}")
-    df = pd.read_pickle(pkl_path).reset_index(drop=True)
+        raise FileNotFoundError(f"No existe el archivo {pkl_path}")
+    if pkl_path.suffix.lower() == ".csv":
+        df = pd.read_csv(pkl_path, low_memory=False)
+    else:
+        df = pd.read_pickle(pkl_path)
+    df = df.reset_index(drop=True)
 
     # Submuestreo de participantes si se solicita
     if 0 < args.participant_frac < 1.0:
@@ -284,16 +304,20 @@ def main():
         "session_id",
     }
 
+    base_features_file = args.features_file
+    if args.obs_lt_cols_file or args.obs_u_cols_file or args.indicator_cols_file:
+        base_features_file = None
+
     obs_lt_cols = resolve_cols(
         df=df,
-        base_features_file=args.features_file,
+        base_features_file=base_features_file,
         explicit_cols=args.obs_lt_cols,
         cols_file=args.obs_lt_cols_file,
         drop_cols=drop_cols,
     )
     obs_u_cols = resolve_cols(
         df=df,
-        base_features_file=args.features_file,
+        base_features_file=base_features_file,
         explicit_cols=args.obs_u_cols,
         cols_file=args.obs_u_cols_file,
         drop_cols=drop_cols,
@@ -325,6 +349,10 @@ def main():
         df = df.dropna(subset=[args.label_col]).reset_index(drop=True)
     df[args.label_col] = df[args.label_col].astype(int)
     num_choices = int(pd.Series(df[args.label_col]).nunique())
+
+    # Coercion de categóricas por cardinalidad
+    df = coerce_low_cardinality_cats(df, obs_lt_cols, max_unique=args.categorical_max_unique)
+    df = coerce_low_cardinality_cats(df, obs_u_cols, max_unique=args.categorical_max_unique)
 
     df_tr, df_val, df_te, info = split_by_participant(
         df,
