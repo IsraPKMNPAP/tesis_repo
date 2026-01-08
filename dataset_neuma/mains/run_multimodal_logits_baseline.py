@@ -153,6 +153,10 @@ def main() -> None:
 
     full_df = pd.read_csv(args.data)
     full_df.columns = full_df.columns.str.lower()
+    for col in ["price", "len_med"]:
+        if col in full_df.columns:
+            med = full_df[col].median()
+            full_df[col] = full_df[col].fillna(med)
     full_df = full_df.dropna(subset=["embedding_path", "eeg_concat_path", "bought"])
     full_df["bought"] = full_df["bought"].astype(int)
     if "subject" not in full_df.columns:
