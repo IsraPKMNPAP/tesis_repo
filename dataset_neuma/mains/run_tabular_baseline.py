@@ -58,7 +58,7 @@ def evaluate(model, loader, device):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Baseline tabular MLP para NEUMA.")
-    parser.add_argument("--data", type=Path, default=Path("/mnt/otra_particion/home/israel_gpu_data/dataset_neuma/processed/data_base_neuma.csv"))
+    parser.add_argument("--data", type=Path, default=Path("/mnt/otra_particion/home/israel_gpu_data/dataset_neuma/processed/data_latente_estimulo_neuma.csv"))
     parser.add_argument("--config", type=Path, default=Path("dataset_neuma/configs/tabular_cols.json"))
     parser.add_argument("--results-dir", type=Path, default=Path("dataset_neuma/results/tabular_baseline"))
     parser.add_argument("--batch-size", type=int, default=128)
