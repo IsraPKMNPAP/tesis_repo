@@ -498,7 +498,7 @@ def main():
     metrics_test = eval_loader_metrics(model, test_loader, device=device) if test_loader is not None else {}
     all_metrics = {f"val_{k}": v for k, v in metrics_val.items()}
     all_metrics.update({f"test_{k}": v for k, v in metrics_test.items()})
-    save_metrics(all_metrics, results_dir, model_name="MM_ICLV", config=base_config)
+    save_metrics(all_metrics, results_dir, model_name="MM_ICLV", config=base_config, run_hash=run_hash)
 
     split_path = results_dir / "MM_ICLV" / "split_info.txt"
     split_path.write_text(format_split_report(info), encoding="utf-8")

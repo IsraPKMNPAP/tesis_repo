@@ -545,7 +545,7 @@ def main():
     all_metrics = {f"val_{k}": v for k, v in metrics_val.items()}
     all_metrics.update({f"test_{k}": v for k, v in metrics_test.items()})
     all_metrics.update({f"hess_{k}": v for k, v in coeff_stats.items()})
-    save_metrics(all_metrics, results_dir, model_name="ICLV", config=base_config)
+    save_metrics(all_metrics, results_dir, model_name="ICLV", config=base_config, run_hash=run_hash)
 
     # Guardar split info y config
     split_path = results_dir / "ICLV" / "split_info.txt"
