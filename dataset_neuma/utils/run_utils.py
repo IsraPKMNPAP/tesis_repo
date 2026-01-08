@@ -20,7 +20,13 @@ def save_run_metadata(args: Any, results_dir: Path, filename: str = "run_metadat
     }
     # intentar serializar args (argparse Namespace)
     if hasattr(args, "__dict__"):
-        data["args"] = {k: v for k, v in vars(args).items()}
+        cleaned = {}
+        for k, v in vars(args).items():
+            if isinstance(v, Path):
+                cleaned[k] = str(v)
+            else:
+                cleaned[k] = v
+        data["args"] = cleaned
     out = results_dir / filename
     with open(out, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
