@@ -57,8 +57,13 @@ def pseudo_r2_mcfadden(log_lik_model: float, y_true: np.ndarray, num_choices: in
 
 
 def summarize_coefs(names: Sequence[str], theta: np.ndarray, std: Optional[np.ndarray] = None, top_k: int = 5) -> Dict:
+    if hasattr(theta, "detach"):
+        theta = theta.detach().cpu().numpy()
     theta = np.asarray(theta).flatten()
-    std = np.asarray(std).flatten() if std is not None else None
+    if std is not None:
+        if hasattr(std, "detach"):
+            std = std.detach().cpu().numpy()
+        std = np.asarray(std).flatten()
     pairs = list(zip(names, theta)) if names else [(f"coef_{i}", v) for i, v in enumerate(theta)]
     top = pairs[:top_k]
     out = []

@@ -27,18 +27,23 @@ class DeterministicICLV(nn.Module):
         n_choices: int,
         alpha: float = 1.0,
         delta_per_alt: bool = True,
+        beta_per_alt: bool = False,
     ):
         super().__init__()
         self.n_choices = int(n_choices)
         self.n_indicators = int(n_indicators)
         self.alpha = float(alpha)
+        self.beta_per_alt = bool(beta_per_alt)
 
         # Bloque estructural y de medición
         self.Gamma = nn.Linear(dim_obs_lt, n_latent)
         self.Lambda = nn.Linear(n_latent, n_indicators) if n_indicators > 0 else None
 
         # Bloque de utilidad
-        self.beta = nn.Linear(dim_obs_u, 1, bias=False)
+        if self.beta_per_alt:
+            self.beta = nn.Parameter(torch.zeros(n_choices, dim_obs_u))
+        else:
+            self.beta = nn.Linear(dim_obs_u, 1, bias=False)
         if delta_per_alt:
             self.delta = nn.Parameter(torch.zeros(n_choices, n_latent))
         else:
@@ -55,7 +60,10 @@ class DeterministicICLV(nn.Module):
             nn.init.xavier_uniform_(self.Lambda.weight)
             if self.Lambda.bias is not None:
                 nn.init.zeros_(self.Lambda.bias)
-        nn.init.xavier_uniform_(self.beta.weight)
+        if isinstance(self.beta, nn.Linear):
+            nn.init.xavier_uniform_(self.beta.weight)
+        else:
+            nn.init.xavier_uniform_(self.beta)
         nn.init.zeros_(self.ASC)
         nn.init.zeros_(self.delta)
 
@@ -63,7 +71,11 @@ class DeterministicICLV(nn.Module):
         """V_nj = beta^T OBS_U_nj + delta_j^T LT_n + ASC_j."""
         if obs_u.dim() != 3:
             raise ValueError(f"Se espera obs_u con shape [B, J, dim_obs_u]; se recibio {obs_u.shape}")
-        beta_term = self.beta(obs_u).squeeze(-1)  # [B, J]
+        if self.beta_per_alt:
+            # obs_u: [B, J, dim_obs_u], beta: [J, dim_obs_u]
+            beta_term = (obs_u * self.beta.unsqueeze(0)).sum(-1)
+        else:
+            beta_term = self.beta(obs_u).squeeze(-1)  # [B, J]
         if self.delta.dim() == 2:
             delta_term = LT @ self.delta.t()  # [B, J]
         else:

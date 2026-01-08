@@ -23,12 +23,14 @@ class MultimodalICLVDeterministic(nn.Module):
         n_choices: int,
         alpha: float = 1.0,
         delta_per_alt: bool = True,
+        beta_per_alt: bool = False,
         img_proj_dim: int = 32,
     ):
         super().__init__()
         self.n_choices = int(n_choices)
         self.alpha = float(alpha)
         self.n_latent = n_latent
+        self.beta_per_alt = bool(beta_per_alt)
         self.dim_eeg_emb = dim_eeg_emb
 
         self.img_proj = nn.Sequential(
@@ -54,7 +56,13 @@ class MultimodalICLVDeterministic(nn.Module):
             else None
         )
 
-        self.beta = nn.Linear(dim_obs_u, 1, bias=False) if dim_obs_u > 0 else None
+        if dim_obs_u > 0:
+            if self.beta_per_alt:
+                self.beta = nn.Parameter(torch.zeros(n_choices, dim_obs_u))
+            else:
+                self.beta = nn.Linear(dim_obs_u, 1, bias=False)
+        else:
+            self.beta = None
         if delta_per_alt:
             self.delta = nn.Parameter(torch.zeros(n_choices, n_latent))
         else:
@@ -75,10 +83,13 @@ class MultimodalICLVDeterministic(nn.Module):
     def compute_utilities(self, obs_u: torch.Tensor, LT: torch.Tensor) -> torch.Tensor:
         if obs_u.dim() != 3:
             raise ValueError(f"Se espera obs_u [B, J, dim_obs_u]; got {obs_u.shape}")
-        if self.beta is not None:
-            beta_term = self.beta(obs_u).squeeze(-1)  # [B, J]
-        else:
+        if self.beta is None:
             beta_term = torch.zeros((obs_u.shape[0], obs_u.shape[1]), device=obs_u.device, dtype=obs_u.dtype)
+        else:
+            if self.beta_per_alt:
+                beta_term = (obs_u * self.beta.unsqueeze(0)).sum(-1)
+            else:
+                beta_term = self.beta(obs_u).squeeze(-1)
         if self.delta.dim() == 2:
             delta_term = LT @ self.delta.t()  # [B, J]
         else:

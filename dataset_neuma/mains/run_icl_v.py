@@ -191,6 +191,7 @@ def main():
     parser.add_argument("--alpha", type=float, default=1.0)
     parser.add_argument("--n-latent", type=int, default=3)
     parser.add_argument("--delta-per-alt", action="store_true")
+    parser.add_argument("--beta-per-alt", action="store_true", help="Usar betas distintos por alternativa.")
     parser.add_argument("--num-choices", type=int, default=2)
     parser.add_argument("--scaler", type=str, default="standard", choices=["standard", "robust"])
     parser.add_argument("--seed", type=int, default=42)
@@ -267,6 +268,7 @@ def main():
         n_choices=args.num_choices,
         alpha=args.alpha,
         delta_per_alt=args.delta_per_alt,
+        beta_per_alt=args.beta_per_alt,
     )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)

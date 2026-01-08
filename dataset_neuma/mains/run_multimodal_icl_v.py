@@ -135,6 +135,7 @@ def main():
     parser.add_argument("--n-latent", type=int, default=3)
     parser.add_argument("--img-proj-dim", type=int, default=32)
     parser.add_argument("--alpha", type=float, default=1.0)
+    parser.add_argument("--beta-per-alt", action="store_true", help="Usar betas distintos por alternativa.")
     parser.add_argument("--val-frac", type=float, default=0.2)
     parser.add_argument("--test-frac", type=float, default=0.2)
     parser.add_argument("--batch-size", type=int, default=64)
@@ -221,6 +222,7 @@ def main():
         n_choices=args.num_choices,
         alpha=args.alpha,
         img_proj_dim=args.img_proj_dim,
+        beta_per_alt=args.beta_per_alt,
     ).to(device)
     optim = torch.optim.Adam(model.parameters(), lr=args.lr)
 
