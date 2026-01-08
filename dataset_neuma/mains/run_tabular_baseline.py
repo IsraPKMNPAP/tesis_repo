@@ -1,15 +1,6 @@
 """
-Baseline tabular: MLP para predecir bought usando columns definidas en config.
-
-Lectura:
-  - Datos: /mnt/otra_particion/home/israel_gpu_data/dataset_neuma/processed/data_base_neuma.csv
-  - Config de columnas: dataset_neuma/configs/tabular_cols.json
-
-Guarda en results:
-  - modelo (.pt)
-  - preprocessors (ohe/scaler)
-  - métrica (acc, f1, auc) en JSON
-  - log de entrenamiento (simple)
+Baseline tabular: MLP para predecir bought con split por sujeto.
+Guarda modelo, preprocessors, split_info y metrics por run.
 """
 
 from __future__ import annotations
@@ -20,18 +11,20 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
-from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from torch.utils.data import DataLoader
 
-# Permite ejecución desde carpeta dataset_neuma
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
-from src.dataloaders.tabular import load_tabular, save_preprocessors
+from src.dataloaders.tabular import TabularDataset, save_preprocessors
 from src.models.tabular_mlp import TabularMLP
+from utils.metrics import classification_metrics, save_metrics
+from utils.run_utils import save_run_metadata, next_run_dir
+from utils.splits import split_by_subject_train_val_test, save_split_info
 
 
 def train_one_epoch(model, loader, optimizer, criterion, device):
@@ -60,11 +53,7 @@ def evaluate(model, loader, device):
             ps.append(prob)
     y_true = np.concatenate(ys)
     y_prob = np.concatenate(ps)
-    y_pred = (y_prob >= 0.5).astype(int)
-    acc = accuracy_score(y_true, y_pred)
-    f1 = f1_score(y_true, y_pred, zero_division=0)
-    auc = roc_auc_score(y_true, y_prob) if len(np.unique(y_true)) > 1 else float("nan")
-    return acc, f1, auc, y_true, y_prob
+    return y_true, y_prob
 
 
 def main() -> None:
@@ -76,6 +65,9 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--hidden", type=int, nargs="+", default=[128, 64])
+    parser.add_argument("--val-frac", type=float, default=0.2)
+    parser.add_argument("--test-frac", type=float, default=0.2)
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
     cfg = json.loads(args.config.read_text(encoding="utf-8"))
@@ -83,25 +75,59 @@ def main() -> None:
     num_cols = [c.lower() for c in cfg["num_cols"]]
     label_col = cfg.get("label_col", "bought").lower()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    loader, ohe, scaler, input_dim = load_tabular(args.data, cat_cols, num_cols, label_col, batch_size=args.batch_size, shuffle=True)
+    df = pd.read_csv(args.data)
+    df.columns = df.columns.str.lower()
+    if "subject" not in df.columns and "id_sub" in df.columns:
+        df["subject"] = df["id_sub"].astype(str)
 
-    model = TabularMLP(input_dim=input_dim, hidden_dims=args.hidden).to(device)
+    train_df, val_df, test_df, split_info = split_by_subject_train_val_test(
+        df, subject_col="subject", val_frac=args.val_frac, test_frac=args.test_frac, seed=args.seed
+    )
+    print(
+        f"[split] subjects={split_info['n_subjects']} train={split_info['n_train_subjects']} "
+        f"val={split_info['n_val_subjects']} test={split_info['n_test_subjects']} | "
+        f"rows train={split_info['train_rows']} val={split_info['val_rows']} test={split_info['test_rows']}"
+    )
+
+    train_ds = TabularDataset(train_df, cat_cols, num_cols, label_col)
+    val_ds = TabularDataset(val_df, cat_cols, num_cols, label_col, ohe=train_ds.ohe, scaler=train_ds.scaler)
+    test_ds = TabularDataset(test_df, cat_cols, num_cols, label_col, ohe=train_ds.ohe, scaler=train_ds.scaler)
+
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False)
+    test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = TabularMLP(input_dim=train_ds.x.shape[1], hidden_dims=args.hidden).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     criterion = nn.BCEWithLogitsLoss()
 
     for epoch in range(1, args.epochs + 1):
-        train_loss = train_one_epoch(model, loader, optimizer, criterion, device)
-        acc, f1, auc, _, _ = evaluate(model, loader, device)
-        print(f"Epoch {epoch}/{args.epochs} | loss={train_loss:.4f} acc={acc:.4f} f1={f1:.4f} auc={auc:.4f}")
+        train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device)
+        y_true_val, y_prob_val = evaluate(model, val_loader, device)
+        metrics_val = classification_metrics(y_true_val, y_prob_val)
+        print(
+            f"Epoch {epoch}/{args.epochs} | loss={train_loss:.4f} "
+            f"val_acc={metrics_val['acc']:.4f} val_f1={metrics_val['f1_macro']:.4f} val_auc={metrics_val['auc']:.4f}"
+        )
 
-    acc, f1, auc, y_true, y_prob = evaluate(model, loader, device)
+    y_true_tr, y_prob_tr = evaluate(model, train_loader, device)
+    y_true_val, y_prob_val = evaluate(model, val_loader, device)
+    y_true_te, y_prob_te = evaluate(model, test_loader, device)
 
-    args.results_dir.mkdir(parents=True, exist_ok=True)
-    torch.save(model.state_dict(), args.results_dir / "model.pt")
-    save_preprocessors(ohe, scaler, args.results_dir)
-    metrics = {"acc": acc, "f1": f1, "auc": auc}
-    (args.results_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    run_dir = next_run_dir(args.results_dir)
+    torch.save(model.state_dict(), run_dir / "model.pt")
+    save_preprocessors(train_ds.ohe, train_ds.scaler, run_dir)
+    save_split_info(split_info, run_dir)
+    save_run_metadata(args, run_dir)
+
+    metrics = {
+        "train": classification_metrics(y_true_tr, y_prob_tr),
+        "val": classification_metrics(y_true_val, y_prob_val),
+        "test": classification_metrics(y_true_te, y_prob_te),
+        "loss_final": float(train_loss),
+    }
+    save_metrics(metrics, run_dir)
     print("Final metrics:", metrics)
 
 

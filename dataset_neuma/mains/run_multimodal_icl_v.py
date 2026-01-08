@@ -9,7 +9,6 @@ from typing import List, Sequence, Tuple
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.metrics import accuracy_score, f1_score
 from torch.utils.data import DataLoader
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -18,26 +17,11 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.data_loading.multimodal_icl_v import MultimodalICLVDataset, collate_fn
 from src.models.multimodal_icl_v import MultimodalICLVDeterministic
+from src.models.icl_v import compute_hessian_stats
 from utils.features import load_features_file
-
-
-def split_train_val(df: pd.DataFrame, label_col: str, val_split: float = 0.2, seed: int = 42) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    rng = np.random.RandomState(seed)
-    if val_split <= 0 or val_split >= 1:
-        return df.reset_index(drop=True), df.iloc[0:0].copy()
-    labels = pd.to_numeric(df[label_col], errors="coerce")
-    uniq = labels.dropna().unique()
-    val_idx: List[int] = []
-    for c in uniq:
-        idx = np.where(labels == c)[0]
-        k = int(max(1, round(len(idx) * val_split)))
-        val_idx.extend(rng.choice(idx, size=min(k, len(idx)), replace=False))
-    val_idx = sorted(set(val_idx))
-    mask = np.zeros(len(df), dtype=bool)
-    mask[val_idx] = True
-    df_val = df.iloc[mask].reset_index(drop=True)
-    df_tr = df.iloc[~mask].reset_index(drop=True)
-    return df_tr, df_val
+from utils.metrics import classification_metrics, pseudo_r2_mcfadden, save_metrics, summarize_coefs
+from utils.run_utils import next_run_dir, save_run_metadata
+from utils.splits import split_by_subject_train_val_test, save_split_info
 
 
 def resolve_cols(df: pd.DataFrame, file_path: str | None, fallback_numeric: bool, drop_cols: set) -> List[str]:
@@ -52,7 +36,6 @@ def resolve_cols(df: pd.DataFrame, file_path: str | None, fallback_numeric: bool
 
 
 def preprocess_block(train_df: pd.DataFrame, val_df: pd.DataFrame, cols: List[str], prefix: str) -> tuple[pd.DataFrame, pd.DataFrame, List[str]]:
-    """One-hot para categóricas + estándar para numéricas. Devuelve dataframes con columnas nuevas y la lista de nombres."""
     import pandas.api.types as ptypes
 
     num_cols = [c for c in cols if ptypes.is_numeric_dtype(train_df[c])]
@@ -76,7 +59,6 @@ def preprocess_block(train_df: pd.DataFrame, val_df: pd.DataFrame, cols: List[st
     if cat_cols:
         tr_cat = pd.get_dummies(train_df[cat_cols].astype(str), prefix=[f"{prefix}{c}" for c in cat_cols])
         val_cat = pd.get_dummies(val_df[cat_cols].astype(str), prefix=[f"{prefix}{c}" for c in cat_cols])
-        # Alinear columnas
         tr_cols = tr_cat.columns
         val_cat = val_cat.reindex(columns=tr_cols, fill_value=0)
         new_names.extend(tr_cols.tolist())
@@ -92,7 +74,7 @@ def preprocess_block(train_df: pd.DataFrame, val_df: pd.DataFrame, cols: List[st
     return tr_block, val_block, new_names
 
 
-def run_epoch(model, loader, device, train=True, optimizer=None, alpha=1.0, pos_weight=None):
+def run_epoch(model, loader, device, train=True, optimizer=None):
     if train:
         model.train()
     else:
@@ -102,7 +84,7 @@ def run_epoch(model, loader, device, train=True, optimizer=None, alpha=1.0, pos_
     total_meas = 0.0
     total_ll = 0.0
     y_true_all = []
-    y_pred_all = []
+    y_prob_all = []
     total = 0
     with torch.set_grad_enabled(train):
         for obs_lt, obs_u, eeg_emb, img_emb, choice in loader:
@@ -114,14 +96,6 @@ def run_epoch(model, loader, device, train=True, optimizer=None, alpha=1.0, pos_
 
             out = model(obs_lt, obs_u, eeg_emb, img_emb, choice_t)
             loss = out["loss"]
-            if pos_weight is not None:
-                # Reemplazar pérdida de elección por BCE ponderado sobre logits de choice (binario)
-                # En binario, usamos logp para prob. de clase 1
-                if out["logp"].shape[1] == 2:
-                    prob1 = torch.exp(out["logp"][:, 1])
-                    choice_float = choice_t.float()
-                    bce = torch.nn.functional.binary_cross_entropy(prob1, choice_float, weight=pos_weight.expand_as(choice_float))
-                    loss = bce + alpha * out["loss_meas"]
             if train:
                 optimizer.zero_grad()
                 loss.backward()
@@ -131,62 +105,66 @@ def run_epoch(model, loader, device, train=True, optimizer=None, alpha=1.0, pos_
             total_choice += float(out["loss_choice"].item()) * obs_lt.size(0)
             total_meas += float(out["loss_meas"].item()) * obs_lt.size(0)
             total_ll += float(out["log_likelihood"].item())
-            preds = out["logp"].argmax(dim=1)
-            y_true_all.append(choice_t.cpu())
-            y_pred_all.append(preds.cpu())
+            prob1 = torch.exp(out["logp"][:, 1]) if out["logp"].shape[1] > 1 else torch.exp(out["logp"][:, 0])
+            y_true_all.append(choice_t.detach().cpu().numpy())
+            y_prob_all.append(prob1.detach().cpu().numpy())
             total += obs_lt.size(0)
 
-    y_true = torch.cat(y_true_all).numpy() if y_true_all else np.array([])
-    y_pred = torch.cat(y_pred_all).numpy() if y_pred_all else np.array([])
-    acc = accuracy_score(y_true, y_pred) if len(y_true) else float("nan")
-    f1 = f1_score(y_true, y_pred, zero_division=0) if len(y_true) else float("nan")
+    y_true = np.concatenate(y_true_all) if y_true_all else np.array([])
+    y_prob = np.concatenate(y_prob_all) if y_prob_all else np.array([])
     return {
         "loss": total_loss / max(1, total),
         "loss_choice": total_choice / max(1, total),
         "loss_meas": total_meas / max(1, total),
-        "acc": acc,
-        "f1": f1,
         "log_likelihood": total_ll,
+        "n": total,
         "y_true": y_true,
-        "y_pred": y_pred,
+        "y_prob": y_prob,
     }
 
 
 def main():
-    parser = argparse.ArgumentParser(description="ICLV multimodal (tab + img_emb proyectado + EEG_emb como indicador).")
+    parser = argparse.ArgumentParser(description="ICLV multimodal (tab + img_emb + EEG_emb como indicador).")
     parser.add_argument("--data", type=Path, default=Path("./data/processed/multimodal_join_with_eeg_emb.csv"))
     parser.add_argument("--label-col", type=str, default="bought")
-    parser.add_argument("--obs-lt-cols", type=str, default="./utils/columns/iclv/obs_lt.txt")
-    parser.add_argument("--obs-u-cols", type=str, default="./utils/columns/iclv/obs_u.txt")
+    parser.add_argument("--obs-lt-cols", type=str, default="./utils/columns/iclv_multimodal/obs_lt.txt")
+    parser.add_argument("--obs-u-cols", type=str, default="./utils/columns/iclv_multimodal/obs_u.txt")
     parser.add_argument("--img-emb-col", type=str, default="embedding_path")
     parser.add_argument("--eeg-emb-col", type=str, default="eeg_emb_path")
     parser.add_argument("--num-choices", type=int, default=2)
     parser.add_argument("--n-latent", type=int, default=3)
     parser.add_argument("--img-proj-dim", type=int, default=32)
-    parser.add_argument("--alpha", type=float, default=1.0, help="Peso de la pérdida de medición (EEG recon).")
-    parser.add_argument("--val-split", type=float, default=0.2)
+    parser.add_argument("--alpha", type=float, default=1.0)
+    parser.add_argument("--val-frac", type=float, default=0.2)
+    parser.add_argument("--test-frac", type=float, default=0.2)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--weight-decay", type=float, default=0.0)
-    parser.add_argument("--balance", action="store_true", help="Balancear clases con pos_weight en pérdida de elección.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--results-dir", type=Path, default=Path("./results/multimodal_icl_v"))
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
-    args.results_dir.mkdir(parents=True, exist_ok=True)
 
     df = pd.read_csv(args.data)
     df.columns = df.columns.str.lower()
     label_col = args.label_col.lower()
     img_emb_col = args.img_emb_col.lower()
     eeg_emb_col = args.eeg_emb_col.lower()
-    # Imputar columnas clave detectadas con NaN
+    if "subject" not in df.columns and "id_sub" in df.columns:
+        df["subject"] = df["id_sub"].astype(str)
+    if "subject" not in df.columns:
+        raise ValueError("Se requiere columna 'subject' para split por sujeto.")
+
+    # imputaciones clave
     cat_impute = ["gender", "maritalstatus", "supermarketvisitduration", "shoppinglist", "offer"]
     num_impute = ["price", "len_med"]
-    df[cat_impute] = df[cat_impute].apply(lambda s: s.fillna(s.mode().iloc[0] if not s.mode().empty else "missing"))
+    for c in cat_impute:
+        if c in df.columns:
+            mode = df[c].mode(dropna=True)
+            fill_val = mode.iloc[0] if len(mode) else "missing"
+            df[c] = df[c].fillna(fill_val)
     for c in num_impute:
         if c in df.columns:
             df[c] = df[c].fillna(df[c].median())
@@ -194,29 +172,39 @@ def main():
     df = df.dropna(subset=[label_col, img_emb_col, eeg_emb_col])
 
     drop_cols = {label_col}
-    obs_lt_cols = resolve_cols(df, args.obs_lt_cols, fallback_numeric=False, drop_cols=drop_cols)
-    obs_u_cols = resolve_cols(df, args.obs_u_cols, fallback_numeric=True, drop_cols=drop_cols)
+    orig_obs_lt_cols = resolve_cols(df, args.obs_lt_cols, fallback_numeric=False, drop_cols=drop_cols)
+    orig_obs_u_cols = resolve_cols(df, args.obs_u_cols, fallback_numeric=True, drop_cols=drop_cols)
 
-    train_df, val_df = split_train_val(df, label_col=label_col, val_split=args.val_split, seed=args.seed)
+    train_df, val_df, test_df, split_info = split_by_subject_train_val_test(
+        df, subject_col="subject", val_frac=args.val_frac, test_frac=args.test_frac, seed=args.seed
+    )
+    print(
+        f"[split] subjects={split_info['n_subjects']} train={split_info['n_train_subjects']} "
+        f"val={split_info['n_val_subjects']} test={split_info['n_test_subjects']} | "
+        f"rows train={split_info['train_rows']} val={split_info['val_rows']} test={split_info['test_rows']}"
+    )
 
-    train_df = train_df.copy()
-    val_df = val_df.copy()
-
-    # Preprocesar obs_lt y obs_u con numéricas estandarizadas + one-hot para categóricas
-    lt_tr, lt_val, lt_names = preprocess_block(train_df, val_df, obs_lt_cols, prefix="lt_")
-    u_tr, u_val, u_names = preprocess_block(train_df, val_df, obs_u_cols, prefix="u_")
+    # one-hot + estandarizar
+    lt_tr, lt_val, lt_names = preprocess_block(train_df, val_df, orig_obs_lt_cols, prefix="lt_")
+    u_tr, u_val, u_names = preprocess_block(train_df, val_df, orig_obs_u_cols, prefix="u_")
     train_df = train_df.join(lt_tr).join(u_tr)
     val_df = val_df.join(lt_val).join(u_val)
     obs_lt_cols = lt_names
     obs_u_cols = u_names
 
+    # aplicar mismas columnas a test
+    lt_tr2, lt_te, _ = preprocess_block(train_df, test_df, orig_obs_lt_cols, prefix="lt_")
+    u_tr2, u_te, _ = preprocess_block(train_df, test_df, orig_obs_u_cols, prefix="u_")
+    test_df = test_df.join(lt_te).join(u_te)
+
     train_ds = MultimodalICLVDataset(train_df, obs_lt_cols, obs_u_cols, label_col, img_emb_col, eeg_emb_col, num_choices=args.num_choices)
     val_ds = MultimodalICLVDataset(val_df, obs_lt_cols, obs_u_cols, label_col, img_emb_col, eeg_emb_col, num_choices=args.num_choices)
+    test_ds = MultimodalICLVDataset(test_df, obs_lt_cols, obs_u_cols, label_col, img_emb_col, eeg_emb_col, num_choices=args.num_choices)
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn)
+    test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn)
 
-    # Infer dims
     sample = train_ds[0]
     dim_obs_lt = sample[0].shape[-1]
     dim_obs_u = sample[1].shape[-1]
@@ -234,47 +222,78 @@ def main():
         alpha=args.alpha,
         img_proj_dim=args.img_proj_dim,
     ).to(device)
-    # pos_weight si balance
-    pos_weight = None
-    if args.balance:
-        pos = (train_df[label_col] == 1).sum()
-        neg = (train_df[label_col] == 0).sum()
-        if pos > 0:
-            pos_weight = torch.tensor([neg / pos], dtype=torch.float32, device=device)
+    optim = torch.optim.Adam(model.parameters(), lr=args.lr)
 
-    optim = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-
-    best_val = None
     for epoch in range(1, args.epochs + 1):
-        tr = run_epoch(model, train_loader, device, train=True, optimizer=optim, alpha=args.alpha, pos_weight=pos_weight)
-        val = run_epoch(model, val_loader, device, train=False, optimizer=None, alpha=args.alpha, pos_weight=pos_weight)
+        tr = run_epoch(model, train_loader, device, train=True, optimizer=optim)
+        val = run_epoch(model, val_loader, device, train=False)
+        tr_cls = classification_metrics(tr["y_true"], tr["y_prob"])
+        val_cls = classification_metrics(val["y_true"], val["y_prob"])
         print(
             f"Epoch {epoch}/{args.epochs} | "
-            f"tr_loss={tr['loss']:.4f} tr_acc={tr['acc']:.3f} tr_f1={tr['f1']:.3f} "
-            f"val_loss={val['loss']:.4f} val_acc={val['acc']:.3f} val_f1={val['f1']:.3f}"
+            f"tr_loss={tr['loss']:.4f} tr_acc={tr_cls['acc']:.3f} tr_f1={tr_cls['f1_macro']:.3f} "
+            f"val_loss={val['loss']:.4f} val_acc={val_cls['acc']:.3f} val_f1={val_cls['f1_macro']:.3f}"
         )
-        if best_val is None or val["loss"] < best_val["loss"]:
-            best_val = val
-            torch.save(model.state_dict(), args.results_dir / "best_model.pt")
 
-    args.results_dir.mkdir(parents=True, exist_ok=True)
-    torch.save(model.state_dict(), args.results_dir / "model_last.pt")
-    with open(args.results_dir / "metrics.json", "w", encoding="utf-8") as f:
+    tr = run_epoch(model, train_loader, device, train=False)
+    val = run_epoch(model, val_loader, device, train=False)
+    te = run_epoch(model, test_loader, device, train=False)
+
+    # hessian for coef stats
+    def loss_closure():
+        out = []
+        for obs_lt, obs_u, eeg_emb, img_emb, choice in train_loader:
+            obs_lt = obs_lt.to(device)
+            obs_u = obs_u.to(device)
+            eeg_emb = eeg_emb.to(device)
+            img_emb = img_emb.to(device)
+            choice_t = choice.to(device)
+            o = model(obs_lt, obs_u, eeg_emb, img_emb, choice_t)
+            out.append(o["loss"])
+        return torch.stack(out).mean()
+
+    hess = compute_hessian_stats(model, loss_closure)
+
+    run_dir = next_run_dir(args.results_dir)
+    torch.save(model.state_dict(), run_dir / "model_last.pt")
+    save_split_info(split_info, run_dir)
+    save_run_metadata(args, run_dir)
+
+    def pack_iclv_metrics(m):
+        cls = classification_metrics(m["y_true"], m["y_prob"])
+        nll = -m["log_likelihood"] / max(1, m["n"])
+        return {
+            **cls,
+            "mean_nll": float(nll),
+            "log_likelihood": float(m["log_likelihood"]),
+            "pseudo_r2": float(pseudo_r2_mcfadden(m["log_likelihood"], m["y_true"], args.num_choices)),
+        }
+
+    metrics = {
+        "train": pack_iclv_metrics(tr),
+        "val": pack_iclv_metrics(val),
+        "test": pack_iclv_metrics(te),
+        "obs_lt_cols": obs_lt_cols,
+        "obs_u_cols": obs_u_cols,
+        "img_emb_col": img_emb_col,
+        "eeg_emb_col": eeg_emb_col,
+        "coef_summary": summarize_coefs(hess.names, hess.theta, hess.std, top_k=5),
+    }
+    save_metrics(metrics, run_dir)
+
+    with open(run_dir / "hessian.json", "w", encoding="utf-8") as f:
         json.dump(
             {
-                "train": {k: float(v) if isinstance(v, (np.floating, float)) else v for k, v in tr.items() if k in ["loss", "acc", "f1", "loss_choice", "loss_meas"]},
-                "val": {k: float(v) if isinstance(v, (np.floating, float)) else v for k, v in val.items() if k in ["loss", "acc", "f1", "loss_choice", "loss_meas"]},
-                "best_val_loss": best_val["loss"] if best_val else None,
-                "obs_lt_cols": obs_lt_cols,
-                "obs_u_cols": obs_u_cols,
-                "img_emb_col": img_emb_col,
-                "eeg_emb_col": eeg_emb_col,
+                "theta": hess.theta.tolist(),
+                "std": hess.std.tolist(),
+                "tstat": hess.tstat.tolist(),
+                "names": hess.names,
             },
             f,
             indent=2,
             ensure_ascii=False,
         )
-    print(f"Guardado en {args.results_dir}")
+    print(f"Guardado en {run_dir}")
 
 
 if __name__ == "__main__":

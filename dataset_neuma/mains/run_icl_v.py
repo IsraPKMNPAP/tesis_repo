@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 from typing import List, Sequence, Tuple
@@ -14,7 +13,6 @@ from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder, RobustScaler, StandardScaler
 from torch.utils.data import DataLoader
 
-# Imports locales
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -22,25 +20,9 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.data_loading.icl_v import ICLVDataset
 from src.models.icl_v import DeterministicICLV, compute_hessian_stats
 from utils.features import load_features_file
-
-
-def split_train_val(df: pd.DataFrame, label_col: str, val_split: float = 0.2, seed: int = 42) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    rng = np.random.RandomState(seed)
-    if val_split <= 0 or val_split >= 1:
-        return df.reset_index(drop=True), df.iloc[0:0].copy()
-    labels = pd.to_numeric(df[label_col], errors="coerce")
-    uniq = labels.dropna().unique()
-    val_idx: List[int] = []
-    for c in uniq:
-        idx = np.where(labels == c)[0]
-        k = int(max(1, round(len(idx) * val_split)))
-        val_idx.extend(rng.choice(idx, size=min(k, len(idx)), replace=False))
-    val_idx = sorted(set(val_idx))
-    mask = np.zeros(len(df), dtype=bool)
-    mask[val_idx] = True
-    df_val = df.iloc[mask].reset_index(drop=True)
-    df_tr = df.iloc[~mask].reset_index(drop=True)
-    return df_tr, df_val
+from utils.metrics import classification_metrics, pseudo_r2_mcfadden, save_metrics, summarize_coefs
+from utils.run_utils import next_run_dir, save_run_metadata
+from utils.splits import split_by_subject_train_val_test, save_split_info
 
 
 def to_float_array(mat) -> np.ndarray:
@@ -53,7 +35,6 @@ def to_float_array(mat) -> np.ndarray:
 
 def prepare_preprocessor(df: pd.DataFrame, cols: Sequence[str], scaler: str = "standard"):
     df_prep = df[cols].copy()
-    # Inferir tipos: convertimos strings a categoría
     for c in df_prep.columns:
         if df_prep[c].dtype == object:
             df_prep[c] = df_prep[c].astype("category")
@@ -71,7 +52,6 @@ def prepare_preprocessor(df: pd.DataFrame, cols: Sequence[str], scaler: str = "s
 
 
 def encode_indicator_blocks(df_tr: pd.DataFrame, df_val: pd.DataFrame, cols: Sequence[str]) -> tuple[np.ndarray, np.ndarray]:
-    """Convierte indicadores mixtos a numérico (factoriza strings/categorías)."""
     tr_blocks = []
     val_blocks = []
     for col in cols:
@@ -94,7 +74,6 @@ def encode_indicator_blocks(df_tr: pd.DataFrame, df_val: pd.DataFrame, cols: Seq
 
 
 def resolve_cols(df: pd.DataFrame, cols_file: str | None, fallback_numeric: bool, drop_cols: set) -> List[str]:
-    """Si cols_file está definido, se usa; normaliza a minúsculas para compatibilidad."""
     if cols_file:
         cols = [c.strip().lower() for c in load_features_file(cols_file)]
     else:
@@ -156,10 +135,9 @@ def run_epoch(model, loader, device, train: bool = True, optimizer=None):
     total_choice = 0.0
     total_meas = 0.0
     total_ll = 0.0
-    correct = 0
-    total = 0
     y_true_all = []
-    y_pred_all = []
+    y_prob_all = []
+    total = 0
     for obs_lt, obs_u, indicators, choice in loader:
         obs_lt = obs_lt.to(device)
         obs_u = obs_u.to(device)
@@ -177,49 +155,43 @@ def run_epoch(model, loader, device, train: bool = True, optimizer=None):
         total_choice += float(out["loss_choice"].item()) * obs_lt.size(0)
         total_meas += float(out["loss_meas"].item()) * obs_lt.size(0)
         total_ll += float(out["log_likelihood"].item())
-        preds = out["logp"].argmax(dim=1)
-        correct += int((preds == choice_t).sum().item())
+        prob1 = torch.exp(out["logp"][:, 1]) if out["logp"].shape[1] > 1 else torch.exp(out["logp"][:, 0])
+        y_true_all.append(choice_t.detach().cpu().numpy())
+        y_prob_all.append(prob1.detach().cpu().numpy())
         total += obs_lt.size(0)
-        y_true_all.append(choice_t.detach().cpu())
-        y_pred_all.append(preds.detach().cpu())
 
+    y_true = np.concatenate(y_true_all) if y_true_all else np.array([])
+    y_prob = np.concatenate(y_prob_all) if y_prob_all else np.array([])
     avg_loss = total_loss / max(1, total)
     avg_choice = total_choice / max(1, total)
     avg_meas = total_meas / max(1, total)
-    if y_true_all:
-        y_true_cat = torch.cat(y_true_all).numpy()
-        y_pred_cat = torch.cat(y_pred_all).numpy()
-    else:
-        y_true_cat = np.array([])
-        y_pred_cat = np.array([])
-    acc = correct / max(1, total)
     return {
         "loss": avg_loss,
         "loss_choice": avg_choice,
         "loss_meas": avg_meas,
-        "acc": acc,
         "log_likelihood": total_ll,
         "n": total,
-        "y_true": y_true_cat,
-        "y_pred": y_pred_cat,
+        "y_true": y_true,
+        "y_prob": y_prob,
     }
 
 
 def main():
-    parser = argparse.ArgumentParser(description="ICLV determinista clásico para NEUMA.")
-    parser.add_argument("--data", type=Path, default=Path("./data/processed/multimodal_join.csv"), help="CSV con las observaciones.")
+    parser = argparse.ArgumentParser(description="ICLV determinista clasico para NEUMA (split por sujeto).")
+    parser.add_argument("--data", type=Path, default=Path("./data/processed/multimodal_join.csv"))
     parser.add_argument("--label-col", type=str, default="bought")
-    parser.add_argument("--obs-lt-cols", type=str, default=None, help="Archivo txt con columnas OBS_LT.")
-    parser.add_argument("--obs-u-cols", type=str, default=None, help="Archivo txt con columnas OBS_U.")
-    parser.add_argument("--obs-i-cols", type=str, default=None, help="Archivo txt con columnas indicadores.")
-    parser.add_argument("--val-split", type=float, default=0.2)
+    parser.add_argument("--obs-lt-cols", type=str, default=None)
+    parser.add_argument("--obs-u-cols", type=str, default=None)
+    parser.add_argument("--obs-i-cols", type=str, default=None)
+    parser.add_argument("--val-frac", type=float, default=0.2)
+    parser.add_argument("--test-frac", type=float, default=0.2)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--alpha", type=float, default=1.0, help="Peso del bloque de medición.")
+    parser.add_argument("--alpha", type=float, default=1.0)
     parser.add_argument("--n-latent", type=int, default=3)
-    parser.add_argument("--delta-per-alt", action="store_true", help="Si se usa delta específico por alternativa.")
-    parser.add_argument("--num-choices", type=int, default=2, help="Número de alternativas (para compra sí/no = 2).")
+    parser.add_argument("--delta-per-alt", action="store_true")
+    parser.add_argument("--num-choices", type=int, default=2)
     parser.add_argument("--scaler", type=str, default="standard", choices=["standard", "robust"])
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--results-dir", type=Path, default=Path("./results/icl_v"))
@@ -232,11 +204,12 @@ def main():
     df.columns = df.columns.str.lower()
     label_col = args.label_col.lower()
     if label_col not in df.columns:
-        raise ValueError(f"No se encontró la columna de etiqueta '{label_col}' en {args.data}")
-    df[label_col] = pd.to_numeric(df[label_col], errors="coerce")
-    df = df.dropna(subset=[label_col])
+        raise ValueError(f"No se encontro columna de etiqueta '{label_col}'.")
+    if "subject" not in df.columns and "id_sub" in df.columns:
+        df["subject"] = df["id_sub"].astype(str)
+    if "subject" not in df.columns:
+        raise ValueError("Se requiere columna 'subject' para split por sujeto.")
 
-    # Resolver rutas de columnas
     base_cols_dir = Path("./utils/columns/iclv")
     obs_lt_file = args.obs_lt_cols or base_cols_dir / "obs_lt.txt"
     obs_u_file = args.obs_u_cols or base_cols_dir / "obs_u.txt"
@@ -247,7 +220,14 @@ def main():
     obs_u_cols = resolve_cols(df, str(obs_u_file) if obs_u_file else None, fallback_numeric=True, drop_cols=drop_cols)
     obs_i_cols = resolve_cols(df, str(obs_i_file) if obs_i_file else None, fallback_numeric=False, drop_cols=drop_cols)
 
-    train_df, val_df = split_train_val(df, label_col=label_col, val_split=args.val_split, seed=args.seed)
+    train_df, val_df, test_df, split_info = split_by_subject_train_val_test(
+        df, subject_col="subject", val_frac=args.val_frac, test_frac=args.test_frac, seed=args.seed
+    )
+    print(
+        f"[split] subjects={split_info['n_subjects']} train={split_info['n_train_subjects']} "
+        f"val={split_info['n_val_subjects']} test={split_info['n_test_subjects']} | "
+        f"rows train={split_info['train_rows']} val={split_info['val_rows']} test={split_info['test_rows']}"
+    )
 
     train_ds, val_ds, preproc_lt, preproc_u = build_datasets(
         train_df,
@@ -259,9 +239,25 @@ def main():
         num_choices=args.num_choices,
         scaler=args.scaler,
     )
+    # test usando preprocesadores de train
+    X_lt_te = preproc_lt.transform(test_df[obs_lt_cols].copy())
+    X_u_te = preproc_u.transform(test_df[obs_u_cols].copy())
+    if obs_i_cols:
+        ind_tr_mat, ind_te_mat = encode_indicator_blocks(train_df[obs_i_cols].copy(), test_df[obs_i_cols].copy(), obs_i_cols)
+    else:
+        ind_te_mat = np.zeros((len(test_df), 0), dtype=np.float32)
+    y_te = pd.to_numeric(test_df[label_col], errors="coerce").to_numpy(dtype=np.int64)
+    test_ds = ICLVDataset(
+        obs_lt=to_float_array(X_lt_te),
+        obs_u=to_float_array(X_u_te),
+        indicators=ind_te_mat,
+        choices=y_te,
+        num_choices=args.num_choices,
+    )
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False)
+    test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False)
 
     model = DeterministicICLV(
         dim_obs_lt=train_ds.obs_lt.shape[1],
@@ -279,13 +275,19 @@ def main():
     for epoch in range(1, args.epochs + 1):
         tr_metrics = run_epoch(model, train_loader, device, train=True, optimizer=optimizer)
         val_metrics = run_epoch(model, val_loader, device, train=False)
+        tr_cls = classification_metrics(tr_metrics["y_true"], tr_metrics["y_prob"])
+        val_cls = classification_metrics(val_metrics["y_true"], val_metrics["y_prob"])
         print(
             f"Epoch {epoch}/{args.epochs} | "
-            f"train_loss={tr_metrics['loss']:.4f} acc={tr_metrics['acc']:.3f} "
-            f"val_loss={val_metrics['loss']:.4f} val_acc={val_metrics['acc']:.3f}"
+            f"train_loss={tr_metrics['loss']:.4f} acc={tr_cls['acc']:.3f} f1={tr_cls['f1_macro']:.3f} "
+            f"val_loss={val_metrics['loss']:.4f} val_acc={val_cls['acc']:.3f} val_f1={val_cls['f1_macro']:.3f}"
         )
 
-    # Hessiano sobre train
+    tr_metrics = run_epoch(model, train_loader, device, train=False)
+    val_metrics = run_epoch(model, val_loader, device, train=False)
+    te_metrics = run_epoch(model, test_loader, device, train=False)
+
+    # Hessian over train for coef stats
     def loss_closure():
         out = []
         for obs_lt, obs_u, indicators, choice in train_loader:
@@ -299,51 +301,33 @@ def main():
 
     hess = compute_hessian_stats(model, loss_closure)
 
-    # Métricas adicionales: F1 y pseudo-R2 (McFadden) en train y val
-    from sklearn.metrics import f1_score
+    run_dir = next_run_dir(args.results_dir)
+    torch.save(model.state_dict(), run_dir / "model.pt")
+    save_split_info(split_info, run_dir)
+    save_run_metadata(args, run_dir)
 
-    def pseudo_r2(ll_model: float, y_true: np.ndarray, num_choices: int) -> float:
-        if len(y_true) == 0:
-            return float("nan")
-        if num_choices == 2:
-            p = np.clip(y_true.mean(), 1e-6, 1 - 1e-6)
-            ll_null = (y_true * np.log(p) + (1 - y_true) * np.log(1 - p)).sum()
-        else:
-            counts = np.bincount(y_true.astype(int), minlength=num_choices)
-            probs = counts / counts.sum()
-            probs = np.clip(probs, 1e-6, 1.0)
-            ll_null = np.log(probs[y_true.astype(int)]).sum()
-        return 1 - (ll_model / ll_null)
+    def pack_iclv_metrics(m):
+        cls = classification_metrics(m["y_true"], m["y_prob"])
+        nll = -m["log_likelihood"] / max(1, m["n"])
+        return {
+            **cls,
+            "mean_nll": float(nll),
+            "log_likelihood": float(m["log_likelihood"]),
+            "pseudo_r2": float(pseudo_r2_mcfadden(m["log_likelihood"], m["y_true"], args.num_choices)),
+        }
 
-    f1_tr = f1_score(tr_metrics["y_true"], tr_metrics["y_pred"], zero_division=0) if len(tr_metrics["y_true"]) else float("nan")
-    f1_val = f1_score(val_metrics["y_true"], val_metrics["y_pred"], zero_division=0) if len(val_metrics["y_true"]) else float("nan")
-    r2_tr = pseudo_r2(tr_metrics["log_likelihood"], tr_metrics["y_true"], args.num_choices)
-    r2_val = pseudo_r2(val_metrics["log_likelihood"], val_metrics["y_true"], args.num_choices)
+    metrics = {
+        "train": pack_iclv_metrics(tr_metrics),
+        "val": pack_iclv_metrics(val_metrics),
+        "test": pack_iclv_metrics(te_metrics),
+        "obs_lt_cols": obs_lt_cols,
+        "obs_u_cols": obs_u_cols,
+        "obs_i_cols": obs_i_cols,
+        "coef_summary": summarize_coefs(hess.names, hess.theta, hess.std, top_k=5),
+    }
+    save_metrics(metrics, run_dir)
 
-    args.results_dir.mkdir(parents=True, exist_ok=True)
-    torch.save(model.state_dict(), args.results_dir / "model.pt")
-    with open(args.results_dir / "metrics.json", "w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "train_loss": tr_metrics["loss"],
-                "train_acc": tr_metrics["acc"],
-                "train_f1": f1_tr,
-                "train_log_likelihood": tr_metrics["log_likelihood"],
-                "train_pseudo_r2": r2_tr,
-                "val_loss": val_metrics["loss"],
-                "val_acc": val_metrics["acc"],
-                "val_f1": f1_val,
-                "val_log_likelihood": val_metrics["log_likelihood"],
-                "val_pseudo_r2": r2_val,
-                "obs_lt_cols": obs_lt_cols,
-                "obs_u_cols": obs_u_cols,
-                "obs_i_cols": obs_i_cols,
-            },
-            f,
-            indent=2,
-            ensure_ascii=False,
-        )
-    with open(args.results_dir / "hessian.json", "w", encoding="utf-8") as f:
+    with open(run_dir / "hessian.json", "w", encoding="utf-8") as f:
         json.dump(
             {
                 "theta": hess.theta.tolist(),
@@ -355,9 +339,10 @@ def main():
             indent=2,
             ensure_ascii=False,
         )
-    torch.save(preproc_lt, args.results_dir / "preproc_lt.pkl")
-    torch.save(preproc_u, args.results_dir / "preproc_u.pkl")
-    print(f"Guardado en {args.results_dir}")
+
+    torch.save(preproc_lt, run_dir / "preproc_lt.pkl")
+    torch.save(preproc_u, run_dir / "preproc_u.pkl")
+    print(f"Guardado en {run_dir}")
 
 
 if __name__ == "__main__":

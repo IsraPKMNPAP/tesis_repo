@@ -1,16 +1,6 @@
 """
 Baseline EEG: CNN simple sobre segmentos crudos para predecir bought.
-
-Usa el índice agregado:
-  data/processed/eeg_segments_index.csv
-que contiene npy_path, start, end, bought (ya mergeado por producto).
-
-Entrenamiento:
-  - Recorta/pad cada segmento a longitud fija (segment_len).
-  - Split train/val (stratificado).
-  - Métricas: acc, f1, auc.
-Guarda:
-  - modelo (.pt), métricas (.json) en results/eeg_baseline
+Split por sujeto, guarda metrics y split info por run.
 """
 
 from __future__ import annotations
@@ -23,22 +13,22 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
-from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
-from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, Subset
 
-# Permite ejecución desde carpeta dataset_neuma
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
 from src.dataloaders.eeg_index import EEGIndexDataset
 from src.models.eeg_cnn import EEGCNN
+from utils.metrics import classification_metrics, save_metrics
+from utils.run_utils import save_run_metadata, next_run_dir
+from utils.splits import split_by_subject_train_val_test, save_split_info
 
 
 def collate_to_tensor(batch):
     xs, ys = zip(*batch)
-    x = torch.stack(xs, dim=0)  # [B, C, T]
+    x = torch.stack(xs, dim=0)
     y = torch.tensor(ys, dtype=torch.float32)
     return x, y
 
@@ -69,11 +59,7 @@ def evaluate(model, loader, device):
             ps.append(prob)
     y_true = np.concatenate(ys)
     y_prob = np.concatenate(ps)
-    y_pred = (y_prob >= 0.5).astype(int)
-    acc = accuracy_score(y_true, y_pred)
-    f1 = f1_score(y_true, y_pred, zero_division=0)
-    auc = roc_auc_score(y_true, y_prob) if len(np.unique(y_true)) > 1 else float("nan")
-    return acc, f1, auc
+    return y_true, y_prob
 
 
 def main() -> None:
@@ -85,7 +71,8 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--hidden", type=int, default=32)
-    parser.add_argument("--val-size", type=float, default=0.2)
+    parser.add_argument("--val-frac", type=float, default=0.2)
+    parser.add_argument("--test-frac", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -93,19 +80,29 @@ def main() -> None:
     np.random.seed(args.seed)
 
     full_ds = EEGIndexDataset(index_csv=args.index_csv, segment_len=args.segment_len, cache=True)
-    n = len(full_ds)
-    idxs = np.arange(n)
-    y_all = full_ds.df["bought"].to_numpy()
-    train_idx, val_idx = train_test_split(
-        idxs, test_size=args.val_size, random_state=args.seed, stratify=y_all
+    if "subject" not in full_ds.df.columns:
+        raise SystemExit("El index CSV debe contener columna 'subject' para split por sujeto.")
+
+    train_df, val_df, test_df, split_info = split_by_subject_train_val_test(
+        full_ds.df, subject_col="subject", val_frac=args.val_frac, test_frac=args.test_frac, seed=args.seed
     )
+    print(
+        f"[split] subjects={split_info['n_subjects']} train={split_info['n_train_subjects']} "
+        f"val={split_info['n_val_subjects']} test={split_info['n_test_subjects']} | "
+        f"rows train={split_info['train_rows']} val={split_info['val_rows']} test={split_info['test_rows']}"
+    )
+    train_idx = train_df.index.to_numpy()
+    val_idx = val_df.index.to_numpy()
+    test_idx = test_df.index.to_numpy()
+
     train_ds = Subset(full_ds, train_idx)
     val_ds = Subset(full_ds, val_idx)
+    test_ds = Subset(full_ds, test_idx)
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, collate_fn=collate_to_tensor)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, collate_fn=collate_to_tensor)
+    test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, collate_fn=collate_to_tensor)
 
-    # Infer channel count from one sample
     sample_x, _ = full_ds[0]
     in_channels = sample_x.shape[0]
 
@@ -116,19 +113,31 @@ def main() -> None:
 
     for epoch in range(1, args.epochs + 1):
         train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device)
-        acc, f1, auc = evaluate(model, val_loader, device)
-        print(f"Epoch {epoch}/{args.epochs} | loss={train_loss:.4f} acc={acc:.4f} f1={f1:.4f} auc={auc:.4f}")
+        y_true_val, y_prob_val = evaluate(model, val_loader, device)
+        metrics_val = classification_metrics(y_true_val, y_prob_val)
+        print(
+            f"Epoch {epoch}/{args.epochs} | loss={train_loss:.4f} "
+            f"val_acc={metrics_val['acc']:.4f} val_f1={metrics_val['f1_macro']:.4f} val_auc={metrics_val['auc']:.4f}"
+        )
 
-    # Final eval en val
-    acc, f1, auc = evaluate(model, val_loader, device)
-    metrics = {"acc": acc, "f1": f1, "auc": auc}
+    y_true_tr, y_prob_tr = evaluate(model, train_loader, device)
+    y_true_val, y_prob_val = evaluate(model, val_loader, device)
+    y_true_te, y_prob_te = evaluate(model, test_loader, device)
 
-    args.results_dir.mkdir(parents=True, exist_ok=True)
-    torch.save(model.state_dict(), args.results_dir / "model.pt")
-    (args.results_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    run_dir = next_run_dir(args.results_dir)
+    torch.save(model.state_dict(), run_dir / "model.pt")
+    save_split_info(split_info, run_dir)
+    save_run_metadata(args, run_dir)
+
+    metrics = {
+        "train": classification_metrics(y_true_tr, y_prob_tr),
+        "val": classification_metrics(y_true_val, y_prob_val),
+        "test": classification_metrics(y_true_te, y_prob_te),
+        "loss_final": float(train_loss),
+    }
+    save_metrics(metrics, run_dir)
     print("Final metrics:", metrics)
 
 
 if __name__ == "__main__":
     main()
-
