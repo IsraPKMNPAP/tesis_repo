@@ -137,6 +137,9 @@ def main():
     # Regularización/opt
     ap.add_argument("--grad-clip", type=float, default=1.0)
     ap.add_argument("--label-smoothing", type=float, default=0.0)
+    ap.add_argument("--lr-tab-mult", type=float, default=1.0, help="Multiplicador de LR para tabular")
+    ap.add_argument("--lr-video-mult", type=float, default=1.0, help="Multiplicador de LR para video")
+    ap.add_argument("--lr-audio-mult", type=float, default=1.0, help="Multiplicador de LR para audio")
     ap.add_argument("--scheduler", type=str, default="none", choices=["none", "step", "cosine", "plateau"], help="Scheduler de LR")
     ap.add_argument("--step-size", type=int, default=5)
     ap.add_argument("--gamma", type=float, default=0.5)
@@ -483,7 +486,33 @@ def main():
 
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     model = model.to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    # Param groups con LR distinto por modalidad
+    def _params(module):
+        return [p for p in module.parameters() if p.requires_grad]
+
+    tab_params = _params(model.tab_enc) if hasattr(model, "tab_enc") else []
+    vid_params = _params(model.vid_enc) if hasattr(model, "vid_enc") else []
+    aud_params = _params(model.audio_enc) if hasattr(model, "audio_enc") else []
+    special_ids = {id(p) for p in (tab_params + vid_params + aud_params)}
+    base_params = [p for p in model.parameters() if p.requires_grad and id(p) not in special_ids]
+
+    use_groups = any(
+        abs(v - 1.0) > 1e-6
+        for v in (args.lr_tab_mult, args.lr_video_mult, args.lr_audio_mult)
+    )
+    if use_groups:
+        param_groups = []
+        if tab_params:
+            param_groups.append({"params": tab_params, "lr": args.lr * args.lr_tab_mult})
+        if vid_params:
+            param_groups.append({"params": vid_params, "lr": args.lr * args.lr_video_mult})
+        if aud_params:
+            param_groups.append({"params": aud_params, "lr": args.lr * args.lr_audio_mult})
+        if base_params:
+            param_groups.append({"params": base_params, "lr": args.lr})
+        optimizer = torch.optim.AdamW(param_groups, lr=args.lr, weight_decay=args.weight_decay)
+    else:
+        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     # Scheduler
     sched = None
     if args.scheduler == "step":
