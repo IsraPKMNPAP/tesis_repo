@@ -739,7 +739,7 @@ def main():
     metrics_test = eval_loader(dl_te)
     all_metrics = {f"val_{k}": v for k, v in metrics_val.items()}
     all_metrics.update({f"test_{k}": v for k, v in metrics_test.items()})
-    save_metrics(all_metrics, results_dir, model_name=model_name, config=cfg)
+    save_metrics(all_metrics, results_dir, model_name=model_name, config=cfg, run_hash=run_hash)
     split_path = results_dir / model_name / "split_info.txt"
     split_path.write_text(format_split_report(info), encoding="utf-8")
     (results_dir / artifact_name(model_name, "config", run_hash, "json")).write_text(

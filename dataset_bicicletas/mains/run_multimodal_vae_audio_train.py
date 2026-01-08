@@ -47,6 +47,35 @@ def _to_float_tensor(mat):
     return torch.tensor(arr.astype(np.float32), dtype=torch.float32)
 
 
+def _pred_distribution(logits: torch.Tensor, num_classes: int) -> dict:
+    preds = logits.argmax(dim=1).cpu().numpy()
+    counts = np.zeros(num_classes, dtype=np.int64)
+    for p in preds:
+        if 0 <= int(p) < num_classes:
+            counts[int(p)] += 1
+    total = counts.sum()
+    if total <= 0:
+        return {"counts": counts.tolist(), "proportions": []}
+    return {
+        "counts": counts.tolist(),
+        "proportions": (counts / total).round(4).tolist(),
+        "majority_class": int(np.argmax(counts)),
+    }
+
+
+def _batch_stats(x: torch.Tensor, name: str) -> dict:
+    if x is None:
+        return {f"{name}_present": False}
+    xt = x.detach()
+    return {
+        f"{name}_present": True,
+        f"{name}_min": float(xt.min().item()),
+        f"{name}_max": float(xt.max().item()),
+        f"{name}_mean": float(xt.mean().item()),
+        f"{name}_std": float(xt.std().item()),
+    }
+
+
 def split_train_val(df: pd.DataFrame, label_col: str, val_split: float = 0.2, seed: int = 42):
     rng = np.random.RandomState(seed)
     if val_split <= 0 or val_split >= 1:
@@ -179,6 +208,7 @@ def main():
     ap.add_argument("--audio-cached-col", type=str, default="audio_cached_path", help="Columna con segmento .pt precalculado")
     ap.add_argument("--audio-start-col", type=str, default="audio_segment_start")
     ap.add_argument("--debug-batch", action="store_true", help="Imprime shapes/min-max del primer batch y sale")
+    ap.add_argument("--debug-diagnostics", action="store_true", help="Imprime distribución de predicciones y stats por modalidad")
     args = ap.parse_args()
     if args.scheduler == "none":
         args.scheduler = None
@@ -497,6 +527,7 @@ def main():
         tr_loss, tr_total, tr_correct = 0.0, 0, 0
         tr_align = tr_con = tr_cls = tr_rec_tab = tr_rec_vid = tr_kl = tr_aux_tab = tr_aux_vid = tr_aux_aud = 0.0
         tr_batches = 0
+        epoch_pred_counts = np.zeros(num_classes, dtype=np.int64)
         train_iter = overfit_batches if overfit_batches else dl_tr
         for b in train_iter:
             x_tab = b.x_tab.to(device)
@@ -586,6 +617,10 @@ def main():
 
             tr_loss += float(loss.item())
             pred = out["logits"].argmax(dim=1)
+            if args.debug_diagnostics:
+                for p in pred.detach().cpu().numpy():
+                    if 0 <= int(p) < num_classes:
+                        epoch_pred_counts[int(p)] += 1
             tr_correct += int((pred == y).sum().item())
             tr_total += int(y.numel())
             tr_align += float(logs.get("align", 0.0))
@@ -678,7 +713,63 @@ def main():
             f"Epoch {epoch+1}/{args.epochs} | train_loss={history['loss'][-1]:.4f} | train_acc={tr_acc:.3f} | val_acc={val_acc:.3f} | align={avg_align:.3f} | con={avg_con:.3f} | aux_tab={avg_aux_tab:.3f} | aux_vid={avg_aux_vid:.3f} | aux_aud={avg_aux_aud:.3f} | lr={cur_lr:.2e}"
         )
 
-        if len(val_hist) >= int(args.early_stop_patience):
+        if args.debug_diagnostics:
+            # stats por modalidad (primer batch del val)
+            try:
+                b0 = next(iter(dl_val))
+                s_tab = _batch_stats(b0.x_tab, "tab")
+                s_vid = _batch_stats(b0.x_vid, "vid")
+                s_aud = _batch_stats(b0.x_aud, "aud") if b0.x_aud is not None else {"aud_present": False}
+                print(f"[Diag] Batch stats: {s_tab} | {s_vid} | {s_aud}")
+            except Exception:
+                pass
+            train_dist = {"counts": epoch_pred_counts.tolist()}
+            tot = epoch_pred_counts.sum()
+            if tot > 0:
+                train_dist["proportions"] = (epoch_pred_counts / tot).round(4).tolist()
+                train_dist["majority_class"] = int(np.argmax(epoch_pred_counts))
+            # val pred distribution
+            if len(val_hist) >= 1:
+                val_dist = {"counts": []}
+                try:
+                    all_val_counts = np.zeros(num_classes, dtype=np.int64)
+                    model.eval()
+                    with torch.no_grad():
+                        for b in dl_val:
+                            x_tab = b.x_tab.to(device)
+                            x_vid = b.x_vid.to(device)
+                            x_aud = b.x_aud.to(device) if b.x_aud is not None else None
+                            y = b.y.to(device)
+                            if x_vid.dim() == 5:
+                                x_vid = x_vid[:, :3]
+                            if x_aud is not None:
+                                max_len = int(args.audio_sr * args.audio_duration)
+                                if x_aud.dim() >= 2:
+                                    x_aud = x_aud[..., :max_len]
+                            if not use_tab_default:
+                                x_tab = torch.zeros_like(x_tab)
+                            if not use_vid_default:
+                                x_vid = torch.zeros_like(x_vid)
+                            if not use_aud_default and x_aud is not None:
+                                x_aud = torch.zeros_like(x_aud)
+                            out = model(x_tab, x_vid, x_aud)
+                            preds = out["logits"].argmax(dim=1).detach().cpu().numpy()
+                            for p in preds:
+                                if 0 <= int(p) < num_classes:
+                                    all_val_counts[int(p)] += 1
+                    val_dist["counts"] = all_val_counts.tolist()
+                    totv = all_val_counts.sum()
+                    if totv > 0:
+                        val_dist["proportions"] = (all_val_counts / totv).round(4).tolist()
+                        val_dist["majority_class"] = int(np.argmax(all_val_counts))
+                except Exception:
+                    pass
+                print(f"[Diag] Pred dist train: {train_dist}")
+                if val_dist.get("counts"):
+                    print(f"[Diag] Pred dist val: {val_dist}")
+
+        # Early stopping (después del warmup)
+        if epoch + 1 >= int(args.warmup_epochs) + int(args.early_stop_patience):
             window = val_hist[-int(args.early_stop_patience) :]
             if (max(window) - min(window)) <= float(args.early_stop_delta):
                 print(f"Early stop: val_acc estable en ±{args.early_stop_delta} durante {args.early_stop_patience} epochs.")
@@ -781,7 +872,7 @@ def main():
     metrics_test = eval_loader(dl_te) if dl_te is not None else {}
     all_metrics = {f"val_{k}": v for k, v in metrics_val.items()}
     all_metrics.update({f"test_{k}": v for k, v in metrics_test.items()})
-    save_metrics(all_metrics, results_dir, model_name=model_name, config=cfg)
+    save_metrics(all_metrics, results_dir, model_name=model_name, config=cfg, run_hash=run_hash)
     split_path = results_dir / model_name / "split_info.txt"
     split_path.write_text(format_split_report(info), encoding="utf-8")
     (results_dir / artifact_name(model_name, "config", run_hash, "json")).write_text(

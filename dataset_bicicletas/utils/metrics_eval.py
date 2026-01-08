@@ -44,10 +44,18 @@ def pseudo_r2_mcfadden(log_lik_model: float, y_true: np.ndarray) -> float:
     return 1.0 - (log_lik_model / log_lik_null)
 
 
-def save_metrics(metrics: Dict[str, float], results_dir: Path, model_name: str, config: Dict) -> None:
+def save_metrics(
+    metrics: Dict[str, float],
+    results_dir: Path,
+    model_name: str,
+    config: Dict,
+    run_hash: Optional[str] = None,
+) -> None:
     results_dir = Path(results_dir) / model_name
     ensure_dir(results_dir)
-    run_hash = compute_run_hash(config, None, model=model_name)
+    if run_hash is None:
+        argv = config.get("argv") if isinstance(config, dict) else None
+        run_hash = compute_run_hash(config, argv, model=model_name)
     lines = [f"{k}: {v}" for k, v in sorted(metrics.items())]
     save_text("\n".join(lines), results_dir / artifact_name(model_name, "metrics", run_hash, "txt"))
     cfg_path = results_dir / artifact_name(model_name, "config", run_hash, "json")
