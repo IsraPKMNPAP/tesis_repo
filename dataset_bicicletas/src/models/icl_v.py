@@ -41,8 +41,8 @@ class DeterministicICLV(nn.Module):
         self.Gamma = nn.Linear(dim_obs_lt, n_latent)
         self.Lambda = nn.Linear(n_latent, n_indicators) if n_indicators > 0 else None
 
-        # Bloque de utilidad
-        self.beta = nn.Linear(dim_obs_u, 1, bias=False)
+        # Bloque de utilidad (beta por alternativa)
+        self.beta = nn.Parameter(torch.zeros(n_choices, dim_obs_u))
         if delta_per_alt:
             self.delta = nn.Parameter(torch.zeros(n_choices, n_latent))
         else:
@@ -59,7 +59,7 @@ class DeterministicICLV(nn.Module):
             nn.init.xavier_uniform_(self.Lambda.weight)
             if self.Lambda.bias is not None:
                 nn.init.zeros_(self.Lambda.bias)
-        nn.init.xavier_uniform_(self.beta.weight)
+        nn.init.xavier_uniform_(self.beta)
         nn.init.zeros_(self.ASC)
         nn.init.zeros_(self.delta)
 
@@ -67,7 +67,8 @@ class DeterministicICLV(nn.Module):
         """Computa V_nj = beta^T OBS_U_nj + delta_j^T LT_n + ASC_j."""
         if obs_u.dim() != 3:
             raise ValueError(f"Se espera obs_u con shape [B, J, dim_obs_u]; se recibio {obs_u.shape}")
-        beta_term = self.beta(obs_u).squeeze(-1)  # [B, J]
+        # beta_j^T * obs_u_nj
+        beta_term = (obs_u * self.beta.unsqueeze(0)).sum(dim=-1)  # [B, J]
         if self.delta.dim() == 2:
             delta_term = LT @ self.delta.t()  # [B, J]
         else:
@@ -214,8 +215,8 @@ class MultimodalICLVDeterministic(nn.Module):
         # Measurement block
         self.Lambda = nn.Linear(shared_dim, n_indicators) if n_indicators > 0 else None
 
-        # Utility block
-        self.beta = nn.Linear(dim_obs_u, 1, bias=False)
+        # Utility block (beta por alternativa)
+        self.beta = nn.Parameter(torch.zeros(n_choices, dim_obs_u))
         if delta_per_alt:
             self.delta = nn.Parameter(torch.zeros(n_choices, shared_dim))
         else:
@@ -232,14 +233,14 @@ class MultimodalICLVDeterministic(nn.Module):
             nn.init.xavier_uniform_(self.Lambda.weight)
             if self.Lambda.bias is not None:
                 nn.init.zeros_(self.Lambda.bias)
-        nn.init.xavier_uniform_(self.beta.weight)
+        nn.init.xavier_uniform_(self.beta)
         nn.init.zeros_(self.ASC)
         nn.init.zeros_(self.delta)
 
     def compute_utilities(self, obs_u: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
         if obs_u.dim() != 3:
             raise ValueError(f"Se espera obs_u con shape [B, J, dim_obs_u]; se recibio {obs_u.shape}")
-        beta_term = self.beta(obs_u).squeeze(-1)  # [B, J]
+        beta_term = (obs_u * self.beta.unsqueeze(0)).sum(dim=-1)  # [B, J]
         if self.delta.dim() == 2:
             delta_term = z @ self.delta.t()  # [B, J]
         else:
@@ -322,7 +323,7 @@ class PrecomputedEmbeddingICLV(nn.Module):
         )
 
         self.Lambda = nn.Linear(shared_dim, n_indicators) if n_indicators > 0 else None
-        self.beta = nn.Linear(dim_obs_u, 1, bias=False)
+        self.beta = nn.Parameter(torch.zeros(n_choices, dim_obs_u))
         if delta_per_alt:
             self.delta = nn.Parameter(torch.zeros(n_choices, shared_dim))
         else:
@@ -339,14 +340,14 @@ class PrecomputedEmbeddingICLV(nn.Module):
             nn.init.xavier_uniform_(self.Lambda.weight)
             if self.Lambda.bias is not None:
                 nn.init.zeros_(self.Lambda.bias)
-        nn.init.xavier_uniform_(self.beta.weight)
+        nn.init.xavier_uniform_(self.beta)
         nn.init.zeros_(self.ASC)
         nn.init.zeros_(self.delta)
 
     def compute_utilities(self, obs_u: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
         if obs_u.dim() != 3:
             raise ValueError(f"Se espera obs_u con shape [B, J, dim_obs_u]; se recibio {obs_u.shape}")
-        beta_term = self.beta(obs_u).squeeze(-1)
+        beta_term = (obs_u * self.beta.unsqueeze(0)).sum(dim=-1)
         if self.delta.dim() == 2:
             delta_term = z @ self.delta.t()
         else:
