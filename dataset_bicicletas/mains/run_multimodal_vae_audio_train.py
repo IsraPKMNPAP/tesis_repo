@@ -213,6 +213,7 @@ def main():
     ap.add_argument("--debug-batch", action="store_true", help="Imprime shapes/min-max del primer batch y sale")
     ap.add_argument("--debug-diagnostics", action="store_true", help="Imprime distribución de predicciones y stats por modalidad")
     ap.add_argument("--debug-aux-grad", action="store_true", help="Imprime grad norms de heads auxiliares (una vez)")
+    ap.add_argument("--debug-aux-step", action="store_true", help="Corre 1 batch y verifica grad/param update de heads auxiliares")
     args = ap.parse_args()
     if args.scheduler == "none":
         args.scheduler = None
@@ -552,6 +553,75 @@ def main():
         else:
             print("x_aud: None")
         print("y shape:", b.y.shape, "labels:", b.y.tolist() if b.y.numel() <= 64 else f"{b.y[:64].tolist()} ...")
+        return
+    if args.debug_aux_step:
+        b = overfit_batches[0] if overfit_batches else next(iter(dl_tr))
+        model.train()
+        x_tab = b.x_tab.to(device)
+        x_vid = b.x_vid.to(device)
+        x_aud = b.x_aud.to(device) if b.x_aud is not None else None
+        y = b.y.to(device)
+        if x_vid.dim() == 5:
+            x_vid = x_vid[:, :3]
+        if x_aud is not None:
+            max_len = int(args.audio_sr * args.audio_duration)
+            if x_aud.dim() >= 2:
+                x_aud = x_aud[..., :max_len]
+
+        optimizer.zero_grad(set_to_none=True)
+        out = model(x_tab, x_vid, x_aud)
+        w_aux_tab = args.w_aux_tab
+        w_aux_vid = args.w_aux_vid
+        w_aux_aud = args.w_aux_aud
+        loss, logs = model.loss(
+            out,
+            y=y,
+            w_rec_tab=0.0,
+            w_rec_vid=0.0,
+            w_cls=1.0,
+            w_kl=0.0,
+            label_smoothing=0.0,
+            w_align=0.0,
+            w_contrastive=0.0,
+            w_aux_tab=w_aux_tab,
+            w_aux_vid=w_aux_vid,
+            w_aux_aud=w_aux_aud,
+            class_weights=class_weights_tensor.to(device) if class_weights_tensor is not None else None,
+        )
+        loss.backward()
+
+        def _param_info(prefix: str):
+            params = [(n, p) for n, p in model.named_parameters() if prefix in n]
+            grad_norms = []
+            before = []
+            for n, p in params:
+                if p.grad is not None:
+                    grad_norms.append((n, float(p.grad.data.norm().item())))
+                before.append((n, p.detach().clone()))
+            return params, grad_norms, before
+
+        vid_params, vid_grad, vid_before = _param_info("cls_vid")
+        aud_params, aud_grad, aud_before = _param_info("cls_aud")
+        tab_params, tab_grad, tab_before = _param_info("cls_tab")
+
+        print(f"[Diag] aux loss logs: aux_tab={logs.get('aux_tab')}, aux_vid={logs.get('aux_vid')}, aux_aud={logs.get('aux_aud')}")
+        print(f"[Diag] grads cls_tab: {tab_grad}")
+        print(f"[Diag] grads cls_vid: {vid_grad}")
+        print(f"[Diag] grads cls_aud: {aud_grad}")
+
+        optimizer.step()
+        with torch.no_grad():
+            def _delta(before_list):
+                deltas = []
+                for n, p_before in before_list:
+                    p_after = dict(model.named_parameters()).get(n)
+                    if p_after is None:
+                        continue
+                    deltas.append((n, float((p_after - p_before).norm().item())))
+                return deltas
+            print(f"[Diag] delta cls_tab: {_delta(tab_before)}")
+            print(f"[Diag] delta cls_vid: {_delta(vid_before)}")
+            print(f"[Diag] delta cls_aud: {_delta(aud_before)}")
         return
 
     debug_grad_printed = False
