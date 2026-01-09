@@ -193,8 +193,8 @@ class DeterministicMMVAE(nn.Module):
         w_contrastive: float = 0.0,
         class_weights: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, dict]:
-        l_rec_tab = F.mse_loss(out["rec_tab"], out["z_tab"])
-        l_rec_vid = F.mse_loss(out["rec_vid"], out["z_vid"])
+        l_rec_tab = F.mse_loss(out["rec_tab"], out["z_tab"].detach())
+        l_rec_vid = F.mse_loss(out["rec_vid"], out["z_vid"].detach())
         l_cls = torch.tensor(0.0, device=out["z"].device)
         if y is not None:
             l_cls = F.cross_entropy(out["logits"], y, label_smoothing=float(label_smoothing), weight=class_weights)
@@ -297,8 +297,8 @@ class VariationalMMVAE(DeterministicMMVAE):
         w_contrastive: float = 0.0,
         class_weights: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, dict]:
-        l_rec_tab = F.mse_loss(out["rec_tab"], out["z_tab"])
-        l_rec_vid = F.mse_loss(out["rec_vid"], out["z_vid"])
+        l_rec_tab = F.mse_loss(out["rec_tab"], out["z_tab"].detach())
+        l_rec_vid = F.mse_loss(out["rec_vid"], out["z_vid"].detach())
         l_cls = torch.tensor(0.0, device=out["z"].device)
         if y is not None:
             l_cls = F.cross_entropy(out["logits"], y, label_smoothing=float(label_smoothing), weight=class_weights)

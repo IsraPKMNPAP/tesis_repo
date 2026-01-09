@@ -232,20 +232,25 @@ class DeterministicMMVAEAudio(DeterministicMMVAE):
         w_aux_aud: float = 0.0,
         class_weights: Optional[torch.Tensor] = None,
     ):
-        l_rec_tab = F.mse_loss(out["rec_tab"], out["z_tab"])
-        l_rec_vid = F.mse_loss(out["rec_vid"], out["z_vid"])
+        l_rec_tab = F.mse_loss(out["rec_tab"], out["z_tab"].detach())
+        l_rec_vid = F.mse_loss(out["rec_vid"], out["z_vid"].detach())
         l_cls = torch.tensor(0.0, device=out["z"].device)
         if y is not None:
             l_cls = F.cross_entropy(out["logits"], y, label_smoothing=float(label_smoothing), weight=class_weights)
 
         l_align = torch.tensor(0.0, device=out["z"].device)
         if float(w_align) > 0:
-            cos = F.cosine_similarity(out["p_tab"], out["p_vid"], dim=-1)
-            l_align = 1.0 - cos.mean()
+            cos_tv = F.cosine_similarity(out["p_tab"], out["p_vid"], dim=-1)
+            cos_ta = F.cosine_similarity(out["p_tab"], out["p_aud"], dim=-1)
+            cos_va = F.cosine_similarity(out["p_vid"], out["p_aud"], dim=-1)
+            l_align = 1.0 - (cos_tv + cos_ta + cos_va).mean() / 3.0
 
         l_con = torch.tensor(0.0, device=out["z"].device)
         if float(w_contrastive) > 0:
-            l_con = self._contrastive_loss(out["p_tab"], out["p_vid"], self.contrastive_temp)
+            c_tv = self._contrastive_loss(out["p_tab"], out["p_vid"], self.contrastive_temp)
+            c_ta = self._contrastive_loss(out["p_tab"], out["p_aud"], self.contrastive_temp)
+            c_va = self._contrastive_loss(out["p_vid"], out["p_aud"], self.contrastive_temp)
+            l_con = (c_tv + c_ta + c_va) / 3.0
 
         # Aux CE per modality
         l_aux_tab = torch.tensor(0.0, device=out["z"].device)
@@ -408,8 +413,8 @@ class VariationalMMVAEAudio(DeterministicMMVAEAudio):
         w_aux_aud: float = 0.0,
         class_weights: Optional[torch.Tensor] = None,
     ):
-        l_rec_tab = F.mse_loss(out["rec_tab"], out["z_tab"])
-        l_rec_vid = F.mse_loss(out["rec_vid"], out["z_vid"])
+        l_rec_tab = F.mse_loss(out["rec_tab"], out["z_tab"].detach())
+        l_rec_vid = F.mse_loss(out["rec_vid"], out["z_vid"].detach())
         l_cls = torch.tensor(0.0, device=out["z"].device)
         if y is not None:
             l_cls = F.cross_entropy(out["logits"], y, label_smoothing=float(label_smoothing), weight=class_weights)
@@ -419,11 +424,16 @@ class VariationalMMVAEAudio(DeterministicMMVAEAudio):
 
         l_align = torch.tensor(0.0, device=out["z"].device)
         if float(w_align) > 0:
-            cos = F.cosine_similarity(out["p_tab"], out["p_vid"], dim=-1)
-            l_align = 1.0 - cos.mean()
+            cos_tv = F.cosine_similarity(out["p_tab"], out["p_vid"], dim=-1)
+            cos_ta = F.cosine_similarity(out["p_tab"], out["p_aud"], dim=-1)
+            cos_va = F.cosine_similarity(out["p_vid"], out["p_aud"], dim=-1)
+            l_align = 1.0 - (cos_tv + cos_ta + cos_va).mean() / 3.0
         l_con = torch.tensor(0.0, device=out["z"].device)
         if float(w_contrastive) > 0:
-            l_con = self._contrastive_loss(out["p_tab"], out["p_vid"], self.contrastive_temp)
+            c_tv = self._contrastive_loss(out["p_tab"], out["p_vid"], self.contrastive_temp)
+            c_ta = self._contrastive_loss(out["p_tab"], out["p_aud"], self.contrastive_temp)
+            c_va = self._contrastive_loss(out["p_vid"], out["p_aud"], self.contrastive_temp)
+            l_con = (c_tv + c_ta + c_va) / 3.0
 
         l_aux_tab = torch.tensor(0.0, device=out["z"].device)
         l_aux_vid = torch.tensor(0.0, device=out["z"].device)

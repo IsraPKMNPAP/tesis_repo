@@ -159,6 +159,11 @@ class InterpretableMMVAEAudioDeterministic(DeterministicMMVAEAudio):
         w_margin: float = 0.0,
         margin_type: str = "mse",
     ):
+        # Stop-grad en targets de reconstrucción para estabilidad
+        if "z_tab" in out:
+            out["z_tab"] = out["z_tab"].detach()
+        if "z_vid" in out:
+            out["z_vid"] = out["z_vid"].detach()
         total, logs = super().loss(
             out=out,
             y=y,
