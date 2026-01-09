@@ -647,23 +647,22 @@ def main():
             loss.backward()
             if args.grad_clip is not None:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float(args.grad_clip))
-            optimizer.step()
-            if epoch < int(args.warmup_epochs):
-                setattr(model, "modality_dropout_p", orig_moddrop)
-
             if args.debug_aux_grad and not debug_grad_printed:
                 def _gn(p):
                     return None if p is None or p.grad is None else float(p.grad.data.norm().item())
-                try:
-                    gv = _gn(model.cls_vid.weight) if hasattr(model, "cls_vid") else None
-                    ga = _gn(model.cls_aud.weight) if hasattr(model, "cls_aud") else None
-                    gt = _gn(model.cls_tab.weight) if hasattr(model, "cls_tab") else None
-                    print(f"[Diag] grad norms cls_tab/vid/aud: {gt}, {gv}, {ga}")
-                    print(f"[Diag] logits_vid requires_grad: {out.get('logits_vid', None).requires_grad if out.get('logits_vid', None) is not None else 'None'}")
-                    print(f"[Diag] logits_aud requires_grad: {out.get('logits_aud', None).requires_grad if out.get('logits_aud', None) is not None else 'None'}")
-                except Exception:
-                    pass
+                gt = _gn(model.cls_tab.weight) if hasattr(model, "cls_tab") else None
+                gv = _gn(model.cls_vid.weight) if hasattr(model, "cls_vid") else None
+                ga = _gn(model.cls_aud.weight) if hasattr(model, "cls_aud") else None
+                lv = out.get("logits_vid", None)
+                la = out.get("logits_aud", None)
+                print(f"[Diag] grad norms cls_tab/vid/aud: {gt}, {gv}, {ga}")
+                print(f"[Diag] logits_vid requires_grad: {lv.requires_grad if lv is not None else 'None'}")
+                print(f"[Diag] logits_aud requires_grad: {la.requires_grad if la is not None else 'None'}")
                 debug_grad_printed = True
+
+            optimizer.step()
+            if epoch < int(args.warmup_epochs):
+                setattr(model, "modality_dropout_p", orig_moddrop)
 
             tr_loss += float(loss.item())
             pred = out["logits"].argmax(dim=1)
