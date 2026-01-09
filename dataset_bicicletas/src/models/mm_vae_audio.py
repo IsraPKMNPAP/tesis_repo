@@ -35,10 +35,12 @@ class DeterministicMMVAEAudio(DeterministicMMVAE):
         modality_dropout_p: float = 0.0,
         fusion_type: str = "early",
         late_alpha: float = 0.5,
+        late_mode: str = "mix",
         audio_emb_dim: int = 128,
     ):
         self.audio_emb_dim = audio_emb_dim
         self.tab_emb_dim = tab_emb_dim
+        self.late_mode = late_mode
         # Construir encoder de audio si no viene dado
         if audio_encoder is None:
             audio_encoder, enc_dim = self._build_audio_encoder(
@@ -192,12 +194,25 @@ class DeterministicMMVAEAudio(DeterministicMMVAE):
         logits_aud = self.cls_aud(z_aud) if z_aud is not None else None
 
         if self.fusion_type == "late":
-            logits_list = [logits_tab, logits_vid, logits_aud]
-            weights = [self.late_alpha / 2, self.late_alpha / 2, 1 - self.late_alpha]
-            # Normalizar pesos
-            total_w = sum(weights)
-            weights = [w / total_w for w in weights]
-            logits = sum(w * l for w, l in zip(weights, logits_list))
+            if self.late_mode == "tab_only":
+                if logits_tab is None:
+                    raise ValueError("late_mode=tab_only pero logits_tab es None")
+                logits = logits_tab
+            elif self.late_mode == "vid_only":
+                if logits_vid is None:
+                    raise ValueError("late_mode=vid_only pero logits_vid es None")
+                logits = logits_vid
+            elif self.late_mode == "aud_only":
+                if logits_aud is None:
+                    raise ValueError("late_mode=aud_only pero logits_aud es None")
+                logits = logits_aud
+            else:
+                logits_list = [logits_tab, logits_vid, logits_aud]
+                weights = [self.late_alpha / 2, self.late_alpha / 2, 1 - self.late_alpha]
+                # Normalizar pesos
+                total_w = sum(weights)
+                weights = [w / total_w for w in weights]
+                logits = sum(w * l for w, l in zip(weights, logits_list))
         else:
             logits = self.classifier(z_shared)
 
@@ -309,6 +324,7 @@ class VariationalMMVAEAudio(DeterministicMMVAEAudio):
         modality_dropout_p: float = 0.0,
         fusion_type: str = "early",
         late_alpha: float = 0.5,
+        late_mode: str = "mix",
         audio_emb_dim: int = 128,
         kl_anneal_start: float = 0.0,
         kl_anneal_end: float = 1.0,
@@ -332,6 +348,7 @@ class VariationalMMVAEAudio(DeterministicMMVAEAudio):
             modality_dropout_p=modality_dropout_p,
             fusion_type=fusion_type,
             late_alpha=late_alpha,
+            late_mode=late_mode,
             audio_emb_dim=audio_emb_dim,
         )
         enc_out = self.fuse[0].in_features
@@ -372,10 +389,23 @@ class VariationalMMVAEAudio(DeterministicMMVAEAudio):
         logits_vid = self.cls_vid(z_vid)
         logits_aud = self.cls_aud(z_aud)
         if self.fusion_type == "late":
-            weights = [self.late_alpha / 2, self.late_alpha / 2, 1 - self.late_alpha]
-            total_w = sum(weights)
-            weights = [w / total_w for w in weights]
-            logits = weights[0] * logits_tab + weights[1] * logits_vid + weights[2] * logits_aud
+            if self.late_mode == "tab_only":
+                if logits_tab is None:
+                    raise ValueError("late_mode=tab_only pero logits_tab es None")
+                logits = logits_tab
+            elif self.late_mode == "vid_only":
+                if logits_vid is None:
+                    raise ValueError("late_mode=vid_only pero logits_vid es None")
+                logits = logits_vid
+            elif self.late_mode == "aud_only":
+                if logits_aud is None:
+                    raise ValueError("late_mode=aud_only pero logits_aud es None")
+                logits = logits_aud
+            else:
+                weights = [self.late_alpha / 2, self.late_alpha / 2, 1 - self.late_alpha]
+                total_w = sum(weights)
+                weights = [w / total_w for w in weights]
+                logits = weights[0] * logits_tab + weights[1] * logits_vid + weights[2] * logits_aud
         else:
             logits = self.classifier(z)
         return {

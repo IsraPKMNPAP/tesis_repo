@@ -161,6 +161,7 @@ def main():
     # Fusion mode
     ap.add_argument("--fusion", type=str, default="early", choices=["early", "late"])
     ap.add_argument("--late-alpha", type=float, default=0.5)
+    ap.add_argument("--late-mode", type=str, default="mix", choices=["mix", "tab_only", "vid_only", "aud_only"])
     # Alignment/contrastive
     ap.add_argument("--w-align", type=float, default=0.0)
     ap.add_argument("--w-contrastive", type=float, default=0.0)
@@ -439,6 +440,7 @@ def main():
             modality_dropout_p=args.modality_dropout,
             fusion_type=args.fusion,
             late_alpha=args.late_alpha,
+            late_mode=args.late_mode,
             audio_encoder_type=args.audio_encoder,
             audio_kwargs=dict(
                 sample_rate=args.audio_sr,
@@ -468,6 +470,7 @@ def main():
             modality_dropout_p=args.modality_dropout,
             fusion_type=args.fusion,
             late_alpha=args.late_alpha,
+            late_mode=args.late_mode,
             audio_encoder_type=args.audio_encoder,
             audio_kwargs=dict(
                 sample_rate=args.audio_sr,
