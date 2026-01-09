@@ -836,7 +836,10 @@ def main():
             }
         )
         print(
-            f"Epoch {epoch+1}/{args.epochs} | train_loss={history['loss'][-1]:.4f} | train_acc={tr_acc:.3f} | val_acc={val_acc:.3f} | align={avg_align:.3f} | con={avg_con:.3f} | aux_tab={avg_aux_tab:.3f} | aux_vid={avg_aux_vid:.3f} | aux_aud={avg_aux_aud:.3f} | lr={cur_lr:.2e}"
+            f"Epoch {epoch+1}/{args.epochs} | train_loss={history['loss'][-1]:.4f} | train_acc={tr_acc:.3f} | val_acc={val_acc:.3f} | "
+            f"rec_tab={avg_rec_tab:.3f} | rec_vid={avg_rec_vid:.3f} | "
+            f"align={avg_align:.3f} | con={avg_con:.3f} | "
+            f"aux_tab={avg_aux_tab:.3f} | aux_vid={avg_aux_vid:.3f} | aux_aud={avg_aux_aud:.3f} | lr={cur_lr:.2e}"
         )
 
         if args.debug_diagnostics and dl_val is not None:
