@@ -162,6 +162,7 @@ def main():
     ap.add_argument("--fusion", type=str, default="early", choices=["early", "late"])
     ap.add_argument("--late-alpha", type=float, default=0.5)
     ap.add_argument("--late-mode", type=str, default="mix", choices=["mix", "tab_only", "vid_only", "aud_only"])
+    ap.add_argument("--no-arkoudi", action="store_true", help="Desactiva Arkoudi head y usa Linear")
     # Alignment/contrastive
     ap.add_argument("--w-align", type=float, default=0.0)
     ap.add_argument("--w-contrastive", type=float, default=0.0)
@@ -433,7 +434,7 @@ def main():
             num_classes=num_classes,
             dropout=args.dropout,
             video_kwargs=video_kwargs,
-            classifier_arkoudi=True,
+            classifier_arkoudi=not args.no_arkoudi,
             fuse_dropout=args.fuse_dropout,
             proj_dim=args.proj_dim,
             contrastive_temp=args.contrastive_temp,
@@ -462,7 +463,7 @@ def main():
             num_classes=num_classes,
             dropout=args.dropout,
             video_kwargs=video_kwargs,
-            classifier_arkoudi=True,
+            classifier_arkoudi=not args.no_arkoudi,
             kl_anneal_steps=args.kl_anneal_steps,
             fuse_dropout=args.fuse_dropout,
             proj_dim=args.proj_dim,
