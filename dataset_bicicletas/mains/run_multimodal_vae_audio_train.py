@@ -212,6 +212,7 @@ def main():
     ap.add_argument("--audio-start-col", type=str, default="audio_segment_start")
     ap.add_argument("--debug-batch", action="store_true", help="Imprime shapes/min-max del primer batch y sale")
     ap.add_argument("--debug-diagnostics", action="store_true", help="Imprime distribución de predicciones y stats por modalidad")
+    ap.add_argument("--debug-aux-grad", action="store_true", help="Imprime grad norms de heads auxiliares (una vez)")
     args = ap.parse_args()
     if args.scheduler == "none":
         args.scheduler = None
@@ -553,6 +554,7 @@ def main():
         print("y shape:", b.y.shape, "labels:", b.y.tolist() if b.y.numel() <= 64 else f"{b.y[:64].tolist()} ...")
         return
 
+    debug_grad_printed = False
     for epoch in range(args.epochs):
         model.train()
         tr_loss, tr_total, tr_correct = 0.0, 0, 0
@@ -603,6 +605,9 @@ def main():
             w_con = 0.0 if (args.warmup_disable_contrastive and epoch < int(args.warmup_epochs)) else args.w_contrastive
             w_rec_tab = args.w_rec_tab if use_tab else 0.0
             w_rec_vid = args.w_rec_vid if use_vid else 0.0
+            w_aux_tab = args.w_aux_tab if use_tab else 0.0
+            w_aux_vid = args.w_aux_vid if use_vid else 0.0
+            w_aux_aud = args.w_aux_aud if use_aud else 0.0
             cw = class_weights_tensor.to(device) if class_weights_tensor is not None else None
             w_cls_now = args.w_cls if epoch >= int(args.warmup_epochs) else 0.0
 
@@ -618,9 +623,9 @@ def main():
                     label_smoothing=ls_now,
                     w_align=w_align,
                     w_contrastive=w_con,
-                    w_aux_tab=args.w_aux_tab,
-                    w_aux_vid=args.w_aux_vid,
-                    w_aux_aud=args.w_aux_aud,
+                    w_aux_tab=w_aux_tab,
+                    w_aux_vid=w_aux_vid,
+                    w_aux_aud=w_aux_aud,
                     class_weights=cw,
                 )
             else:
@@ -633,9 +638,9 @@ def main():
                     label_smoothing=ls_now,
                     w_align=w_align,
                     w_contrastive=w_con,
-                    w_aux_tab=args.w_aux_tab,
-                    w_aux_vid=args.w_aux_vid,
-                    w_aux_aud=args.w_aux_aud,
+                    w_aux_tab=w_aux_tab,
+                    w_aux_vid=w_aux_vid,
+                    w_aux_aud=w_aux_aud,
                     class_weights=cw,
                 )
 
@@ -645,6 +650,20 @@ def main():
             optimizer.step()
             if epoch < int(args.warmup_epochs):
                 setattr(model, "modality_dropout_p", orig_moddrop)
+
+            if args.debug_aux_grad and not debug_grad_printed:
+                def _gn(p):
+                    return None if p is None or p.grad is None else float(p.grad.data.norm().item())
+                try:
+                    gv = _gn(model.cls_vid.weight) if hasattr(model, "cls_vid") else None
+                    ga = _gn(model.cls_aud.weight) if hasattr(model, "cls_aud") else None
+                    gt = _gn(model.cls_tab.weight) if hasattr(model, "cls_tab") else None
+                    print(f"[Diag] grad norms cls_tab/vid/aud: {gt}, {gv}, {ga}")
+                    print(f"[Diag] logits_vid requires_grad: {out.get('logits_vid', None).requires_grad if out.get('logits_vid', None) is not None else 'None'}")
+                    print(f"[Diag] logits_aud requires_grad: {out.get('logits_aud', None).requires_grad if out.get('logits_aud', None) is not None else 'None'}")
+                except Exception:
+                    pass
+                debug_grad_printed = True
 
             tr_loss += float(loss.item())
             pred = out["logits"].argmax(dim=1)
