@@ -648,11 +648,16 @@ def main():
             if args.grad_clip is not None:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float(args.grad_clip))
             if args.debug_aux_grad and not debug_grad_printed:
-                def _gn(p):
-                    return None if p is None or p.grad is None else float(p.grad.data.norm().item())
-                gt = _gn(model.cls_tab.weight) if hasattr(model, "cls_tab") else None
-                gv = _gn(model.cls_vid.weight) if hasattr(model, "cls_vid") else None
-                ga = _gn(model.cls_aud.weight) if hasattr(model, "cls_aud") else None
+                def _mod_grad_norm(mod):
+                    if mod is None:
+                        return None
+                    params = [p for p in mod.parameters() if p.grad is not None]
+                    if not params:
+                        return None
+                    return float(torch.norm(torch.stack([p.grad.data.norm() for p in params])).item())
+                gt = _mod_grad_norm(getattr(model, "cls_tab", None))
+                gv = _mod_grad_norm(getattr(model, "cls_vid", None))
+                ga = _mod_grad_norm(getattr(model, "cls_aud", None))
                 lv = out.get("logits_vid", None)
                 la = out.get("logits_aud", None)
                 print(f"[Diag] grad norms cls_tab/vid/aud: {gt}, {gv}, {ga}")
