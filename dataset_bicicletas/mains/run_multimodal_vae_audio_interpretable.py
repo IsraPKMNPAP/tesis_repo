@@ -120,6 +120,7 @@ def main():
     # Fusion mode
     ap.add_argument("--fusion", type=str, default="early", choices=["early", "late"])
     ap.add_argument("--late-alpha", type=float, default=0.5)
+    ap.add_argument("--late-mode", type=str, default="mix", choices=["mix", "tab_only", "vid_only", "aud_only"])
     # Alignment/contrastive
     ap.add_argument("--w-align", type=float, default=0.0)
     ap.add_argument("--w-contrastive", type=float, default=0.0)
@@ -130,6 +131,7 @@ def main():
     ap.add_argument("--w-aux-tab", type=float, default=0.1, help="Peso de CE auxiliar sobre logits_tab")
     ap.add_argument("--w-aux-vid", type=float, default=0.1, help="Peso de CE auxiliar sobre logits_vid")
     ap.add_argument("--w-aux-aud", type=float, default=0.05, help="Peso de CE auxiliar sobre logits_aud")
+    ap.add_argument("--no-arkoudi", action="store_true", help="Desactiva ArkoudiHead y usa Linear en clasificadores")
     # Modality toggles
     ap.add_argument("--use-tabular", action="store_true")
     ap.add_argument("--use-video", action="store_true")
@@ -232,9 +234,9 @@ def main():
 
     # Preprocesamiento tabular
     X_tr_raw = df_tr[tab_cols].copy()
-    X_val_raw = df_val[tab_cols].copy()
+    X_val_raw = df_val[tab_cols].copy() if len(df_val) else pd.DataFrame(columns=tab_cols)
     X_tr_prep = convertir_a_categorico(categorias_a_str(X_tr_raw))
-    X_val_prep = convertir_a_categorico(categorias_a_str(X_val_raw))
+    X_val_prep = convertir_a_categorico(categorias_a_str(X_val_raw)) if len(df_val) else X_val_raw
     numeric = X_tr_prep.select_dtypes(include=["int64", "float64", "int32", "float32"]).columns.tolist()
     categorical = X_tr_prep.select_dtypes(include=["category"]).columns.tolist()
     scaler_cls = RobustScaler if args.tabular_scaler == "robust" else StandardScaler
@@ -245,7 +247,7 @@ def main():
         ]
     )
     X_tr_mat = preprocessor.fit_transform(X_tr_prep)
-    X_val_mat = preprocessor.transform(X_val_prep)
+    X_val_mat = preprocessor.transform(X_val_prep) if len(df_val) else None
 
     results_dir = Path("results")
     ensure_dir(results_dir)
@@ -298,27 +300,30 @@ def main():
         audio_duration=args.audio_duration,
         audio_norm=args.audio_norm,
     )
-    ds_val = MultimodalAudioDataset(
-        df_val,
-        tab_columns=tab_cols,
-        X_tab_array=_to_float_tensor(X_val_mat),
-        path_col=args.path_col,
-        label_col=args.label_col,
-        timestamp_col=args.timestamp_col,
-        window_id_col=args.window_id_col,
-        participant_col=args.participant_col,
-        audio_start_col=args.audio_start_col,
-        audio_cached_col=args.audio_cached_col,
-        audio_root=args.audio_root if has_audio else None,
-        audio_template=args.audio_template,
-        audio_fallback_template=args.audio_fallback_template,
-        prefer_df_label=True,
-        class_map=default_class_map,
-        video_transform=_video_transform,
-        audio_sr=args.audio_sr,
-        audio_duration=args.audio_duration,
-        audio_norm=args.audio_norm,
-    )
+    ds_val = None
+    dl_val = None
+    if len(df_val):
+        ds_val = MultimodalAudioDataset(
+            df_val,
+            tab_columns=tab_cols,
+            X_tab_array=_to_float_tensor(X_val_mat),
+            path_col=args.path_col,
+            label_col=args.label_col,
+            timestamp_col=args.timestamp_col,
+            window_id_col=args.window_id_col,
+            participant_col=args.participant_col,
+            audio_start_col=args.audio_start_col,
+            audio_cached_col=args.audio_cached_col,
+            audio_root=args.audio_root if has_audio else None,
+            audio_template=args.audio_template,
+            audio_fallback_template=args.audio_fallback_template,
+            prefer_df_label=True,
+            class_map=default_class_map,
+            video_transform=_video_transform,
+            audio_sr=args.audio_sr,
+            audio_duration=args.audio_duration,
+            audio_norm=args.audio_norm,
+        )
 
     ds_te = None
     dl_te = None
@@ -348,7 +353,8 @@ def main():
         )
 
     dl_tr = DataLoader(ds_tr, batch_size=args.batch_size, shuffle=True, num_workers=0, collate_fn=collate_multimodal_audio)
-    dl_val = DataLoader(ds_val, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate_multimodal_audio)
+    if ds_val:
+        dl_val = DataLoader(ds_val, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate_multimodal_audio)
     if ds_te:
         dl_te = DataLoader(ds_te, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate_multimodal_audio)
 
@@ -400,13 +406,14 @@ def main():
         num_classes=num_classes,
         dropout=args.dropout,
         video_kwargs=video_kwargs,
-        classifier_arkoudi=True,
+        classifier_arkoudi=not args.no_arkoudi,
         fuse_dropout=args.fuse_dropout,
         proj_dim=args.proj_dim,
         contrastive_temp=args.contrastive_temp,
         modality_dropout_p=args.modality_dropout,
         fusion_type=args.fusion,
         late_alpha=args.late_alpha,
+        late_mode=args.late_mode,
         audio_encoder_type=args.audio_encoder,
         audio_kwargs=audio_kwargs,
     )
@@ -495,6 +502,9 @@ def main():
             w_rec_vid = args.w_rec_vid if use_vid else 0.0
             cw = class_weights_tensor.to(device) if class_weights_tensor is not None else None
             w_cls_now = args.w_cls if epoch >= int(args.warmup_epochs) else 0.0
+            w_aux_tab = args.w_aux_tab if use_tab else 0.0
+            w_aux_vid = args.w_aux_vid if use_vid else 0.0
+            w_aux_aud = args.w_aux_aud if use_aud else 0.0
 
             loss_kwargs = dict(
                 out=out,
@@ -505,9 +515,9 @@ def main():
                 label_smoothing=ls_now,
                 w_align=w_align,
                 w_contrastive=w_con,
-                w_aux_tab=args.w_aux_tab,
-                w_aux_vid=args.w_aux_vid,
-                w_aux_aud=args.w_aux_aud,
+                w_aux_tab=w_aux_tab,
+                w_aux_vid=w_aux_vid,
+                w_aux_aud=w_aux_aud,
                 class_weights=cw,
                 w_l1_z=args.w_l1_z,
                 w_proto_ortho=args.w_ortho_proto,
@@ -549,40 +559,42 @@ def main():
         history["acc"].append(tr_acc)
 
         # Validation
-        model.eval()
-        v_total, v_correct = 0, 0
-        v_probs = []
-        with torch.no_grad():
-            for b in dl_val:
-                x_tab = b.x_tab.to(device)
-                x_vid = b.x_vid.to(device)
-                x_aud = b.x_aud.to(device) if b.x_aud is not None else None
-                y = b.y.to(device)
-                if x_vid.dim() == 5:
-                    x_vid = x_vid[:, :3]
-                if x_aud is not None:
-                    max_len = int(args.audio_sr * args.audio_duration)
-                    x_aud = x_aud[..., :max_len]
-                if not use_tab_default:
-                    x_tab = torch.zeros_like(x_tab)
-                if not use_vid_default:
-                    x_vid = torch.zeros_like(x_vid)
-                if not use_aud_default and x_aud is not None:
-                    x_aud = torch.zeros_like(x_aud)
-                out = model(x_tab, x_vid, x_aud)
-                logits = out["logits"]
-                v_probs.append(torch.softmax(logits, dim=1).cpu().numpy())
-                pred = logits.argmax(dim=1)
-                v_correct += int((pred == y).sum().item())
-                v_total += int(y.numel())
-        val_acc = v_correct / max(1, v_total)
+        val_acc = 0.0
+        if dl_val is not None:
+            model.eval()
+            v_total, v_correct = 0, 0
+            v_probs = []
+            with torch.no_grad():
+                for b in dl_val:
+                    x_tab = b.x_tab.to(device)
+                    x_vid = b.x_vid.to(device)
+                    x_aud = b.x_aud.to(device) if b.x_aud is not None else None
+                    y = b.y.to(device)
+                    if x_vid.dim() == 5:
+                        x_vid = x_vid[:, :3]
+                    if x_aud is not None:
+                        max_len = int(args.audio_sr * args.audio_duration)
+                        x_aud = x_aud[..., :max_len]
+                    if not use_tab_default:
+                        x_tab = torch.zeros_like(x_tab)
+                    if not use_vid_default:
+                        x_vid = torch.zeros_like(x_vid)
+                    if not use_aud_default and x_aud is not None:
+                        x_aud = torch.zeros_like(x_aud)
+                    out = model(x_tab, x_vid, x_aud)
+                    logits = out["logits"]
+                    v_probs.append(torch.softmax(logits, dim=1).cpu().numpy())
+                    pred = logits.argmax(dim=1)
+                    v_correct += int((pred == y).sum().item())
+                    v_total += int(y.numel())
+            val_acc = v_correct / max(1, v_total)
         val_hist.append(val_acc)
         if sched is not None:
             if isinstance(sched, torch.optim.lr_scheduler.ReduceLROnPlateau):
                 sched.step(val_acc)
             else:
                 sched.step()
-        if val_acc > best_val_acc:
+        if dl_val is not None and val_acc > best_val_acc:
             best_val_acc = val_acc
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
@@ -624,7 +636,7 @@ def main():
             f"Epoch {epoch+1}/{args.epochs} | train_loss={history['loss'][-1]:.4f} | train_acc={tr_acc:.3f} | val_acc={val_acc:.3f} | align={avg_align:.3f} | con={avg_con:.3f} | l1={avg_l1:.3f} | ortho={avg_ortho:.3f} | margin={avg_margin:.3f} | lr={cur_lr:.2e}"
         )
 
-        if len(val_hist) >= int(args.early_stop_patience):
+        if dl_val is not None and len(val_hist) >= int(args.early_stop_patience):
             window = val_hist[-int(args.early_stop_patience) :]
             if (max(window) - min(window)) <= float(args.early_stop_delta):
                 print(f"Early stop: val_acc estable en +/-{args.early_stop_delta} durante {args.early_stop_patience} epochs.")
@@ -663,6 +675,8 @@ def main():
         "kl_anneal_steps": args.kl_anneal_steps,
         "fusion": args.fusion,
         "late_alpha": args.late_alpha,
+        "late_mode": args.late_mode,
+        "no_arkoudi": args.no_arkoudi,
         "w_align": args.w_align,
         "w_contrastive": args.w_contrastive,
         "contrastive_temp": args.contrastive_temp,
@@ -735,7 +749,7 @@ def main():
         logp_np = torch.cat(logps).numpy()
         return classification_report_basic(y_true, y_pred, log_probs=logp_np)
 
-    metrics_val = eval_loader(dl_val)
+    metrics_val = eval_loader(dl_val) if dl_val is not None else {}
     metrics_test = eval_loader(dl_te)
     all_metrics = {f"val_{k}": v for k, v in metrics_val.items()}
     all_metrics.update({f"test_{k}": v for k, v in metrics_test.items()})

@@ -111,6 +111,8 @@ def main():
     # Fusion mode
     ap.add_argument("--fusion", type=str, default="early", choices=["early", "late"], help="Tipo de fusion: early o late")
     ap.add_argument("--late-alpha", type=float, default=0.5, help="Peso de logits_tab en late fusion (0-1)")
+    ap.add_argument("--late-mode", type=str, default="mix", choices=["mix", "tab_only", "vid_only"], help="Modo de late fusion")
+    ap.add_argument("--no-arkoudi", action="store_true", help="Desactiva ArkoudiHead y usa Linear en clasificadores")
     # Normalizacion
     ap.add_argument("--tabular-scaler", type=str, default="robust", choices=["standard", "robust"], help="Scaler para tabular")
     ap.add_argument("--video-norm", type=str, default="imagenet", choices=["imagenet", "per_channel", "none"], help="Normalizacion para video")
@@ -182,11 +184,11 @@ def main():
 
     # Preprocesamiento tabular (StandardScaler + OneHot) similar al pipeline baseline
     X_tr_raw = df_tr[tab_cols].copy()
-    X_val_raw = df_val[tab_cols].copy()
+    X_val_raw = df_val[tab_cols].copy() if len(df_val) else pd.DataFrame(columns=tab_cols)
     X_te_raw = df_te[tab_cols].copy() if len(df_te) else pd.DataFrame(columns=tab_cols)
     # Convertir objetos a categorías para que OneHotEncoder las procese
     X_tr_prep = convertir_a_categorico(categorias_a_str(X_tr_raw))
-    X_val_prep = convertir_a_categorico(categorias_a_str(X_val_raw))
+    X_val_prep = convertir_a_categorico(categorias_a_str(X_val_raw)) if len(df_val) else X_val_raw
     X_te_prep = convertir_a_categorico(categorias_a_str(X_te_raw)) if len(df_te) else X_te_raw
     # Build preprocessor with chosen scaler
     numeric = X_tr_prep.select_dtypes(include=["int64", "float64", "int32", "float32"]).columns.tolist()
@@ -199,7 +201,7 @@ def main():
         ]
     )
     X_tr_mat = preprocessor.fit_transform(X_tr_prep)
-    X_val_mat = preprocessor.transform(X_val_prep)
+    X_val_mat = preprocessor.transform(X_val_prep) if len(df_val) else None
     X_te_mat = preprocessor.transform(X_te_prep) if len(df_te) else None
 
     # Persistir preprocessor para reproducibilidad
@@ -246,18 +248,21 @@ def main():
         class_map=default_class_map,
         video_transform=_video_transform,
     )
-    ds_val = MultimodalDataset(
-        df_val,
-        tab_columns=tab_cols,
-        X_tab_array=_to_float_tensor(X_val_mat),
-        path_col=args.path_col,
-        label_col=args.label_col,
-        timestamp_col=args.timestamp_col,
-        window_id_col=args.window_id_col,
-        prefer_df_label=True,
-        class_map=default_class_map,
-        video_transform=_video_transform,
-    )
+    ds_val = None
+    dl_val = None
+    if len(df_val):
+        ds_val = MultimodalDataset(
+            df_val,
+            tab_columns=tab_cols,
+            X_tab_array=_to_float_tensor(X_val_mat),
+            path_col=args.path_col,
+            label_col=args.label_col,
+            timestamp_col=args.timestamp_col,
+            window_id_col=args.window_id_col,
+            prefer_df_label=True,
+            class_map=default_class_map,
+            video_transform=_video_transform,
+        )
     ds_te = None
     dl_te = None
     if len(df_te):
@@ -275,7 +280,8 @@ def main():
         )
 
     dl_tr = DataLoader(ds_tr, batch_size=args.batch_size, shuffle=True, num_workers=0, collate_fn=collate_multimodal)
-    dl_val = DataLoader(ds_val, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate_multimodal)
+    if ds_val is not None:
+        dl_val = DataLoader(ds_val, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate_multimodal)
     if ds_te is not None:
         dl_te = DataLoader(ds_te, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate_multimodal)
 
@@ -317,13 +323,14 @@ def main():
             num_classes=num_classes,
             dropout=args.dropout,
             video_kwargs=video_kwargs,
-            classifier_arkoudi=True,
+            classifier_arkoudi=not args.no_arkoudi,
             fuse_dropout=args.fuse_dropout,
             proj_dim=args.proj_dim,
             contrastive_temp=args.contrastive_temp,
             modality_dropout_p=args.modality_dropout,
             fusion_type=args.fusion,
             late_alpha=args.late_alpha,
+            late_mode=args.late_mode,
         )
     else:
         model = VariationalMMVAE(
@@ -333,12 +340,15 @@ def main():
             num_classes=num_classes,
             dropout=args.dropout,
             video_kwargs=video_kwargs,
-            classifier_arkoudi=True,
+            classifier_arkoudi=not args.no_arkoudi,
             kl_anneal_steps=args.kl_anneal_steps,
             fuse_dropout=args.fuse_dropout,
             proj_dim=args.proj_dim,
             contrastive_temp=args.contrastive_temp,
             modality_dropout_p=args.modality_dropout,
+            fusion_type=args.fusion,
+            late_alpha=args.late_alpha,
+            late_mode=args.late_mode,
         )
 
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
@@ -444,27 +454,29 @@ def main():
         history["acc"].append(tr_acc)
 
         # Validation
-        model.eval()
-        v_total, v_correct = 0, 0
-        v_probs = []
-        with torch.no_grad():
-            for b in dl_val:
-                x_tab = b.x_tab.to(device)
-                x_vid = b.x_vid.to(device)
-                y = b.y.to(device)
-                if x_vid.dim() == 5:
-                    x_vid = x_vid[:, :3]
-                if not use_tab_default:
-                    x_tab = torch.zeros_like(x_tab)
-                if not use_vid_default:
-                    x_vid = torch.zeros_like(x_vid)
-                out = model(x_tab, x_vid)
-                logits = out["logits"]
-                v_probs.append(torch.softmax(logits, dim=1).cpu().numpy())
-                pred = logits.argmax(dim=1)
-                v_correct += int((pred == y).sum().item())
-                v_total += int(y.numel())
-        val_acc = v_correct / max(1, v_total)
+        val_acc = 0.0
+        if dl_val is not None:
+            model.eval()
+            v_total, v_correct = 0, 0
+            v_probs = []
+            with torch.no_grad():
+                for b in dl_val:
+                    x_tab = b.x_tab.to(device)
+                    x_vid = b.x_vid.to(device)
+                    y = b.y.to(device)
+                    if x_vid.dim() == 5:
+                        x_vid = x_vid[:, :3]
+                    if not use_tab_default:
+                        x_tab = torch.zeros_like(x_tab)
+                    if not use_vid_default:
+                        x_vid = torch.zeros_like(x_vid)
+                    out = model(x_tab, x_vid)
+                    logits = out["logits"]
+                    v_probs.append(torch.softmax(logits, dim=1).cpu().numpy())
+                    pred = logits.argmax(dim=1)
+                    v_correct += int((pred == y).sum().item())
+                    v_total += int(y.numel())
+            val_acc = v_correct / max(1, v_total)
         val_hist.append(val_acc)
 
         # Scheduler step
@@ -474,7 +486,7 @@ def main():
             else:
                 sched.step()
         # Track best
-        if val_acc > best_val_acc:
+        if dl_val is not None and val_acc > best_val_acc:
             best_val_acc = val_acc
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
         # Aggregate aux losses and lr
@@ -501,7 +513,7 @@ def main():
         print(f"Epoch {epoch+1}/{args.epochs} | train_loss={history['loss'][-1]:.4f} | train_acc={tr_acc:.3f} | val_acc={val_acc:.3f} | align={avg_align:.3f} | con={avg_con:.3f} | lr={cur_lr:.2e}")
 
         # Early stopping: si en las últimas N epochs la variación <= delta
-        if len(val_hist) >= int(args.early_stop_patience):
+        if dl_val is not None and len(val_hist) >= int(args.early_stop_patience):
             window = val_hist[-int(args.early_stop_patience):]
             if (max(window) - min(window)) <= float(args.early_stop_delta):
                 print(f"Early stop: val_acc estable en ±{args.early_stop_delta} durante {args.early_stop_patience} epochs.")
@@ -536,6 +548,8 @@ def main():
         "val_split": args.val_split,
         "test_split": args.test_split,
         "freeze_video": args.freeze_video,
+        "late_mode": args.late_mode,
+        "no_arkoudi": args.no_arkoudi,
         "argv": sys.argv,
     }
     run_hash = compute_run_hash(cfg, sys.argv, model=model_name)
@@ -629,7 +643,7 @@ def main():
         logp_np = torch.cat(logps).numpy()
         return classification_report_basic(y_true, y_pred, log_probs=logp_np)
 
-    metrics_val = eval_loader(dl_val)
+    metrics_val = eval_loader(dl_val) if dl_val is not None else {}
     metrics_test = eval_loader(dl_te) if dl_te is not None else {}
     all_metrics = {f"val_{k}": v for k, v in metrics_val.items()}
     all_metrics.update({f"test_{k}": v for k, v in metrics_test.items()})

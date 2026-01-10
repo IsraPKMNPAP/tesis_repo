@@ -66,6 +66,7 @@ class InterpretableMMVAEAudioDeterministic(DeterministicMMVAEAudio):
         modality_dropout_p: float = 0.0,
         fusion_type: str = "early",
         late_alpha: float = 0.5,
+        late_mode: str = "mix",
         audio_encoder: Optional[nn.Module] = None,
         audio_encoder_type: str = "simple",
         audio_kwargs: Optional[dict] = None,
@@ -85,6 +86,7 @@ class InterpretableMMVAEAudioDeterministic(DeterministicMMVAEAudio):
             modality_dropout_p=modality_dropout_p,
             fusion_type=fusion_type,
             late_alpha=late_alpha,
+            late_mode=late_mode,
             audio_emb_dim=audio_emb_dim,
             audio_encoder=audio_encoder,
             audio_encoder_type=audio_encoder_type,
@@ -108,19 +110,28 @@ class InterpretableMMVAEAudioDeterministic(DeterministicMMVAEAudio):
         logits_aud = self.cls_aud(z_aud) if z_aud is not None else None
 
         if self.fusion_type == "late":
-            logits_list = []
-            weights = []
-            if logits_tab is not None:
-                logits_list.append(logits_tab)
-                weights.append(self.late_alpha / 2 if logits_aud is not None else self.late_alpha)
-            if logits_vid is not None:
-                logits_list.append(logits_vid)
-                weights.append(1 - self.late_alpha if logits_aud is None else (1 - self.late_alpha) / 2)
-            if logits_aud is not None:
-                logits_list.append(logits_aud)
-                weights.append(0.33)
-            weights = [w / sum(weights) for w in weights]
-            logits = sum(w * l for w, l in zip(weights, logits_list))
+            if self.late_mode == "tab_only":
+                logits = logits_tab
+            elif self.late_mode == "vid_only":
+                logits = logits_vid
+            elif self.late_mode == "aud_only":
+                if logits_aud is None:
+                    raise ValueError("late_mode=aud_only pero logits_aud es None")
+                logits = logits_aud
+            else:
+                logits_list = []
+                weights = []
+                if logits_tab is not None:
+                    logits_list.append(logits_tab)
+                    weights.append(self.late_alpha / 2 if logits_aud is not None else self.late_alpha)
+                if logits_vid is not None:
+                    logits_list.append(logits_vid)
+                    weights.append(1 - self.late_alpha if logits_aud is None else (1 - self.late_alpha) / 2)
+                if logits_aud is not None:
+                    logits_list.append(logits_aud)
+                    weights.append(0.33)
+                weights = [w / sum(weights) for w in weights]
+                logits = sum(w * l for w, l in zip(weights, logits_list))
         else:
             logits = self.classifier(z_shared)
 
@@ -216,6 +227,7 @@ class InterpretableMMVAEAudioVariational(InterpretableMMVAEAudioDeterministic):
         modality_dropout_p: float = 0.0,
         fusion_type: str = "early",
         late_alpha: float = 0.5,
+        late_mode: str = "mix",
         audio_encoder: Optional[nn.Module] = None,
         audio_encoder_type: str = "simple",
         audio_kwargs: Optional[dict] = None,
@@ -235,6 +247,7 @@ class InterpretableMMVAEAudioVariational(InterpretableMMVAEAudioDeterministic):
             modality_dropout_p=modality_dropout_p,
             fusion_type=fusion_type,
             late_alpha=late_alpha,
+            late_mode=late_mode,
             audio_encoder=audio_encoder,
             audio_encoder_type=audio_encoder_type,
             audio_kwargs=audio_kwargs,
@@ -283,19 +296,28 @@ class InterpretableMMVAEAudioVariational(InterpretableMMVAEAudioDeterministic):
         logits_aud = self.cls_aud(z_aud) if z_aud is not None else None
 
         if self.fusion_type == "late":
-            logits_list = []
-            weights = []
-            if logits_tab is not None:
-                logits_list.append(logits_tab)
-                weights.append(self.late_alpha / 2 if logits_aud is not None else self.late_alpha)
-            if logits_vid is not None:
-                logits_list.append(logits_vid)
-                weights.append(1 - self.late_alpha if logits_aud is None else (1 - self.late_alpha) / 2)
-            if logits_aud is not None:
-                logits_list.append(logits_aud)
-                weights.append(0.33)
-            weights = [w / sum(weights) for w in weights]
-            logits = sum(w * l for w, l in zip(weights, logits_list))
+            if self.late_mode == "tab_only":
+                logits = logits_tab
+            elif self.late_mode == "vid_only":
+                logits = logits_vid
+            elif self.late_mode == "aud_only":
+                if logits_aud is None:
+                    raise ValueError("late_mode=aud_only pero logits_aud es None")
+                logits = logits_aud
+            else:
+                logits_list = []
+                weights = []
+                if logits_tab is not None:
+                    logits_list.append(logits_tab)
+                    weights.append(self.late_alpha / 2 if logits_aud is not None else self.late_alpha)
+                if logits_vid is not None:
+                    logits_list.append(logits_vid)
+                    weights.append(1 - self.late_alpha if logits_aud is None else (1 - self.late_alpha) / 2)
+                if logits_aud is not None:
+                    logits_list.append(logits_aud)
+                    weights.append(0.33)
+                weights = [w / sum(weights) for w in weights]
+                logits = sum(w * l for w, l in zip(weights, logits_list))
         else:
             logits = self.classifier(z_shared)
 

@@ -70,6 +70,7 @@ class DeterministicMMVAE(nn.Module):
         modality_dropout_p: float = 0.0,
         fusion_type: str = "early",  # "early" or "late"
         late_alpha: float = 0.5,
+        late_mode: str = "mix",
     ):
         super().__init__()
         self.tab_enc = TabularEncoder(tab_in_dim, tab_emb_dim, dropout=dropout)
@@ -78,6 +79,7 @@ class DeterministicMMVAE(nn.Module):
         self.contrastive_temp = float(contrastive_temp)
         self.fusion_type = fusion_type
         self.late_alpha = float(late_alpha)
+        self.late_mode = late_mode
 
         vid_emb_dim = self.vid_enc.output_dim()
         fuse_in = tab_emb_dim + vid_emb_dim
@@ -153,7 +155,12 @@ class DeterministicMMVAE(nn.Module):
         if self.fusion_type == "late":
             logits_tab = self.cls_tab(z_tab)
             logits_vid = self.cls_vid(z_vid)
-            logits = self.late_alpha * logits_tab + (1.0 - self.late_alpha) * logits_vid
+            if self.late_mode == "tab_only":
+                logits = logits_tab
+            elif self.late_mode == "vid_only":
+                logits = logits_vid
+            else:
+                logits = self.late_alpha * logits_tab + (1.0 - self.late_alpha) * logits_vid
         else:
             logits_tab = self.cls_tab(z_tab)
             logits_vid = self.cls_vid(z_vid)
@@ -229,6 +236,9 @@ class VariationalMMVAE(DeterministicMMVAE):
         proj_dim: int = 128,
         contrastive_temp: float = 0.07,
         modality_dropout_p: float = 0.0,
+        fusion_type: str = "early",
+        late_alpha: float = 0.5,
+        late_mode: str = "mix",
     ):
         super().__init__(
             tab_in_dim=tab_in_dim,
@@ -243,6 +253,9 @@ class VariationalMMVAE(DeterministicMMVAE):
             proj_dim=proj_dim,
             contrastive_temp=contrastive_temp,
             modality_dropout_p=modality_dropout_p,
+            fusion_type=fusion_type,
+            late_alpha=late_alpha,
+            late_mode=late_mode,
         )
         enc_out = self.fuse[0].in_features  # concat size
         self.q_mu = nn.Linear(enc_out, shared_dim)
@@ -263,18 +276,34 @@ class VariationalMMVAE(DeterministicMMVAE):
 
     def forward(self, x_tab: torch.Tensor, x_vid: torch.Tensor):
         z_tab, z_vid = self.encode_modalities(x_tab, x_vid)
+        p_tab = _safe_normalize(self.proj_tab(z_tab), dim=-1)
+        p_vid = _safe_normalize(self.proj_vid(z_vid), dim=-1)
         z, mu, logvar = self.fuse_modalities(z_tab, z_vid)
         rec_tab, rec_vid = self.decode_modalities(z)
-        logits = self.classifier(z)
+        logits_tab = self.cls_tab(z_tab)
+        logits_vid = self.cls_vid(z_vid)
+        if self.fusion_type == "late":
+            if self.late_mode == "tab_only":
+                logits = logits_tab
+            elif self.late_mode == "vid_only":
+                logits = logits_vid
+            else:
+                logits = self.late_alpha * logits_tab + (1.0 - self.late_alpha) * logits_vid
+        else:
+            logits = self.classifier(z)
         return {
             "z_tab": z_tab,
             "z_vid": z_vid,
+            "p_tab": p_tab,
+            "p_vid": p_vid,
             "z": z,
             "mu": mu,
             "logvar": logvar,
             "rec_tab": rec_tab,
             "rec_vid": rec_vid,
             "logits": logits,
+            "logits_tab": logits_tab,
+            "logits_vid": logits_vid,
         }
 
     def _kl_weight(self, step: int) -> float:
