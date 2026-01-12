@@ -17,7 +17,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.data_loading.multimodal_icl_v import MultimodalICLVDataset, collate_fn
 from src.models.multimodal_icl_v import MultimodalICLVDeterministic
-from src.models.icl_v import compute_hessian_stats
+from src.models.icl_v import compute_hessian_stats, param_names
+from torch.nn.utils import parameters_to_vector
 from utils.features import load_features_file
 from utils.metrics import classification_metrics, pseudo_r2_mcfadden, save_metrics, summarize_coefs
 from utils.run_utils import next_run_dir, save_run_metadata
@@ -143,6 +144,9 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--results-dir", type=Path, default=Path("./results/multimodal_icl_v"))
+    parser.add_argument("--skip-hessian", action="store_true", help="No calcular Hessiano (ahorra memoria).")
+    parser.add_argument("--hessian-max-params", type=int, default=2000, help="Maximo de parametros para Hessiano completo.")
+    parser.add_argument("--hessian-device", type=str, default="cpu", help="Dispositivo para Hessiano: cpu o cuda.")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -241,20 +245,26 @@ def main():
     val = run_epoch(model, val_loader, device, train=False)
     te = run_epoch(model, test_loader, device, train=False)
 
-    # hessian for coef stats
-    def loss_closure():
-        out = []
-        for obs_lt, obs_u, eeg_emb, img_emb, choice in train_loader:
-            obs_lt = obs_lt.to(device)
-            obs_u = obs_u.to(device)
-            eeg_emb = eeg_emb.to(device)
-            img_emb = img_emb.to(device)
-            choice_t = choice.to(device)
-            o = model(obs_lt, obs_u, eeg_emb, img_emb, choice_t)
-            out.append(o["loss"])
-        return torch.stack(out).mean()
+    # Hessiano (opcional y reducido)
+    hess = None
+    param_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    if not args.skip_hessian and param_count <= args.hessian_max_params:
+        h_dev = torch.device(args.hessian_device)
+        model_h = model.to(h_dev)
 
-    hess = compute_hessian_stats(model, loss_closure)
+        def loss_closure():
+            out = []
+            for obs_lt, obs_u, eeg_emb, img_emb, choice in train_loader:
+                obs_lt = obs_lt.to(h_dev)
+                obs_u = obs_u.to(h_dev)
+                eeg_emb = eeg_emb.to(h_dev)
+                img_emb = img_emb.to(h_dev)
+                choice_t = choice.to(h_dev)
+                o = model_h(obs_lt, obs_u, eeg_emb, img_emb, choice_t)
+                out.append(o["loss"])
+            return torch.stack(out).mean()
+
+        hess = compute_hessian_stats(model_h, loss_closure)
 
     run_dir = next_run_dir(args.results_dir)
     torch.save(model.state_dict(), run_dir / "model_last.pt")
@@ -271,6 +281,10 @@ def main():
             "pseudo_r2": float(pseudo_r2_mcfadden(m["log_likelihood"], m["y_true"], args.num_choices)),
         }
 
+    names = param_names(model)
+    theta = parameters_to_vector([p for p in model.parameters() if p.requires_grad]).detach().cpu()
+    coef_summary = summarize_coefs(hess.names, hess.theta, hess.std, top_k=5) if hess is not None else summarize_coefs(names, theta, None, top_k=5)
+
     metrics = {
         "train": pack_iclv_metrics(tr),
         "val": pack_iclv_metrics(val),
@@ -279,22 +293,25 @@ def main():
         "obs_u_cols": obs_u_cols,
         "img_emb_col": img_emb_col,
         "eeg_emb_col": eeg_emb_col,
-        "coef_summary": summarize_coefs(hess.names, hess.theta, hess.std, top_k=5),
+        "coef_summary": coef_summary,
+        "hessian_skipped": bool(hess is None),
+        "hessian_param_count": int(param_count),
     }
     save_metrics(metrics, run_dir)
 
-    with open(run_dir / "hessian.json", "w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "theta": hess.theta.tolist(),
-                "std": hess.std.tolist(),
-                "tstat": hess.tstat.tolist(),
-                "names": hess.names,
-            },
-            f,
-            indent=2,
-            ensure_ascii=False,
-        )
+    if hess is not None:
+        with open(run_dir / "hessian.json", "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "theta": hess.theta.tolist(),
+                    "std": hess.std.tolist(),
+                    "tstat": hess.tstat.tolist(),
+                    "names": hess.names,
+                },
+                f,
+                indent=2,
+                ensure_ascii=False,
+            )
     print(f"Guardado en {run_dir}")
 
 
