@@ -196,6 +196,7 @@ def main():
     parser.add_argument("--scaler", type=str, default="standard", choices=["standard", "robust"])
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--results-dir", type=Path, default=Path("./results/icl_v"))
+    parser.add_argument("--debug", action="store_true", help="Imprime diagnosticos por epoca.")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -284,6 +285,17 @@ def main():
             f"train_loss={tr_metrics['loss']:.4f} acc={tr_cls['acc']:.3f} f1={tr_cls['f1_macro']:.3f} "
             f"val_loss={val_metrics['loss']:.4f} val_acc={val_cls['acc']:.3f} val_f1={val_cls['f1_macro']:.3f}"
         )
+        if args.debug:
+            obs_u_std = float(train_ds.obs_u.std().item()) if train_ds.obs_u.numel() else float("nan")
+            if hasattr(model.beta, "weight"):
+                beta_norm = float(model.beta.weight.norm().item())
+            else:
+                beta_norm = float(model.beta.norm().item())
+            delta_norm = float(model.delta.norm().item())
+            print(
+                f"[debug] loss_choice={tr_metrics['loss_choice']:.4f} loss_meas={tr_metrics['loss_meas']:.4f} "
+                f"obs_u_std={obs_u_std:.4f} beta_norm={beta_norm:.4f} delta_norm={delta_norm:.4f}"
+            )
 
     tr_metrics = run_epoch(model, train_loader, device, train=False)
     val_metrics = run_epoch(model, val_loader, device, train=False)
