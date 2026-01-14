@@ -117,6 +117,8 @@ def main() -> None:
         mm_label,
     ]
     mm_cols = [c for c in mm_cols if c in mm_df.columns]
+    # Filtrar solo columnas disponibles
+    mm_cols = [c for c in mm_cols if c in mm_df.columns]
     mm_small = mm_df[["subject_key", "page_key", "product_key"] + mm_cols].copy()
     merged = lat_df.merge(mm_small, on=["subject_key", "page_key", "product_key"], how="left")
     if mm_label not in merged.columns:
