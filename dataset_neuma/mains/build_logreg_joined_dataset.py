@@ -160,8 +160,8 @@ def main() -> None:
     keep_cols += [c for c in mm_cols if c != args.label_col.lower()]
     keep_cols += img_cols
     keep_cols = [c for c in keep_cols if c in merged.columns]
-    # asegurar que la etiqueta no quede como feature
-    keep_cols = [c for c in keep_cols if c != label_col]
+    # asegurar que la etiqueta no quede como feature (cualquier columna con 'bought')
+    keep_cols = [c for c in keep_cols if "bought" not in c]
 
     if label_col not in merged.columns:
         raise SystemExit(f"Label '{label_col}' not found after joins.")
