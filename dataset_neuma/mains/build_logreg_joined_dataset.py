@@ -119,15 +119,24 @@ def main() -> None:
     mm_cols_mm = [c for c in mm_cols_requested if c in mm_df.columns]
     mm_small = mm_df[["subject_key", "page_key", "product_key"] + mm_cols_mm].copy()
     merged = lat_df.merge(mm_small, on=["subject_key", "page_key", "product_key"], how="left")
-    if mm_label not in merged.columns:
-        if f"{mm_label}_y" in merged.columns:
-            merged = merged.rename(columns={f"{mm_label}_y": mm_label})
-        elif f"{mm_label}_x" in merged.columns:
-            merged = merged.rename(columns={f"{mm_label}_x": mm_label})
+    # Normalizar columnas duplicadas (suffixes _x/_y) para todas las mm_cols_requested
+    for col in mm_cols_requested:
+        if col not in merged.columns:
+            if f"{col}_y" in merged.columns:
+                merged[col] = merged[f"{col}_y"]
+            elif f"{col}_x" in merged.columns:
+                merged[col] = merged[f"{col}_x"]
+    # Limpiar columnas duplicadas
+    dup_cols = [c for c in merged.columns if c.endswith("_x") or c.endswith("_y")]
+    if dup_cols:
+        merged = merged.drop(columns=dup_cols)
     if mm_label in merged.columns:
         print("After multimodal join, label present:", True, "non-null:", int(merged[mm_label].notna().sum()))
     else:
         print("After multimodal join, label present:", False, "cols:", merged.columns.tolist())
+    missing_mm = [c for c in mm_cols_requested if c not in merged.columns]
+    if missing_mm:
+        print("Missing mm columns after join:", missing_mm)
 
     # Join EEG features (left join to latente base)
     eeg_drop = {"subject", "page", "product_id", args.label_col.lower(), "subject_key", "page_key", "product_key"}
