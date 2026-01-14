@@ -75,6 +75,14 @@ def main() -> None:
             mm_df = mm_df.rename(columns={candidates[0]: args.label_col.lower()})
         else:
             raise SystemExit(f"Label '{args.label_col}' not found in multimodal dataset.")
+    mm_label = args.label_col.lower()
+    if mm_label not in mm_df.columns:
+        candidates = [c for c in mm_df.columns if mm_label in c]
+        if candidates:
+            mm_df = mm_df.rename(columns={candidates[0]: mm_label})
+        else:
+            raise SystemExit(f"Label '{args.label_col}' not found in multimodal dataset.")
+
     mm_cols = [
         "familiarity",
         "frequent_buy",
@@ -106,17 +114,19 @@ def main() -> None:
         "price",
         "offer",
         "len_med",
-        args.label_col.lower(),
+        mm_label,
     ]
     mm_cols = [c for c in mm_cols if c in mm_df.columns]
     mm_small = mm_df[["subject_key", "page_key", "product_key"] + mm_cols].copy()
     merged = lat_df.merge(mm_small, on=["subject_key", "page_key", "product_key"], how="left")
+    print("After multimodal join, label present:", mm_label in merged.columns, "non-null:", int(merged[mm_label].notna().sum()))
 
     # Join EEG features (left join to latente base)
     eeg_drop = {"subject", "page", "product_id", args.label_col.lower(), "subject_key", "page_key", "product_key"}
     eeg_feat_cols = [c for c in eeg_df.columns if c not in eeg_drop]
     eeg_small = eeg_df[["subject_key", "page_key", "product_key"] + eeg_feat_cols].copy()
     merged = merged.merge(eeg_small, on=["subject_key", "page_key", "product_key"], how="left")
+    print("After EEG join, label present:", mm_label in merged.columns, "non-null:", int(merged[mm_label].notna().sum()))
 
     # Image attributes from latente
     img_cols = [
@@ -138,7 +148,7 @@ def main() -> None:
     keep_cols += img_cols
     keep_cols = [c for c in keep_cols if c in merged.columns]
 
-    label_col = args.label_col.lower()
+    label_col = mm_label
     if label_col not in merged.columns:
         raise SystemExit(f"Label '{label_col}' not found after joins.")
 
