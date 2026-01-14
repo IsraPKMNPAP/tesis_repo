@@ -197,6 +197,7 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--results-dir", type=Path, default=Path("./results/icl_v"))
     parser.add_argument("--debug", action="store_true", help="Imprime diagnosticos por epoca.")
+    parser.add_argument("--hessian-choice-only", action="store_true", help="Hessiano solo de loss_choice.")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -310,7 +311,7 @@ def main():
             indicators = indicators.to(device)
             choice_t = torch.as_tensor(choice, device=device, dtype=torch.long)
             o = model(obs_lt, obs_u, indicators, choice_t)
-            out.append(o["loss"])
+            out.append(o["loss_choice"] if args.hessian_choice_only else o["loss"])
         return torch.stack(out).mean()
 
     hess = compute_hessian_stats(model, loss_closure)

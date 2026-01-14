@@ -149,6 +149,7 @@ def main():
     parser.add_argument("--hessian-max-params", type=int, default=2000, help="Maximo de parametros para Hessiano completo.")
     parser.add_argument("--hessian-device", type=str, default="cpu", help="Dispositivo para Hessiano: cpu o cuda.")
     parser.add_argument("--hessian-beta-only", action="store_true", help="Hessiano solo para betas de utilidad.")
+    parser.add_argument("--hessian-choice-only", action="store_true", help="Hessiano solo de loss_choice.")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -260,7 +261,7 @@ def main():
             img_emb = img_emb.to(device_ref)
             choice_t = choice.to(device_ref)
             o = model_ref(obs_lt, obs_u, eeg_emb, img_emb, choice_t)
-            out.append(o["loss"])
+            out.append(o["loss_choice"] if args.hessian_choice_only else o["loss"])
         return torch.stack(out).mean()
 
     if not args.skip_hessian:
