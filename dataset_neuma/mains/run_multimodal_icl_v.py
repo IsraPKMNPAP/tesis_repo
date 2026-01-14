@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader
+from torch.nn.utils import parameters_to_vector, vector_to_parameters
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -147,6 +148,7 @@ def main():
     parser.add_argument("--skip-hessian", action="store_true", help="No calcular Hessiano (ahorra memoria).")
     parser.add_argument("--hessian-max-params", type=int, default=2000, help="Maximo de parametros para Hessiano completo.")
     parser.add_argument("--hessian-device", type=str, default="cpu", help="Dispositivo para Hessiano: cpu o cuda.")
+    parser.add_argument("--hessian-beta-only", action="store_true", help="Hessiano solo para betas de utilidad.")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -248,23 +250,61 @@ def main():
     # Hessiano (opcional y reducido)
     hess = None
     param_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    if not args.skip_hessian and param_count <= args.hessian_max_params:
+
+    def loss_closure(model_ref, device_ref):
+        out = []
+        for obs_lt, obs_u, eeg_emb, img_emb, choice in train_loader:
+            obs_lt = obs_lt.to(device_ref)
+            obs_u = obs_u.to(device_ref)
+            eeg_emb = eeg_emb.to(device_ref)
+            img_emb = img_emb.to(device_ref)
+            choice_t = choice.to(device_ref)
+            o = model_ref(obs_lt, obs_u, eeg_emb, img_emb, choice_t)
+            out.append(o["loss"])
+        return torch.stack(out).mean()
+
+    if not args.skip_hessian:
         h_dev = torch.device(args.hessian_device)
         model_h = model.to(h_dev)
 
-        def loss_closure():
-            out = []
-            for obs_lt, obs_u, eeg_emb, img_emb, choice in train_loader:
-                obs_lt = obs_lt.to(h_dev)
-                obs_u = obs_u.to(h_dev)
-                eeg_emb = eeg_emb.to(h_dev)
-                img_emb = img_emb.to(h_dev)
-                choice_t = choice.to(h_dev)
-                o = model_h(obs_lt, obs_u, eeg_emb, img_emb, choice_t)
-                out.append(o["loss"])
-            return torch.stack(out).mean()
+        if args.hessian_beta_only:
+            # Hessiano solo sobre betas (utilidad)
+            beta_param = None
+            if hasattr(model_h, "beta") and model_h.beta is not None:
+                beta_param = model_h.beta if isinstance(model_h.beta, torch.nn.Parameter) else model_h.beta.weight
+            if beta_param is not None and beta_param.numel() <= args.hessian_max_params:
+                params = [beta_param]
+                flat_init = parameters_to_vector(params).detach()
 
-        hess = compute_hessian_stats(model_h, loss_closure)
+                def _wrapped_loss(flat_params: torch.Tensor) -> torch.Tensor:
+                    vector_to_parameters(flat_params, params)
+                    return loss_closure(model_h, h_dev)
+
+                H = torch.autograd.functional.hessian(_wrapped_loss, flat_init)
+                vector_to_parameters(flat_init, params)
+                eye = torch.eye(H.shape[0], device=H.device, dtype=H.dtype) * 1e-4
+                H_safe = H + eye
+                H_inv = torch.linalg.pinv(H_safe)
+                var = torch.diag(H_inv)
+                std = torch.sqrt(torch.clamp(var, min=1e-12))
+                theta = flat_init
+
+                # nombres beta
+                if beta_param.dim() == 2:
+                    names = [f"beta[{i},{j}]" for i in range(beta_param.shape[0]) for j in range(beta_param.shape[1])]
+                else:
+                    names = [f"beta[{j}]" for j in range(beta_param.shape[0])]
+
+                hess = type("HessWrap", (), {})()
+                hess.theta = theta.detach()
+                hess.std = std.detach()
+                hess.tstat = (theta / std).detach()
+                hess.hessian = H.detach()
+                hess.var_covar = H_inv.detach()
+                hess.names = names
+        else:
+            if param_count <= args.hessian_max_params:
+                hess = compute_hessian_stats(model_h, lambda: loss_closure(model_h, h_dev))
 
     run_dir = next_run_dir(args.results_dir)
     torch.save(model.state_dict(), run_dir / "model_last.pt")
