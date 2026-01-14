@@ -182,7 +182,7 @@ def main() -> None:
     # Logistic regression on selected features
     X = merged[keep_cols]
     y = merged[label_col].to_numpy()
-
+    X.drop("label",inplace=True)
     # Identify numeric/categorical
     num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
     cat_cols = [c for c in X.columns if c not in num_cols]
