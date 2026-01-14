@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import math
-import pickle
+import joblib
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -24,8 +24,7 @@ from mains.run_multimodal_icl_v import build_datasets, resolve_cols
 
 
 def _load_pickle(path: Path):
-    with open(path, "rb") as f:
-        return pickle.load(f)
+    return joblib.load(path)
 
 
 def _load_params_csv(path: Optional[Path]) -> Dict[str, Dict[str, float]]:
@@ -111,7 +110,10 @@ def extract_iclv_classic(args):
     if model_path is None or not model_path.exists():
         print("[WARN] iclv_model_pt no existe; se omite ICLV clasico")
         return
-    state = torch.load(model_path, map_location="cpu")
+    try:
+        state = torch.load(model_path, map_location="cpu", weights_only=True)
+    except TypeError:
+        state = torch.load(model_path, map_location="cpu")
     beta = state["beta"]
     asc = state["ASC"]
 
@@ -132,7 +134,10 @@ def extract_mm_iclv(args):
     if model_path is None or not model_path.exists():
         print("[WARN] mm_model_pt no existe; se omite MM_ICLV")
         return
-    state = torch.load(model_path, map_location="cpu")
+    try:
+        state = torch.load(model_path, map_location="cpu", weights_only=True)
+    except TypeError:
+        state = torch.load(model_path, map_location="cpu")
     beta = state["beta"]
     asc = state["ASC"]
 
