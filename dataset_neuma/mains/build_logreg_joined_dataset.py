@@ -192,10 +192,25 @@ def main() -> None:
     if leak_cols:
         print("WARNING: possible leakage columns in X:", leak_cols)
 
-    # Logistic regression on selected features
+    # Diagnostico de correlaciones con la etiqueta (top 10)
     X = merged[keep_cols]
     y = merged[label_col].to_numpy()
-    
+    corr_vals = {}
+    for c in keep_cols:
+        try:
+            series = pd.to_numeric(X[c], errors="coerce")
+            if series.notna().sum() > 0:
+                corr = series.corr(pd.Series(y))
+                if pd.notna(corr):
+                    corr_vals[c] = abs(float(corr))
+        except Exception:
+            continue
+    top_corr = sorted(corr_vals.items(), key=lambda kv: kv[1], reverse=True)[:10]
+    if top_corr:
+        print("Top 10 |corr| con label:")
+        for name, val in top_corr:
+            print(f"  {name}: {val:.4f}")
+
     # Identify numeric/categorical
     num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
     cat_cols = [c for c in X.columns if c not in num_cols]
