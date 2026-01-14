@@ -119,6 +119,11 @@ def main() -> None:
     mm_cols = [c for c in mm_cols if c in mm_df.columns]
     mm_small = mm_df[["subject_key", "page_key", "product_key"] + mm_cols].copy()
     merged = lat_df.merge(mm_small, on=["subject_key", "page_key", "product_key"], how="left")
+    if mm_label not in merged.columns:
+        if f"{mm_label}_y" in merged.columns:
+            merged = merged.rename(columns={f"{mm_label}_y": mm_label})
+        elif f"{mm_label}_x" in merged.columns:
+            merged = merged.rename(columns={f"{mm_label}_x": mm_label})
     if mm_label in merged.columns:
         print("After multimodal join, label present:", True, "non-null:", int(merged[mm_label].notna().sum()))
     else:
