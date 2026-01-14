@@ -11,6 +11,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from utils.features import load_features_file
+
 
 def load_feature_names_from_preproc(preproc_path: Path, obs_u_cols: List[str]) -> List[str]:
     try:
@@ -159,7 +161,7 @@ def main() -> None:
     iclv_metrics = json.loads((args.iclv_dir / "metrics.json").read_text(encoding="utf-8"))
     obs_u_cols = iclv_metrics.get("obs_u_cols", [])
     feature_names = load_feature_names_from_preproc(args.iclv_dir / "preproc_u.pkl", obs_u_cols)
-    state = torch.load(args.iclv_dir / "model.pt", map_location="cpu")
+    state = torch.load(args.iclv_dir / "model.pt", map_location="cpu", weights_only=True)
     beta, n_alts = extract_beta_from_state(state)
 
     opg_std = opg_t = None
@@ -271,7 +273,7 @@ def main() -> None:
     # ICLV multimodal
     mm_metrics = json.loads((args.mm_dir / "metrics.json").read_text(encoding="utf-8"))
     mm_obs_u_cols = mm_metrics.get("obs_u_cols", [])
-    state_mm = torch.load(args.mm_dir / "model_last.pt", map_location="cpu")
+    state_mm = torch.load(args.mm_dir / "model_last.pt", map_location="cpu", weights_only=True)
     beta_mm, n_alts_mm = extract_beta_from_state(state_mm)
     opg_std_mm = opg_t_mm = None
     if args.use_opg:
