@@ -69,6 +69,12 @@ def main() -> None:
     lat_df["product_key"] = lat_df["prod_num"].apply(lambda v: f"product{int(v)}")
 
     # Join multimodal (left join to latente)
+    if args.label_col.lower() not in mm_df.columns:
+        candidates = [c for c in mm_df.columns if args.label_col.lower() in c]
+        if candidates:
+            mm_df = mm_df.rename(columns={candidates[0]: args.label_col.lower()})
+        else:
+            raise SystemExit(f"Label '{args.label_col}' not found in multimodal dataset.")
     mm_cols = [
         "familiarity",
         "frequent_buy",
