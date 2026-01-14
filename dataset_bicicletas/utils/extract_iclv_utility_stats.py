@@ -18,9 +18,33 @@ if str(ROOT) not in sys.path:
 
 from utils.features import load_features_file
 from utils.splits import split_by_participant
-from src.data_loading.multimodal_icl_v import collate_multimodal_icl_v
+from src.data_loading.multimodal_icl_v import MultimodalICLVDataset, collate_multimodal_icl_v
+from src.data_loading.multimodal_audio import MultimodalAudioDataset
 from src.models.icl_v import DeterministicICLV, MultimodalICLVDeterministic, compute_hessian_stats
 from mains.run_multimodal_icl_v import build_datasets, resolve_cols
+from src.data_cleaning.cleaning import categorias_a_str, convertir_a_categorico
+
+
+def _encode_indicator_blocks(df_tr: pd.DataFrame, df_val: pd.DataFrame, cols: List[str]) -> tuple[np.ndarray, np.ndarray]:
+    tr_blocks = []
+    val_blocks = []
+    for col in cols:
+        if pd.api.types.is_numeric_dtype(df_tr[col]):
+            tr_col = df_tr[col].fillna(df_tr[col].median())
+            val_col = df_val[col].fillna(df_tr[col].median())
+        else:
+            tr_str = df_tr[col].astype(str)
+            uniq = tr_str.unique().tolist()
+            mapping = {v: i for i, v in enumerate(uniq)}
+            tr_col = tr_str.map(mapping).fillna(-1)
+            val_col = df_val[col].astype(str).map(mapping).fillna(-1)
+        tr_blocks.append(tr_col.to_numpy(dtype=np.float32))
+        val_blocks.append(val_col.to_numpy(dtype=np.float32))
+    if not tr_blocks:
+        return np.zeros((len(df_tr), 0), dtype=np.float32), np.zeros((len(df_val), 0), dtype=np.float32)
+    tr_mat = np.stack(tr_blocks, axis=1).astype(np.float32)
+    val_mat = np.stack(val_blocks, axis=1).astype(np.float32)
+    return tr_mat, val_mat
 
 
 def _load_pickle(path: Path):
@@ -54,6 +78,14 @@ def _feature_names_from_preproc(preproc, fallback: List[str]) -> List[str]:
         return names
     except Exception:
         return fallback
+
+
+def _to_float_array(mat) -> np.ndarray:
+    try:
+        arr = mat.toarray()
+    except Exception:
+        arr = np.asarray(mat)
+    return arr.astype(np.float32)
 
 
 def _beta_rows(beta: torch.Tensor, asc: torch.Tensor, feature_names: List[str], params_map: Dict[str, Dict[str, float]], model_name: str):
@@ -141,8 +173,6 @@ def extract_mm_iclv(args):
     beta = state["beta"]
     asc = state["ASC"]
 
-    obs_u_cols = load_features_file(args.mm_obs_u_file) if args.mm_obs_u_file else []
-
     # reconstruir datasets para hessiano
     pkl_path = Path(args.mm_pkl)
     df = pd.read_pickle(pkl_path).reset_index(drop=True)
@@ -175,29 +205,70 @@ def extract_mm_iclv(args):
         seed=args.mm_seed,
     )
 
-    train_ds, _, preproc_lt, preproc_u = build_datasets(
-        df_tr=df_tr,
-        df_val=df_val,
-        obs_lt_cols=obs_lt_cols,
-        obs_u_cols=obs_u_cols,
-        indicator_cols=indicator_cols,
-        label_col=args.mm_label_col,
-        num_choices=num_choices,
-        scaler=args.mm_tabular_scaler,
-        path_col=args.mm_path_col,
-        audio_cached_col=args.mm_audio_cached_col,
-        timestamp_col=args.mm_timestamp_col,
-        window_id_col=args.mm_window_id_col,
-        participant_col=args.mm_participant_col,
-        audio_start_col=args.mm_audio_start_col,
-        audio_root=args.mm_audio_root,
-        video_root=args.mm_video_root,
-        audio_norm=args.mm_audio_norm,
-        audio_sr=args.mm_audio_sr,
-        audio_duration=args.mm_audio_duration,
-        audio_template=args.mm_audio_template,
-        audio_fallback_template=args.mm_audio_fallback_template,
-    )
+    preproc_lt = _load_pickle(Path(args.mm_preproc_lt)) if args.mm_preproc_lt else None
+    preproc_u = _load_pickle(Path(args.mm_preproc_u)) if args.mm_preproc_u else None
+
+    if preproc_lt is None or preproc_u is None:
+        train_ds, _, preproc_lt, preproc_u = build_datasets(
+            df_tr=df_tr,
+            df_val=df_val,
+            obs_lt_cols=obs_lt_cols,
+            obs_u_cols=obs_u_cols,
+            indicator_cols=indicator_cols,
+            label_col=args.mm_label_col,
+            num_choices=num_choices,
+            scaler=args.mm_tabular_scaler,
+            path_col=args.mm_path_col,
+            audio_cached_col=args.mm_audio_cached_col,
+            timestamp_col=args.mm_timestamp_col,
+            window_id_col=args.mm_window_id_col,
+            participant_col=args.mm_participant_col,
+            audio_start_col=args.mm_audio_start_col,
+            audio_root=args.mm_audio_root,
+            video_root=args.mm_video_root,
+            audio_norm=args.mm_audio_norm,
+            audio_sr=args.mm_audio_sr,
+            audio_duration=args.mm_audio_duration,
+            audio_template=args.mm_audio_template,
+            audio_fallback_template=args.mm_audio_fallback_template,
+        )
+    else:
+        X_lt_tr_mat = _to_float_array(preproc_lt.transform(convertir_a_categorico(categorias_a_str(df_tr[obs_lt_cols].copy()))))
+        X_u_tr_mat = _to_float_array(preproc_u.transform(convertir_a_categorico(categorias_a_str(df_tr[obs_u_cols].copy()))))
+        ind_tr_mat, _ = _encode_indicator_blocks(df_tr, df_val, indicator_cols)
+
+        if args.mm_video_root:
+            df_tr = df_tr.copy()
+            df_tr[args.mm_path_col] = df_tr[args.mm_path_col].astype(str).apply(
+                lambda p: str(Path(args.mm_video_root) / p) if not Path(p).is_absolute() else p
+            )
+        if args.mm_audio_cached_col and args.mm_audio_root:
+            df_tr = df_tr.copy()
+            df_tr[args.mm_audio_cached_col] = df_tr[args.mm_audio_cached_col].astype(str).apply(
+                lambda p: str(Path(args.mm_audio_root) / p) if p not in ("", "nan", "None") and not Path(p).is_absolute() else p
+            )
+
+        base_tr = MultimodalAudioDataset(
+            df=df_tr,
+            tab_columns=obs_lt_cols,
+            X_tab_array=torch.tensor(X_lt_tr_mat),
+            path_col=args.mm_path_col,
+            label_col=args.mm_label_col,
+            timestamp_col=args.mm_timestamp_col,
+            window_id_col=args.mm_window_id_col,
+            participant_col=args.mm_participant_col,
+            audio_start_col=args.mm_audio_start_col,
+            audio_cached_col=args.mm_audio_cached_col,
+            audio_root=args.mm_audio_root,
+            audio_template=args.mm_audio_template,
+            audio_fallback_template=args.mm_audio_fallback_template,
+            audio_sr=args.mm_audio_sr,
+            audio_duration=args.mm_audio_duration,
+            audio_norm=args.mm_audio_norm,
+        )
+        obs_u_tr_t = torch.tensor(X_u_tr_mat)
+        ind_tr_t = torch.tensor(ind_tr_mat.astype(np.float32))
+        train_ds = MultimodalICLVDataset(base_tr, obs_u_tr_t, ind_tr_t, n_choices=num_choices)
 
     tab_in_dim = train_ds.base.X_tab_array.shape[1]
     dim_obs_u = train_ds.obs_u.shape[-1]
@@ -220,6 +291,12 @@ def extract_mm_iclv(args):
         freeze_audio=args.mm_freeze_audio,
     )
     model.load_state_dict(state, strict=False)
+    try:
+        expected_in = int(state["tab_enc.net.0.weight"].shape[1])
+        if expected_in != tab_in_dim:
+            print(f"[WARN] tab_in_dim={tab_in_dim} no coincide con checkpoint={expected_in}. Usa --mm-preproc-lt para evitar mismatch.")
+    except Exception:
+        pass
 
     # congelar todo menos beta/delta/ASC
     for name, p in model.named_parameters():
@@ -283,6 +360,8 @@ if __name__ == "__main__":
     ap.add_argument("--mm-obs-lt-file", type=str, default=None)
     ap.add_argument("--mm-obs-u-file", type=str, default=None)
     ap.add_argument("--mm-indicator-file", type=str, default=None)
+    ap.add_argument("--mm-preproc-lt", type=str, default=None)
+    ap.add_argument("--mm-preproc-u", type=str, default=None)
     ap.add_argument("--mm-label-col", type=str, default="action_proc")
     ap.add_argument("--mm-path-col", type=str, default="frames_route")
     ap.add_argument("--mm-audio-cached-col", type=str, default="audio_cached_path")
