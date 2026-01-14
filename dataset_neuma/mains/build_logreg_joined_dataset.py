@@ -117,8 +117,6 @@ def main() -> None:
         mm_label,
     ]
     mm_cols = [c for c in mm_cols if c in mm_df.columns]
-    # Filtrar solo columnas disponibles
-    mm_cols = [c for c in mm_cols if c in mm_df.columns]
     mm_small = mm_df[["subject_key", "page_key", "product_key"] + mm_cols].copy()
     merged = lat_df.merge(mm_small, on=["subject_key", "page_key", "product_key"], how="left")
     if mm_label not in merged.columns:
@@ -184,7 +182,7 @@ def main() -> None:
     # Logistic regression on selected features
     X = merged[keep_cols]
     y = merged[label_col].to_numpy()
-    X.drop("label",inplace=True)
+    
     # Identify numeric/categorical
     num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
     cat_cols = [c for c in X.columns if c not in num_cols]
