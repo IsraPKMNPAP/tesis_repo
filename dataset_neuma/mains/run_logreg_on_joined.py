@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import classification_report, roc_auc_score
+from sklearn.metrics import classification_report, roc_auc_score, log_loss
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
@@ -54,7 +54,27 @@ def main() -> None:
     clf.fit(X_train, y_train)
     prob = clf.predict_proba(X_test)[:, 1]
     auc = roc_auc_score(y_test, prob)
-    print(f"AUC: {auc:.4f}")
+    nll = log_loss(y_test, prob, labels=[0, 1])
+    log_likelihood = -nll * len(y_test)
+    # pseudo R2 McFadden
+    p = y_test.mean()
+    p = min(max(p, 1e-6), 1 - 1e-6)
+    ll_null = (y_test * np.log(p) + (1 - y_test) * np.log(1 - p)).sum()
+    pseudo_r2 = 1 - (log_likelihood / ll_null)
+
+    report = classification_report(y_test, (prob >= 0.5).astype(int), digits=3, output_dict=True)
+    metrics = {
+        "acc": report["accuracy"],
+        "f1_macro": report["macro avg"]["f1-score"],
+        "f1_pos": report["1"]["f1-score"] if "1" in report else float("nan"),
+        "f1_neg": report["0"]["f1-score"] if "0" in report else float("nan"),
+        "auc": auc,
+        "nll": nll,
+        "mean_nll": nll,
+        "log_likelihood": log_likelihood,
+        "pseudo_r2": pseudo_r2,
+    }
+    print("Metrics:", {k: float(v) for k, v in metrics.items()})
     print(classification_report(y_test, (prob >= 0.5).astype(int), digits=3))
 
 
