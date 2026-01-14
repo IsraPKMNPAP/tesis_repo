@@ -504,7 +504,8 @@ def main():
 
     def loss_closure():
         out = model(obs_lt_full, obs_u_full, ind_full, choice_full)
-        return out["loss"]
+        # Hessiano solo sobre la loss de eleccion (utilidad)
+        return out["loss_choice"]
 
     hess_res = compute_hessian_stats(model, loss_closure)
 

@@ -331,7 +331,8 @@ def extract_mm_iclv(args):
                 max_len = int(args.mm_audio_sr * args.mm_audio_duration)
                 x_aud = x_aud[..., :max_len]
             out = model(x_tab, x_vid, x_aud, obs_u, indicators, y)
-            total = total + out["loss"]
+            # Hessiano solo sobre la loss de eleccion (utilidad)
+            total = total + out["loss_choice"]
             n += 1
         return total / max(1, n)
 
