@@ -119,14 +119,20 @@ def main() -> None:
     mm_cols = [c for c in mm_cols if c in mm_df.columns]
     mm_small = mm_df[["subject_key", "page_key", "product_key"] + mm_cols].copy()
     merged = lat_df.merge(mm_small, on=["subject_key", "page_key", "product_key"], how="left")
-    print("After multimodal join, label present:", mm_label in merged.columns, "non-null:", int(merged[mm_label].notna().sum()))
+    if mm_label in merged.columns:
+        print("After multimodal join, label present:", True, "non-null:", int(merged[mm_label].notna().sum()))
+    else:
+        print("After multimodal join, label present:", False, "cols:", merged.columns.tolist())
 
     # Join EEG features (left join to latente base)
     eeg_drop = {"subject", "page", "product_id", args.label_col.lower(), "subject_key", "page_key", "product_key"}
     eeg_feat_cols = [c for c in eeg_df.columns if c not in eeg_drop]
     eeg_small = eeg_df[["subject_key", "page_key", "product_key"] + eeg_feat_cols].copy()
     merged = merged.merge(eeg_small, on=["subject_key", "page_key", "product_key"], how="left")
-    print("After EEG join, label present:", mm_label in merged.columns, "non-null:", int(merged[mm_label].notna().sum()))
+    if mm_label in merged.columns:
+        print("After EEG join, label present:", True, "non-null:", int(merged[mm_label].notna().sum()))
+    else:
+        print("After EEG join, label present:", False, "cols:", merged.columns.tolist())
 
     # Image attributes from latente
     img_cols = [
