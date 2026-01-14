@@ -83,7 +83,7 @@ def main() -> None:
         else:
             raise SystemExit(f"Label '{args.label_col}' not found in multimodal dataset.")
 
-    mm_cols = [
+    mm_cols_requested = [
         "familiarity",
         "frequent_buy",
         "reasons",
@@ -116,8 +116,8 @@ def main() -> None:
         "len_med",
         mm_label,
     ]
-    mm_cols = [c for c in mm_cols if c in mm_df.columns]
-    mm_small = mm_df[["subject_key", "page_key", "product_key"] + mm_cols].copy()
+    mm_cols_mm = [c for c in mm_cols_requested if c in mm_df.columns]
+    mm_small = mm_df[["subject_key", "page_key", "product_key"] + mm_cols_mm].copy()
     merged = lat_df.merge(mm_small, on=["subject_key", "page_key", "product_key"], how="left")
     if mm_label not in merged.columns:
         if f"{mm_label}_y" in merged.columns:
@@ -157,7 +157,8 @@ def main() -> None:
 
     keep_cols = []
     keep_cols += eeg_feat_cols
-    keep_cols += [c for c in mm_cols if c != args.label_col.lower()]
+    mm_cols_present = [c for c in mm_cols_requested if c in merged.columns and c != label_col]
+    keep_cols += mm_cols_present
     keep_cols += img_cols
     keep_cols = [c for c in keep_cols if c in merged.columns]
     # asegurar que la etiqueta no quede como feature (cualquier columna con 'bought')
@@ -173,11 +174,14 @@ def main() -> None:
     args.out_csv.parent.mkdir(parents=True, exist_ok=True)
     merged.to_csv(args.out_csv, index=False)
     print(f"Saved joined dataset: {args.out_csv} (rows: {len(merged)})")
-    print("Columns used (batch size 10):")
-    cols_print = keep_cols + [label_col]
-    for i in range(0, len(cols_print), 10):
-        batch = cols_print[i : i + 10]
+    print("Feature columns (X) batch size 10:")
+    for i in range(0, len(keep_cols), 10):
+        batch = keep_cols[i : i + 10]
         print(f"  {i:03d}-{i+len(batch)-1:03d}: {batch}")
+    print("Label column (y):", label_col)
+    leak_cols = [c for c in keep_cols if ("bought" in c.lower()) or ("%bought" in c.lower())]
+    if leak_cols:
+        print("WARNING: possible leakage columns in X:", leak_cols)
 
     # Logistic regression on selected features
     X = merged[keep_cols]
