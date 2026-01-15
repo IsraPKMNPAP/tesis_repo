@@ -371,12 +371,18 @@ def main():
             obs_lt = obs_lt.to(device)
             obs_u = obs_u.to(device)
             indicators = indicators.to(device)
+            if args.hessian_double:
+                obs_lt = obs_lt.double()
+                obs_u = obs_u.double()
+                indicators = indicators.double()
             choice_t = torch.as_tensor(choice, device=device, dtype=torch.long)
             o = model(obs_lt, obs_u, indicators, choice_t)
             out.append(o["loss_choice"] if args.hessian_choice_only else o["loss"])
         return torch.stack(out).mean()
 
     if args.hessian_beta_only:
+        if args.hessian_double:
+            model = model.double()
         beta_param = model.beta if isinstance(model.beta, torch.nn.Parameter) else model.beta.weight
         params = [beta_param]
         flat_init = parameters_to_vector(params).detach()
@@ -409,6 +415,8 @@ def main():
         else:
             hess.names = [f"beta[{j}]" for j in range(beta_param.shape[0])]
     else:
+        if args.hessian_double:
+            model = model.double()
         hess = compute_hessian_stats(model, loss_closure, n_samples=len(train_ds), ridge=args.hessian_ridge)
 
     run_dir = next_run_dir(args.results_dir)
