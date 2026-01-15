@@ -313,6 +313,12 @@ def main() -> None:
             y = pd.to_numeric(df[run_args.get("label_col", "bought")], errors="coerce").to_numpy(dtype=np.int64)
             y_t = torch.tensor(y, dtype=torch.long)
             from src.models.multimodal_icl_v import MultimodalICLVDeterministic
+            beta_is_per_alt = False
+            beta_key = "beta.weight" if "beta.weight" in state_mm else "beta" if "beta" in state_mm else None
+            if beta_key is not None:
+                beta_shape = tuple(state_mm[beta_key].shape)
+                if len(beta_shape) == 2 and beta_shape[0] == n_alts_mm:
+                    beta_is_per_alt = True
             model = MultimodalICLVDeterministic(
                 dim_obs_lt=obs_lt.shape[1],
                 dim_obs_u=obs_u.shape[2],
@@ -322,7 +328,7 @@ def main() -> None:
                 n_choices=n_alts_mm,
                 alpha=1.0,
                 img_proj_dim=int(mm_metrics.get("img_proj_dim", 32)),
-                beta_per_alt=("beta[" in " ".join(json.loads((args.mm_dir / "hessian.json").read_text(encoding="utf-8"))["names"]) if (args.mm_dir / "hessian.json").exists() else False),
+                beta_per_alt=beta_is_per_alt,
             )
             # handle beta param name differences between Linear vs Parameter
             if "beta" in state_mm and "beta.weight" not in state_mm:
