@@ -316,6 +316,7 @@ def main():
     parser.add_argument("--biogeme-stats", action="store_true", help="Calcula stats tipo Biogeme para betas.")
     parser.add_argument("--biogeme-max-rows", type=int, default=2000, help="Limite de filas para Biogeme/OPG.")
     parser.add_argument("--biogeme-seed", type=int, default=42)
+    parser.add_argument("--biogeme-ridge", type=float, default=0.0, help="Ridge para -A en Biogeme.")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -571,12 +572,13 @@ def main():
         H = torch.autograd.functional.hessian(_loss_flat, flat_init)
         vector_to_parameters(flat_init, [beta_param])
         A = H.detach().cpu().numpy()
-        eigvals = np.linalg.eigvalsh(-A) if A.size else np.array([])
+        A_reg = -A + (np.eye(A.shape[0]) * args.biogeme_ridge if args.biogeme_ridge and A.size else 0)
+        eigvals = np.linalg.eigvalsh(A_reg) if A.size else np.array([])
         cond = (np.max(eigvals) / np.min(eigvals)) if eigvals.size and np.min(eigvals) != 0 else np.inf
         try:
-            invA = np.linalg.pinv(-A)
+            invA = np.linalg.pinv(A_reg)
         except Exception:
-            invA = np.linalg.pinv(-A + 1e-6 * np.eye(A.shape[0]))
+            invA = np.linalg.pinv(A_reg + 1e-6 * np.eye(A.shape[0]))
         cov_classic = invA
         std_classic = np.sqrt(np.clip(np.diag(cov_classic), 1e-12, None))
         t_classic = flat_init.detach().double().cpu().numpy() / std_classic
@@ -597,6 +599,10 @@ def main():
             "cond": float(cond),
             "n_obs": int(n),
         }
+        print(
+            f"[biogeme] n={n} lambda_min={biogeme_stats['lambda_min']} "
+            f"lambda_max={biogeme_stats['lambda_max']} cond={biogeme_stats['cond']}"
+        )
 
     if args.hessian_beta_only and not args.biogeme_stats:
         if args.hessian_double:
