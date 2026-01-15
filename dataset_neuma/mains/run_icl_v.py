@@ -22,7 +22,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data_loading.icl_v import ICLVDataset
-from src.models.icl_v import DeterministicICLV, compute_hessian_stats
+from src.models.icl_v import DeterministicICLV, compute_hessian_stats, compute_choice_hessian_stats_only_utility
 from utils.features import load_features_file
 from utils.metrics import classification_metrics, pseudo_r2_mcfadden, save_metrics, summarize_coefs
 from utils.run_utils import next_run_dir, save_run_metadata
@@ -607,35 +607,13 @@ def main():
     if args.hessian_beta_only and not args.biogeme_stats:
         if args.hessian_double:
             model = model.double()
-        beta_param = model.beta if isinstance(model.beta, torch.nn.Parameter) else model.beta.weight
-        params = [beta_param]
-        flat_init = parameters_to_vector(params).detach()
-
-        def _wrapped_loss(flat_params: torch.Tensor) -> torch.Tensor:
-            vector_to_parameters(flat_params, params)
-            return loss_closure_sum()
-
-        if args.hessian_double:
-            flat_init = flat_init.double()
-            beta_param.data = beta_param.data.double()
-        H = torch.autograd.functional.hessian(_wrapped_loss, flat_init)
-        vector_to_parameters(flat_init, params)
-        eye = torch.eye(H.shape[0], device=H.device, dtype=H.dtype) * float(args.hessian_ridge)
-        H_safe = H + eye
-        H_inv = torch.linalg.pinv(H_safe)
-        var = torch.diag(H_inv)
-        std = torch.sqrt(torch.clamp(var, min=1e-12))
-        theta = flat_init
-        hess = type("HessWrap", (), {})()
-        hess.theta = theta.detach()
-        hess.std = std.detach()
-        hess.tstat = (theta / std).detach()
-        hess.hessian = H.detach()
-        hess.var_covar = H_inv.detach()
-        if beta_param.dim() == 2:
-            hess.names = [f"beta[{i},{j}]" for i in range(beta_param.shape[0]) for j in range(beta_param.shape[1])]
-        else:
-            hess.names = [f"beta[{j}]" for j in range(beta_param.shape[0])]
+        batch = {
+            "obs_lt": train_ds.obs_lt.to(device, dtype=torch.float64 if args.hessian_double else torch.float32),
+            "obs_u": train_ds.obs_u.to(device, dtype=torch.float64 if args.hessian_double else torch.float32),
+            "indicators": train_ds.indicators.to(device, dtype=torch.float64 if args.hessian_double else torch.float32),
+            "choice": train_ds.choices.to(device),
+        }
+        hess = compute_choice_hessian_stats_only_utility(model, batch)
     elif not args.biogeme_stats:
         if args.hessian_double:
             model = model.double()

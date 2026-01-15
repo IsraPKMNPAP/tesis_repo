@@ -112,6 +112,7 @@ class DeterministicICLV(nn.Module):
             "loss_choice": loss_choice,
             "loss_meas": loss_meas,
             "log_likelihood": ll,
+            "loglik_choice_sum": ll,
         }
 
 
@@ -181,4 +182,55 @@ def compute_hessian_stats(
         hessian=H.detach(),
         var_covar=H_inv.detach(),
         names=names,
+    )
+
+
+def compute_choice_hessian_stats_only_utility(
+    model: nn.Module,
+    batch: dict,
+) -> HessianResult:
+    """Hessiano/SE/t-stats solo para betas de utilidad usando -loglik (sum)."""
+    util_params = []
+    util_names: List[str] = []
+    for n, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        if n.startswith("beta"):
+            util_params.append(p)
+            if p.numel() == 1:
+                util_names.append(n)
+            else:
+                util_names.extend([f"{n}[{i}]" for i in range(p.numel())])
+
+    flat_init = parameters_to_vector(util_params).detach()
+
+    def _wrapped_nll(flat_params: torch.Tensor) -> torch.Tensor:
+        vector_to_parameters(flat_params, util_params)
+        out = model(
+            obs_lt=batch["obs_lt"],
+            obs_u=batch["obs_u"],
+            indicators=batch.get("indicators"),
+            choice=batch["choice"],
+        )
+        return -out["loglik_choice_sum"]
+
+    H = torch.autograd.functional.hessian(_wrapped_nll, flat_init)
+    vector_to_parameters(flat_init, util_params)
+    eps = 1e-6
+    eye = torch.eye(H.shape[0], device=H.device, dtype=H.dtype)
+    H_safe = H + eps * eye
+    H_inv = torch.linalg.pinv(H_safe)
+
+    var = torch.diag(H_inv)
+    std = torch.sqrt(torch.clamp(var, min=1e-12))
+    theta = flat_init
+    tstat = theta / torch.clamp(std, min=1e-12)
+
+    return HessianResult(
+        theta=theta.detach(),
+        std=std.detach(),
+        tstat=tstat.detach(),
+        hessian=H.detach(),
+        var_covar=H_inv.detach(),
+        names=util_names,
     )
