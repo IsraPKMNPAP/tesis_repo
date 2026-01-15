@@ -72,6 +72,7 @@ class SimpleMNL(torch.nn.Module):
             "loss_choice": loss_choice,
             "loss_meas": torch.tensor(0.0, device=obs_u.device, dtype=loss_choice.dtype),
             "log_likelihood": ll,
+            "loglik_choice_sum": ll,
         }
 
 
