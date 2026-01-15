@@ -22,7 +22,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data_loading.icl_v import ICLVDataset
-from src.models.icl_v import DeterministicICLV, compute_hessian_stats, compute_choice_hessian_stats_only_utility
+from src.models.icl_v import (
+    DeterministicICLV,
+    compute_biogeme_hessian_stats_full,
+    compute_choice_hessian_stats_only_utility,
+)
 from utils.features import load_features_file
 from utils.metrics import classification_metrics, pseudo_r2_mcfadden, save_metrics, summarize_coefs
 from utils.run_utils import next_run_dir, save_run_metadata
@@ -256,9 +260,9 @@ def run_epoch(model, loader, device, train: bool = True, optimizer=None):
             loss.backward()
             optimizer.step()
 
-        total_loss += float(loss.item()) * obs_lt.size(0)
-        total_choice += float(out["loss_choice"].item()) * obs_lt.size(0)
-        total_meas += float(out["loss_meas"].item()) * obs_lt.size(0)
+        total_loss += float(loss.item())
+        total_choice += float(out["loss_choice"].item())
+        total_meas += float(out["loss_meas"].item())
         total_ll += float(out["log_likelihood"].item())
         prob1 = torch.exp(out["logp"][:, 1]) if out["logp"].shape[1] > 1 else torch.exp(out["logp"][:, 0])
         y_true_all.append(choice_t.detach().cpu().numpy())
@@ -293,7 +297,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--alpha", type=float, default=1.0)
+    # alpha eliminado (loglik conjunta)
     parser.add_argument("--n-latent", type=int, default=3)
     parser.add_argument("--delta-per-alt", action="store_true")
     parser.add_argument("--beta-per-alt", action="store_true", help="Usar betas distintos por alternativa.")
@@ -302,22 +306,15 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--results-dir", type=Path, default=Path("./results/icl_v"))
     parser.add_argument("--debug", action="store_true", help="Imprime diagnosticos por epoca.")
-    parser.add_argument("--hessian-choice-only", action="store_true", help="Hessiano solo de loss_choice.")
     parser.add_argument("--cat-unique-threshold", type=int, default=4, help="Nunique<=threshold -> categorico + one-hot.")
     parser.add_argument("--min-var", type=float, default=1e-6, help="Filtro de baja varianza para obs_u.")
-    parser.add_argument("--hessian-beta-only", action="store_true", help="Hessiano solo para betas de utilidad.")
     parser.add_argument("--hessian-double", action="store_true", help="Hessiano en float64 (CPU recomendado).")
-    parser.add_argument("--hessian-ridge", type=float, default=1e-6, help="Ridge para Hessiano.")
     parser.add_argument("--obs-u-buy-only", action="store_true", help="Aplica obs_u solo a alternativa buy (alt=1).")
     parser.add_argument("--check-obs-u-identical", action="store_true", help="Diagnostica si obs_u es identico entre alternativas.")
     parser.add_argument("--print-beta-norm", action="store_true", help="Imprime norma de beta por epoca.")
     parser.add_argument("--diag-obs-u", action="store_true", help="Imprime norma/varianza de obs_u por alternativa.")
     parser.add_argument("--mnl-only", action="store_true", help="Usa logit simple (sin latentes ni indicadores).")
     parser.add_argument("--no-indicators", action="store_true", help="Ignora obs_i (indicadores).")
-    parser.add_argument("--biogeme-stats", action="store_true", help="Calcula stats tipo Biogeme para betas.")
-    parser.add_argument("--biogeme-max-rows", type=int, default=2000, help="Limite de filas para Biogeme/OPG.")
-    parser.add_argument("--biogeme-seed", type=int, default=42)
-    parser.add_argument("--biogeme-ridge", type=float, default=0.0, help="Ridge para -A en Biogeme.")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -452,7 +449,6 @@ def main():
             n_latent=args.n_latent,
             n_indicators=train_ds.indicators.shape[1],
             n_choices=args.num_choices,
-            alpha=args.alpha,
             delta_per_alt=args.delta_per_alt,
             beta_per_alt=args.beta_per_alt,
         )
@@ -492,133 +488,15 @@ def main():
     val_metrics = run_epoch(model, val_loader, device, train=False)
     te_metrics = run_epoch(model, test_loader, device, train=False)
 
-    # Hessian over train for coef stats
-    def loss_closure_sum():
-        total = 0.0
-        count = 0
-        for obs_lt, obs_u, indicators, choice in train_loader:
-            obs_lt = obs_lt.to(device)
-            obs_u = obs_u.to(device)
-            indicators = indicators.to(device)
-            if args.hessian_double:
-                obs_lt = obs_lt.double()
-                obs_u = obs_u.double()
-                indicators = indicators.double()
-            choice_t = torch.as_tensor(choice, device=device, dtype=torch.long)
-            o = model(obs_lt, obs_u, indicators, choice_t)
-            loss = o["loss_choice"] if args.hessian_choice_only else o["loss"]
-            total = total + loss * obs_lt.size(0)
-            count += obs_lt.size(0)
-        return total / max(1, count) if count == 0 else total
-
-    biogeme_stats = None
-    hess = None
-    if args.biogeme_stats:
-        # Biogeme/BHHH over betas only
-        if args.hessian_double:
-            model = model.double()
-        beta_param = model.beta if isinstance(model.beta, torch.nn.Parameter) else model.beta.weight
-        # OPG (B matrix)
-        grads = []
-        n = 0
-        for obs_lt, obs_u, indicators, choice in train_loader:
-            if args.biogeme_max_rows and n >= args.biogeme_max_rows:
-                break
-            obs_lt = obs_lt.to(device)
-            obs_u = obs_u.to(device)
-            indicators = indicators.to(device)
-            if args.hessian_double:
-                obs_lt = obs_lt.double()
-                obs_u = obs_u.double()
-                indicators = indicators.double()
-            choice_t = torch.as_tensor(choice, device=device, dtype=torch.long)
-            for i in range(obs_lt.size(0)):
-                if args.biogeme_max_rows and n >= args.biogeme_max_rows:
-                    break
-                out = model(obs_lt[i : i + 1], obs_u[i : i + 1], indicators[i : i + 1], choice_t[i : i + 1])
-                logp_i = out["logp"][0, int(choice_t[i].item())]
-                grad = torch.autograd.grad(logp_i, beta_param, retain_graph=False, create_graph=False)[0]
-                grads.append(grad.detach().flatten().double().cpu().numpy())
-                n += 1
-        if grads:
-            G = np.stack(grads, axis=0)
-            B = G.T @ G
-        else:
-            B = None
-
-        # Hessian of sum log-likelihood for betas
-        flat_init = parameters_to_vector([beta_param]).detach()
-
-        def _loss_flat(flat_params: torch.Tensor) -> torch.Tensor:
-            vector_to_parameters(flat_params, [beta_param])
-            total = 0.0
-            count = 0
-            for obs_lt, obs_u, indicators, choice in train_loader:
-                if args.biogeme_max_rows and count >= args.biogeme_max_rows:
-                    break
-                obs_lt = obs_lt.to(device)
-                obs_u = obs_u.to(device)
-                indicators = indicators.to(device)
-                if args.hessian_double:
-                    obs_lt = obs_lt.double()
-                    obs_u = obs_u.double()
-                    indicators = indicators.double()
-                choice_t = torch.as_tensor(choice, device=device, dtype=torch.long)
-                out = model(obs_lt, obs_u, indicators, choice_t)
-                ll = out["logp"].gather(1, choice_t.view(-1, 1)).sum()
-                total = total + ll
-                count += obs_lt.size(0)
-            return total if count > 0 else torch.tensor(0.0, device=device, dtype=flat_params.dtype)
-
-        H = torch.autograd.functional.hessian(_loss_flat, flat_init)
-        vector_to_parameters(flat_init, [beta_param])
-        A = H.detach().cpu().numpy()
-        A_reg = -A + (np.eye(A.shape[0]) * args.biogeme_ridge if args.biogeme_ridge and A.size else 0)
-        eigvals = np.linalg.eigvalsh(A_reg) if A.size else np.array([])
-        cond = (np.max(eigvals) / np.min(eigvals)) if eigvals.size and np.min(eigvals) != 0 else np.inf
-        try:
-            invA = np.linalg.pinv(A_reg)
-        except Exception:
-            invA = np.linalg.pinv(A_reg + 1e-6 * np.eye(A.shape[0]))
-        cov_classic = invA
-        std_classic = np.sqrt(np.clip(np.diag(cov_classic), 1e-12, None))
-        t_classic = flat_init.detach().double().cpu().numpy() / std_classic
-        if B is not None:
-            cov_robust = invA @ B @ invA
-            std_robust = np.sqrt(np.clip(np.diag(cov_robust), 1e-12, None))
-            t_robust = flat_init.detach().double().cpu().numpy() / std_robust
-        else:
-            std_robust = np.full_like(std_classic, np.nan)
-            t_robust = np.full_like(t_classic, np.nan)
-        biogeme_stats = {
-            "std": std_classic,
-            "tstat": t_classic,
-            "std_robust": std_robust,
-            "tstat_robust": t_robust,
-            "lambda_min": float(np.min(eigvals)) if eigvals.size else np.nan,
-            "lambda_max": float(np.max(eigvals)) if eigvals.size else np.nan,
-            "cond": float(cond),
-            "n_obs": int(n),
-        }
-        print(
-            f"[biogeme] n={n} lambda_min={biogeme_stats['lambda_min']} "
-            f"lambda_max={biogeme_stats['lambda_max']} cond={biogeme_stats['cond']}"
-        )
-
-    if args.hessian_beta_only and not args.biogeme_stats:
-        if args.hessian_double:
-            model = model.double()
-        batch = {
-            "obs_lt": train_ds.obs_lt.to(device, dtype=torch.float64 if args.hessian_double else torch.float32),
-            "obs_u": train_ds.obs_u.to(device, dtype=torch.float64 if args.hessian_double else torch.float32),
-            "indicators": train_ds.indicators.to(device, dtype=torch.float64 if args.hessian_double else torch.float32),
-            "choice": train_ds.choices.to(device),
-        }
-        hess = compute_choice_hessian_stats_only_utility(model, batch)
-    elif not args.biogeme_stats:
-        if args.hessian_double:
-            model = model.double()
-        hess = compute_hessian_stats(model, loss_closure_sum, n_samples=None, ridge=args.hessian_ridge)
+    if args.hessian_double:
+        model = model.double()
+    batch = {
+        "obs_lt": train_ds.obs_lt.to(device, dtype=torch.float64 if args.hessian_double else torch.float32),
+        "obs_u": train_ds.obs_u.to(device, dtype=torch.float64 if args.hessian_double else torch.float32),
+        "indicators": train_ds.indicators.to(device, dtype=torch.float64 if args.hessian_double else torch.float32),
+        "choice": train_ds.choices.to(device),
+    }
+    hess, biogeme_diag, std_robust_full, t_robust_full = compute_biogeme_hessian_stats_full(model, batch)
 
     run_dir = next_run_dir(args.results_dir)
     torch.save(model.state_dict(), run_dir / "model.pt")
@@ -637,34 +515,21 @@ def main():
 
     # utility beta stats (solo betas)
     beta_stats = []
-    beta_idx = [i for i, n in enumerate(hess.names) if n.startswith("beta")] if hess is not None else []
+    beta_idx = [i for i, n in enumerate(hess.names) if "beta" in n]
     feat_names = feat_names_u
-    beta_flat = None
-    if biogeme_stats is not None:
-        beta_param = model.beta if isinstance(model.beta, torch.nn.Parameter) else model.beta.weight
-        beta_flat = beta_param.detach().flatten().cpu().numpy()
+    beta_param = model.beta if isinstance(model.beta, torch.nn.Parameter) else model.beta.weight
+    beta_flat = beta_param.detach().flatten().cpu().numpy()
     for alt in range(args.num_choices):
         for j, feat in enumerate(feat_names):
             idx = alt * len(feat_names) + j
             flat_idx = beta_idx[idx] if idx < len(beta_idx) else None
-            if biogeme_stats is not None:
-                coef = beta_flat[idx] if (beta_flat is not None and idx < len(beta_flat)) else np.nan
+            coef = beta_flat[idx] if idx < len(beta_flat) else np.nan
+            sd = hess.std[flat_idx] if flat_idx is not None else np.nan
+            tstat = hess.tstat[flat_idx] if flat_idx is not None else np.nan
+            if flat_idx is not None and flat_idx < len(std_robust_full):
+                sd_r = std_robust_full[flat_idx]
+                tstat_r = t_robust_full[flat_idx]
             else:
-                coef = hess.theta[flat_idx] if flat_idx is not None else np.nan
-            if biogeme_stats is not None:
-                if idx < len(biogeme_stats["std"]):
-                    sd = biogeme_stats["std"][idx]
-                    tstat = biogeme_stats["tstat"][idx]
-                    sd_r = biogeme_stats["std_robust"][idx]
-                    tstat_r = biogeme_stats["tstat_robust"][idx]
-                else:
-                    sd = np.nan
-                    tstat = np.nan
-                    sd_r = np.nan
-                    tstat_r = np.nan
-            else:
-                sd = hess.std[flat_idx] if flat_idx is not None else np.nan
-                tstat = coef / sd if sd == sd and sd != 0 else np.nan
                 sd_r = np.nan
                 tstat_r = np.nan
             if tstat == tstat:
@@ -698,18 +563,9 @@ def main():
         "obs_lt_cols": obs_lt_cols,
         "obs_u_cols": obs_u_cols,
         "obs_i_cols": obs_i_cols,
-        "coef_summary": summarize_coefs(hess.names, hess.theta, hess.std, top_k=5) if hess is not None else [],
+        "coef_summary": summarize_coefs(hess.names, hess.theta, hess.std, top_k=5),
         "utility_beta_stats": beta_stats,
-        "biogeme_diag": (
-            {
-                "lambda_min": float(biogeme_stats["lambda_min"]),
-                "lambda_max": float(biogeme_stats["lambda_max"]),
-                "cond": float(biogeme_stats["cond"]),
-                "n_obs": int(biogeme_stats["n_obs"]),
-            }
-            if biogeme_stats is not None
-            else None
-        ),
+        "biogeme_diag": biogeme_diag,
     }
     save_metrics(metrics, run_dir)
 

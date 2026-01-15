@@ -91,19 +91,23 @@ class DeterministicICLV(nn.Module):
         choice: torch.Tensor,
     ):
         LT = self.Gamma(obs_lt)  # [B, n_latent]
+        if self.Lambda is not None and self.Lambda.weight.numel() > 0:
+            with torch.no_grad():
+                self.Lambda.weight[0, 0] = 1.0
         I_hat = self.Lambda(LT) if (self.Lambda is not None and self.n_indicators > 0) else None
 
         V = self.compute_utilities(obs_u, LT)  # [B, J]
         logp = F.log_softmax(V, dim=1)
 
-        loss_choice = F.nll_loss(logp, choice, reduction="mean")
+        ll_choice = logp.gather(1, choice.view(-1, 1)).sum()
         if I_hat is None:
-            loss_meas = torch.tensor(0.0, device=obs_lt.device, dtype=loss_choice.dtype)
+            ll_meas = torch.tensor(0.0, device=obs_lt.device, dtype=ll_choice.dtype)
         else:
-            loss_meas = F.mse_loss(I_hat, indicators, reduction="mean")
-
-        loss = loss_choice + self.alpha * loss_meas
-        ll = logp.gather(1, choice.view(-1, 1)).sum()
+            ll_meas = -0.5 * torch.pow(I_hat - indicators, 2).sum()
+        total_loglik = ll_choice + ll_meas
+        loss_choice = -ll_choice
+        loss_meas = -ll_meas
+        loss = -total_loglik
         return {
             "loss": loss,
             "logp": logp,
@@ -111,8 +115,9 @@ class DeterministicICLV(nn.Module):
             "I_hat": I_hat,
             "loss_choice": loss_choice,
             "loss_meas": loss_meas,
-            "log_likelihood": ll,
-            "loglik_choice_sum": ll,
+            "log_likelihood": total_loglik,
+            "loglik_choice_sum": ll_choice,
+            "loglik_meas_sum": ll_meas,
         }
 
 
@@ -234,3 +239,68 @@ def compute_choice_hessian_stats_only_utility(
         var_covar=H_inv.detach(),
         names=util_names,
     )
+
+
+def compute_biogeme_hessian_stats_full(
+    model: nn.Module,
+    batch: dict,
+) -> tuple[HessianResult, dict, np.ndarray, np.ndarray]:
+    """Biogeme/BHHH stats usando log-likelihood total (sum) y todos los params."""
+    named_params = trainable_named_params(model)
+    params: Sequence[nn.Parameter] = [p for _, p in named_params]
+    names = param_names(model)
+
+    flat_init = parameters_to_vector(params).detach()
+
+    # gradients per observation (BHHH)
+    obs_lt = batch["obs_lt"]
+    obs_u = batch["obs_u"]
+    indicators = batch.get("indicators")
+    choice = batch["choice"]
+    grads = []
+    for i in range(obs_lt.shape[0]):
+        out = model(
+            obs_lt=obs_lt[i : i + 1],
+            obs_u=obs_u[i : i + 1],
+            indicators=indicators[i : i + 1] if indicators is not None else None,
+            choice=choice[i : i + 1],
+        )
+        loglik_i = out["log_likelihood"]
+        grad = torch.autograd.grad(loglik_i, params, retain_graph=False, create_graph=False)
+        g = torch.cat([g_.reshape(-1) for g_ in grad]).detach().double().cpu().numpy()
+        grads.append(g)
+    G = np.stack(grads, axis=0) if grads else np.zeros((0, flat_init.numel()))
+    B = G.T @ G if G.size else np.zeros((flat_init.numel(), flat_init.numel()))
+
+    def _wrapped_nll(flat_params: torch.Tensor) -> torch.Tensor:
+        vector_to_parameters(flat_params, params)
+        out = model(obs_lt=obs_lt, obs_u=obs_u, indicators=indicators, choice=choice)
+        return -out["log_likelihood"]
+
+    H = torch.autograd.functional.hessian(_wrapped_nll, flat_init)
+    vector_to_parameters(flat_init, params)
+    A = H.detach().double().cpu().numpy()
+    eigvals = np.linalg.eigvalsh(-A) if A.size else np.array([])
+    diag = {
+        "lambda_min": float(np.min(eigvals)) if eigvals.size else np.nan,
+        "lambda_max": float(np.max(eigvals)) if eigvals.size else np.nan,
+        "cond": float(np.max(eigvals) / np.min(eigvals)) if eigvals.size and np.min(eigvals) != 0 else np.inf,
+        "n_obs": int(obs_lt.shape[0]),
+    }
+    invA = np.linalg.pinv(-A) if A.size else np.zeros_like(A)
+    cov_classic = invA
+    std_classic = np.sqrt(np.clip(np.diag(cov_classic), 1e-12, None))
+    t_classic = flat_init.detach().double().cpu().numpy() / std_classic
+    cov_robust = invA @ B @ invA if B.size else np.zeros_like(invA)
+    std_robust = np.sqrt(np.clip(np.diag(cov_robust), 1e-12, None))
+    t_robust = flat_init.detach().double().cpu().numpy() / std_robust
+
+    hess = HessianResult(
+        theta=flat_init.detach(),
+        std=torch.tensor(std_classic),
+        tstat=torch.tensor(t_classic),
+        hessian=H.detach(),
+        var_covar=torch.tensor(cov_classic),
+        names=names,
+    )
+    return hess, diag, std_robust, t_robust
