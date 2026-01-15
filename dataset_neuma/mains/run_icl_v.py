@@ -515,7 +515,7 @@ def main():
 
         def _wrapped_loss(flat_params: torch.Tensor) -> torch.Tensor:
             vector_to_parameters(flat_params, params)
-            return loss_closure()
+            return loss_closure_sum()
 
         if args.hessian_double:
             flat_init = flat_init.double()
