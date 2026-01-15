@@ -90,7 +90,11 @@ def preprocess_block(train_df: pd.DataFrame, cols: List[str], prefix: str) -> Tu
         out_parts.append(tr_num)
 
     if cat_cols:
-        tr_cat = pd.get_dummies(train_df[cat_cols].astype(str), prefix=[f"{prefix}{c}" for c in cat_cols])
+        tr_cat = pd.get_dummies(
+            train_df[cat_cols].astype(str),
+            prefix=[f"{prefix}{c}" for c in cat_cols],
+            drop_first=True,
+        )
         names.extend(tr_cat.columns.tolist())
         out_parts.append(tr_cat)
 
@@ -139,6 +143,89 @@ def opg_beta_stats(model: nn.Module, beta_param: torch.Tensor, batch_iter, max_r
     return std, tstat
 
 
+def biogeme_beta_stats(
+    model: nn.Module,
+    beta_param: torch.Tensor,
+    batch_iter_fn,
+    max_rows: int | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict]:
+    model.eval()
+    grads = []
+    n = 0
+    for batch in batch_iter_fn():
+        if max_rows is not None and n >= max_rows:
+            break
+        obs_lt, obs_u, indicators, choice = batch
+        obs_lt = obs_lt.to(beta_param.device)
+        obs_u = obs_u.to(beta_param.device)
+        indicators = indicators.to(beta_param.device)
+        choice = choice.to(beta_param.device)
+        B = obs_lt.shape[0]
+        for i in range(B):
+            if max_rows is not None and n >= max_rows:
+                break
+            out = model(obs_lt[i : i + 1], obs_u[i : i + 1], indicators[i : i + 1], choice[i : i + 1])
+            logp_i = out["logp"][0, int(choice[i].item())]
+            grad = torch.autograd.grad(logp_i, beta_param, retain_graph=False, create_graph=False)[0]
+            grads.append(grad.detach().flatten().double())
+            n += 1
+    if not grads:
+        return np.array([]), np.array([]), np.array([]), np.array([]), {}
+    G = torch.stack(grads, dim=0)  # [N, P]
+    info = (G.t() @ G).cpu().numpy()
+    # Hessian of sum log-likelihood
+    flat_init = beta_param.detach().flatten()
+
+    def _loss_flat(flat_params: torch.Tensor) -> torch.Tensor:
+        from torch.nn.utils import vector_to_parameters
+
+        vector_to_parameters(flat_params, [beta_param])
+        total = 0.0
+        count = 0
+        for obs_lt, obs_u, indicators, choice in batch_iter_fn():
+            obs_lt = obs_lt.to(beta_param.device)
+            obs_u = obs_u.to(beta_param.device)
+            indicators = indicators.to(beta_param.device)
+            choice = choice.to(beta_param.device)
+            if max_rows is not None and count >= max_rows:
+                break
+            out = model(obs_lt, obs_u, indicators, choice)
+            ll = out["logp"].gather(1, choice.view(-1, 1)).sum()
+            total = total + ll
+            count += obs_lt.size(0)
+        return total if count > 0 else torch.tensor(0.0, device=beta_param.device)
+
+    H = torch.autograd.functional.hessian(_loss_flat, flat_init).detach().cpu().numpy()
+    # restore
+    from torch.nn.utils import vector_to_parameters as _v2p
+
+    _v2p(flat_init, [beta_param])
+    # classic: (-A)^{-1}
+    A = H
+    eigvals = np.linalg.eigvalsh(-A) if A.size else np.array([])
+    diag_info = {
+        "lambda_min": float(np.min(eigvals)) if eigvals.size else np.nan,
+        "lambda_max": float(np.max(eigvals)) if eigvals.size else np.nan,
+        "cond": float(np.max(eigvals) / np.min(eigvals)) if eigvals.size and np.min(eigvals) != 0 else np.inf,
+        "n_obs": int(n),
+    }
+    try:
+        cov_classic = np.linalg.pinv(-A)
+    except Exception:
+        cov_classic = np.linalg.pinv(-A + 1e-6 * np.eye(A.shape[0]))
+    std_classic = np.sqrt(np.clip(np.diag(cov_classic), 1e-12, None))
+    tstat_classic = flat_init.detach().double().cpu().numpy() / std_classic
+    # robust sandwich
+    try:
+        invA = np.linalg.pinv(-A)
+    except Exception:
+        invA = np.linalg.pinv(-A + 1e-6 * np.eye(A.shape[0]))
+    cov_robust = invA @ info @ invA
+    std_robust = np.sqrt(np.clip(np.diag(cov_robust), 1e-12, None))
+    tstat_robust = flat_init.detach().double().cpu().numpy() / std_robust
+    return std_classic, tstat_classic, std_robust, tstat_robust, diag_info
+
+
 def load_hessian_stats(hessian_path: Path) -> Tuple[np.ndarray, np.ndarray, List[str]]:
     data = json.loads(hessian_path.read_text(encoding="utf-8"))
     theta = np.asarray(data["theta"])
@@ -147,12 +234,41 @@ def load_hessian_stats(hessian_path: Path) -> Tuple[np.ndarray, np.ndarray, List
     return theta, std, names
 
 
+def stratified_sample_indices(y: np.ndarray, max_rows: int, seed: int) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+    classes, counts = np.unique(y, return_counts=True)
+    if max_rows <= 0 or max_rows >= len(y):
+        return np.arange(len(y))
+    per_class = max_rows // len(classes)
+    idxs = []
+    for c in classes:
+        c_idx = np.where(y == c)[0]
+        if len(c_idx) == 0:
+            continue
+        take = min(per_class, len(c_idx))
+        idxs.append(rng.choice(c_idx, size=take, replace=False))
+    if idxs:
+        out = np.concatenate(idxs)
+    else:
+        out = rng.choice(np.arange(len(y)), size=max_rows, replace=False)
+    if len(out) < max_rows:
+        remaining = np.setdiff1d(np.arange(len(y)), out)
+        if len(remaining) > 0:
+            extra = rng.choice(remaining, size=min(max_rows - len(out), len(remaining)), replace=False)
+            out = np.concatenate([out, extra])
+    rng.shuffle(out)
+    return out
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Extrae betas y estadisticos de utilidad ICLV.")
     parser.add_argument("--iclv-dir", type=Path, default=Path("./results/icl_v_standard/run_0001"))
     parser.add_argument("--mm-dir", type=Path, default=Path("./results/multimodal_icl_v_standard/run_0001"))
     parser.add_argument("--use-opg", action="store_true", help="Usar OPG/Fisher para std/tstat en betas.")
     parser.add_argument("--opg-max-rows", type=int, default=2000)
+    parser.add_argument("--biogeme-stats", action="store_true", help="Calcula A/B (Biogeme) para betas.")
+    parser.add_argument("--biogeme-max-rows", type=int, default=2000)
+    parser.add_argument("--biogeme-seed", type=int, default=42)
     args = parser.parse_args()
 
     rows = []
@@ -165,6 +281,8 @@ def main() -> None:
     beta, n_alts = extract_beta_from_state(state)
 
     opg_std = opg_t = None
+    biog_std = biog_t = biog_std_r = biog_t_r = None
+    biog_diag = {}
     if args.use_opg:
         run_args = load_run_args(args.iclv_dir)
         data_path = Path(run_args.get("data", ""))
@@ -214,8 +332,12 @@ def main() -> None:
                 for i in range(0, len(obs_lt_t), bs):
                     yield (obs_lt_t[i : i + bs], obs_u_t[i : i + bs], ind_t[i : i + bs], y_t[i : i + bs])
             opg_std, opg_t = opg_beta_stats(model, beta_param, batch_iter(), max_rows=args.opg_max_rows)
+            if args.biogeme_stats:
+                biog_std, biog_t, biog_std_r, biog_t_r, biog_diag = biogeme_beta_stats(
+                    model, beta_param, batch_iter, max_rows=args.biogeme_max_rows
+                )
 
-    if (args.iclv_dir / "hessian.json").exists() and not args.use_opg:
+    if (args.iclv_dir / "hessian.json").exists() and not args.use_opg and not args.biogeme_stats:
         theta, std, names = load_hessian_stats(args.iclv_dir / "hessian.json")
         beta_idx = [i for i, n in enumerate(names) if n.startswith("beta")]
         for alt in range(n_alts):
@@ -256,6 +378,28 @@ def main() -> None:
                         "method": "opg",
                     }
                 )
+        if biog_diag:
+            print(f"[biogeme] iclv lambda_min={biog_diag.get('lambda_min')} lambda_max={biog_diag.get('lambda_max')} cond={biog_diag.get('cond')}")
+    elif args.biogeme_stats and biog_std is not None and biog_std.size:
+        for alt in range(n_alts):
+            for j, feat in enumerate(feature_names):
+                idx = alt * beta.shape[1] + j
+                coef = beta[alt, j]
+                rows.append(
+                    {
+                        "model": "icl_v",
+                        "alt": alt,
+                        "feature": feat,
+                        "coef": float(coef),
+                        "std": float(biog_std[idx]),
+                        "tstat": float(biog_t[idx]),
+                        "std_robust": float(biog_std_r[idx]),
+                        "tstat_robust": float(biog_t_r[idx]),
+                        "method": "biogeme",
+                    }
+                )
+        if biog_diag:
+            print(f"[biogeme] iclv lambda_min={biog_diag.get('lambda_min')} lambda_max={biog_diag.get('lambda_max')} cond={biog_diag.get('cond')}")
     else:
         for alt in range(n_alts):
             for j, feat in enumerate(feature_names):
@@ -276,6 +420,8 @@ def main() -> None:
     state_mm = torch.load(args.mm_dir / "model_last.pt", map_location="cpu", weights_only=True)
     beta_mm, n_alts_mm = extract_beta_from_state(state_mm)
     opg_std_mm = opg_t_mm = None
+    biog_std_mm = biog_t_mm = biog_std_r_mm = biog_t_r_mm = None
+    biog_diag_mm = {}
     if args.use_opg:
         run_args = load_run_args(args.mm_dir)
         data_path = Path(run_args.get("data", ""))
@@ -366,8 +512,30 @@ def main() -> None:
                 opg_std_mm = np.sqrt(np.clip(np.diag(var), 1e-12, None))
                 theta = beta_param.detach().flatten().double().cpu().numpy()
                 opg_t_mm = theta / opg_std_mm
+            if args.biogeme_stats:
+                # build iterator for biogeme stats (stratified sample if requested)
+                obs_lt_b = obs_lt
+                obs_u_b = obs_u
+                eeg_b = eeg_emb
+                img_b = img_emb
+                y_b = y_t
+                if args.biogeme_max_rows and args.biogeme_max_rows < len(y):
+                    idx = stratified_sample_indices(y, args.biogeme_max_rows, args.biogeme_seed)
+                    obs_lt_b = obs_lt_b[idx]
+                    obs_u_b = obs_u_b[idx]
+                    eeg_b = eeg_b[idx]
+                    img_b = img_b[idx]
+                    y_b = y_b[idx]
 
-    if (args.mm_dir / "hessian.json").exists() and not args.use_opg:
+                def batch_iter_b(bs=32):
+                    for i in range(0, len(obs_lt_b), bs):
+                        yield (obs_lt_b[i : i + bs], obs_u_b[i : i + bs], eeg_b[i : i + bs], img_b[i : i + bs], y_b[i : i + bs])
+
+                biog_std_mm, biog_t_mm, biog_std_r_mm, biog_t_r_mm, biog_diag_mm = biogeme_beta_stats(
+                    model, beta_param, batch_iter_b, max_rows=None
+                )
+
+    if (args.mm_dir / "hessian.json").exists() and not args.use_opg and not args.biogeme_stats:
         theta, std, names = load_hessian_stats(args.mm_dir / "hessian.json")
         beta_idx = [i for i, n in enumerate(names) if n.startswith("beta")]
         for alt in range(n_alts_mm):
@@ -406,6 +574,28 @@ def main() -> None:
                         "method": "opg",
                     }
                 )
+        if biog_diag_mm:
+            print(f"[biogeme] mm lambda_min={biog_diag_mm.get('lambda_min')} lambda_max={biog_diag_mm.get('lambda_max')} cond={biog_diag_mm.get('cond')}")
+    elif args.biogeme_stats and biog_std_mm is not None and biog_std_mm.size:
+        for alt in range(n_alts_mm):
+            for j, feat in enumerate(mm_obs_u_cols):
+                idx = alt * beta_mm.shape[1] + j
+                coef = beta_mm[alt, j]
+                rows.append(
+                    {
+                        "model": "multimodal_icl_v",
+                        "alt": alt,
+                        "feature": feat,
+                        "coef": float(coef),
+                        "std": float(biog_std_mm[idx]),
+                        "tstat": float(biog_t_mm[idx]),
+                        "std_robust": float(biog_std_r_mm[idx]),
+                        "tstat_robust": float(biog_t_r_mm[idx]),
+                        "method": "biogeme",
+                    }
+                )
+        if biog_diag_mm:
+            print(f"[biogeme] mm lambda_min={biog_diag_mm.get('lambda_min')} lambda_max={biog_diag_mm.get('lambda_max')} cond={biog_diag_mm.get('cond')}")
     else:
         for alt in range(n_alts_mm):
             for j, feat in enumerate(mm_obs_u_cols):
