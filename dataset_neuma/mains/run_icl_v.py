@@ -488,8 +488,9 @@ def main():
     te_metrics = run_epoch(model, test_loader, device, train=False)
 
     # Hessian over train for coef stats
-    def loss_closure():
-        out = []
+    def loss_closure_sum():
+        total = 0.0
+        count = 0
         for obs_lt, obs_u, indicators, choice in train_loader:
             obs_lt = obs_lt.to(device)
             obs_u = obs_u.to(device)
@@ -500,8 +501,10 @@ def main():
                 indicators = indicators.double()
             choice_t = torch.as_tensor(choice, device=device, dtype=torch.long)
             o = model(obs_lt, obs_u, indicators, choice_t)
-            out.append(o["loss_choice"] if args.hessian_choice_only else o["loss"])
-        return torch.stack(out).mean()
+            loss = o["loss_choice"] if args.hessian_choice_only else o["loss"]
+            total = total + loss * obs_lt.size(0)
+            count += obs_lt.size(0)
+        return total / max(1, count) if count == 0 else total
 
     if args.hessian_beta_only:
         if args.hessian_double:
@@ -518,8 +521,6 @@ def main():
             flat_init = flat_init.double()
             beta_param.data = beta_param.data.double()
         H = torch.autograd.functional.hessian(_wrapped_loss, flat_init)
-        if len(train_ds) > 0:
-            H = H * float(len(train_ds))
         vector_to_parameters(flat_init, params)
         eye = torch.eye(H.shape[0], device=H.device, dtype=H.dtype) * float(args.hessian_ridge)
         H_safe = H + eye
@@ -540,7 +541,7 @@ def main():
     else:
         if args.hessian_double:
             model = model.double()
-        hess = compute_hessian_stats(model, loss_closure, n_samples=len(train_ds), ridge=args.hessian_ridge)
+        hess = compute_hessian_stats(model, loss_closure_sum, n_samples=None, ridge=args.hessian_ridge)
 
     run_dir = next_run_dir(args.results_dir)
     torch.save(model.state_dict(), run_dir / "model.pt")
