@@ -180,8 +180,16 @@ def main():
     df = df.dropna(subset=[label_col, img_emb_col, eeg_emb_col])
 
     drop_cols = {label_col}
+    obs_lt_raw = [c.strip().lower() for c in load_features_file(args.obs_lt_cols)] if args.obs_lt_cols else []
+    obs_u_raw = [c.strip().lower() for c in load_features_file(args.obs_u_cols)] if args.obs_u_cols else []
     orig_obs_lt_cols = resolve_cols(df, args.obs_lt_cols, fallback_numeric=False, drop_cols=drop_cols)
     orig_obs_u_cols = resolve_cols(df, args.obs_u_cols, fallback_numeric=True, drop_cols=drop_cols)
+    missing_lt = [c for c in obs_lt_raw if c not in df.columns]
+    missing_u = [c for c in obs_u_raw if c not in df.columns]
+    if missing_lt:
+        print(f"[warn] obs_lt missing cols: {missing_lt}")
+    if missing_u:
+        print(f"[warn] obs_u missing cols: {missing_u}")
 
     train_df, val_df, test_df, split_info = split_by_subject_train_val_test(
         df, subject_col="subject", val_frac=args.val_frac, test_frac=args.test_frac, seed=args.seed

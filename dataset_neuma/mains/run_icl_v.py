@@ -227,9 +227,23 @@ def main():
     obs_i_file = args.obs_i_cols or base_cols_dir / "obs_i.txt"
 
     drop_cols = {label_col}
+    obs_lt_raw = [c.strip().lower() for c in load_features_file(obs_lt_file)] if obs_lt_file else []
+    obs_u_raw = [c.strip().lower() for c in load_features_file(obs_u_file)] if obs_u_file else []
+    obs_i_raw = [c.strip().lower() for c in load_features_file(obs_i_file)] if obs_i_file else []
+
     obs_lt_cols = resolve_cols(df, str(obs_lt_file) if obs_lt_file else None, fallback_numeric=False, drop_cols=drop_cols)
     obs_u_cols = resolve_cols(df, str(obs_u_file) if obs_u_file else None, fallback_numeric=True, drop_cols=drop_cols)
     obs_i_cols = resolve_cols(df, str(obs_i_file) if obs_i_file else None, fallback_numeric=False, drop_cols=drop_cols)
+
+    missing_lt = [c for c in obs_lt_raw if c not in df.columns]
+    missing_u = [c for c in obs_u_raw if c not in df.columns]
+    missing_i = [c for c in obs_i_raw if c not in df.columns]
+    if missing_lt:
+        print(f"[warn] obs_lt missing cols: {missing_lt}")
+    if missing_u:
+        print(f"[warn] obs_u missing cols: {missing_u}")
+    if missing_i:
+        print(f"[warn] obs_i missing cols: {missing_i}")
 
     train_df, val_df, test_df, split_info = split_by_subject_train_val_test(
         df, subject_col="subject", val_frac=args.val_frac, test_frac=args.test_frac, seed=args.seed
