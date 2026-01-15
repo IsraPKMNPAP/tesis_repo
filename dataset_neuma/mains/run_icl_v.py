@@ -510,6 +510,7 @@ def main():
         return total / max(1, count) if count == 0 else total
 
     biogeme_stats = None
+    hess = None
     if args.biogeme_stats:
         # Biogeme/BHHH over betas only
         if args.hessian_double:
