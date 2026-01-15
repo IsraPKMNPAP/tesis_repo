@@ -39,7 +39,11 @@ def preprocess_block(train_df: pd.DataFrame, cols: List[str], prefix: str, cat_u
         tr_num.columns = [f"{prefix}{c}" for c in num_cols]
         out_parts.append(tr_num)
     if cat_cols:
-        tr_cat = pd.get_dummies(train_df[cat_cols].astype(str), prefix=[f"{prefix}{c}" for c in cat_cols])
+        tr_cat = pd.get_dummies(
+            train_df[cat_cols].astype(str),
+            prefix=[f"{prefix}{c}" for c in cat_cols],
+            drop_first=True,
+        )
         out_parts.append(tr_cat)
     return pd.concat(out_parts, axis=1) if out_parts else pd.DataFrame(index=train_df.index)
 
@@ -72,7 +76,7 @@ def main() -> None:
     parser.add_argument("--data", type=Path, default=Path("./data/processed/multimodal_join.csv"))
     parser.add_argument("--obs-u-cols", type=Path, default=Path("./utils/columns/iclv/obs_u.txt"))
     parser.add_argument("--label-col", type=str, default="bought")
-    parser.add_argument("--cat-unique-threshold", type=int, default=50)
+    parser.add_argument("--cat-unique-threshold", type=int, default=4)
     parser.add_argument("--max-vif-cols", type=int, default=200)
     args = parser.parse_args()
 
