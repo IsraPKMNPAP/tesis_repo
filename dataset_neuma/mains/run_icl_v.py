@@ -33,11 +33,17 @@ def to_float_array(mat) -> np.ndarray:
     return arr.astype(np.float32)
 
 
-def prepare_preprocessor(df: pd.DataFrame, cols: Sequence[str], scaler: str = "standard"):
+def prepare_preprocessor(df: pd.DataFrame, cols: Sequence[str], scaler: str = "standard", cat_unique_threshold: int = 50):
     df_prep = df[cols].copy()
     for c in df_prep.columns:
         if df_prep[c].dtype == object:
             df_prep[c] = df_prep[c].astype("category")
+        else:
+            try:
+                if df_prep[c].nunique(dropna=True) <= cat_unique_threshold:
+                    df_prep[c] = df_prep[c].astype("category")
+            except Exception:
+                pass
     numeric = df_prep.select_dtypes(include=["int64", "float64", "int32", "float32"]).columns.tolist()
     categorical = df_prep.select_dtypes(include=["category"]).columns.tolist()
     scaler_cls = RobustScaler if scaler == "robust" else StandardScaler
@@ -93,11 +99,12 @@ def build_datasets(
     label_col: str,
     num_choices: int,
     scaler: str = "standard",
+    cat_unique_threshold: int = 50,
 ):
-    X_lt_tr, preproc_lt = prepare_preprocessor(df_tr, obs_lt_cols, scaler=scaler)
+    X_lt_tr, preproc_lt = prepare_preprocessor(df_tr, obs_lt_cols, scaler=scaler, cat_unique_threshold=cat_unique_threshold)
     X_lt_val = preproc_lt.transform(df_val[obs_lt_cols].copy())
 
-    X_u_tr, preproc_u = prepare_preprocessor(df_tr, obs_u_cols, scaler=scaler)
+    X_u_tr, preproc_u = prepare_preprocessor(df_tr, obs_u_cols, scaler=scaler, cat_unique_threshold=cat_unique_threshold)
     X_u_val = preproc_u.transform(df_val[obs_u_cols].copy())
 
     if indicator_cols:
@@ -198,6 +205,7 @@ def main():
     parser.add_argument("--results-dir", type=Path, default=Path("./results/icl_v"))
     parser.add_argument("--debug", action="store_true", help="Imprime diagnosticos por epoca.")
     parser.add_argument("--hessian-choice-only", action="store_true", help="Hessiano solo de loss_choice.")
+    parser.add_argument("--cat-unique-threshold", type=int, default=50, help="Nunique<=threshold -> categorico + one-hot.")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -241,6 +249,7 @@ def main():
         label_col,
         num_choices=args.num_choices,
         scaler=args.scaler,
+        cat_unique_threshold=args.cat_unique_threshold,
     )
     # test usando preprocesadores de train
     X_lt_te = preproc_lt.transform(test_df[obs_lt_cols].copy())
@@ -331,6 +340,42 @@ def main():
             "pseudo_r2": float(pseudo_r2_mcfadden(m["log_likelihood"], m["y_true"], args.num_choices)),
         }
 
+    # utility beta stats (solo betas)
+    beta_stats = []
+    beta_idx = [i for i, n in enumerate(hess.names) if n.startswith("beta")]
+    try:
+        feat_names = list(preproc_u.get_feature_names_out(obs_u_cols))
+    except Exception:
+        feat_names = obs_u_cols
+    for alt in range(args.num_choices):
+        for j, feat in enumerate(feat_names):
+            idx = alt * len(feat_names) + j
+            flat_idx = beta_idx[idx] if idx < len(beta_idx) else None
+            coef = hess.theta[flat_idx] if flat_idx is not None else np.nan
+            sd = hess.std[flat_idx] if flat_idx is not None else np.nan
+            tstat = coef / sd if sd == sd and sd != 0 else np.nan
+            if tstat == tstat:
+                if abs(tstat) >= 2.58:
+                    stars = "***"
+                elif abs(tstat) >= 1.96:
+                    stars = "**"
+                elif abs(tstat) >= 1.64:
+                    stars = "*"
+                else:
+                    stars = ""
+            else:
+                stars = ""
+            beta_stats.append(
+                {
+                    "alt": alt,
+                    "feature": feat,
+                    "coef": float(coef),
+                    "std": float(sd) if sd == sd else np.nan,
+                    "tstat": float(tstat) if tstat == tstat else np.nan,
+                    "stars": stars,
+                }
+            )
+
     metrics = {
         "train": pack_iclv_metrics(tr_metrics),
         "val": pack_iclv_metrics(val_metrics),
@@ -339,6 +384,7 @@ def main():
         "obs_u_cols": obs_u_cols,
         "obs_i_cols": obs_i_cols,
         "coef_summary": summarize_coefs(hess.names, hess.theta, hess.std, top_k=5),
+        "utility_beta_stats": beta_stats,
     }
     save_metrics(metrics, run_dir)
 
