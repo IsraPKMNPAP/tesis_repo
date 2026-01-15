@@ -324,11 +324,11 @@ def main() -> None:
                 img_proj_dim=int(mm_metrics.get("img_proj_dim", 32)),
                 beta_per_alt=("beta[" in " ".join(json.loads((args.mm_dir / "hessian.json").read_text(encoding="utf-8"))["names"]) if (args.mm_dir / "hessian.json").exists() else False),
             )
-        # handle beta param name differences between Linear vs Parameter
-        if "beta" in state_mm and "beta.weight" not in state_mm:
-            state_mm = dict(state_mm)
-            state_mm["beta.weight"] = state_mm.pop("beta")
-        model.load_state_dict(state_mm, strict=False)
+            # handle beta param name differences between Linear vs Parameter
+            if "beta" in state_mm and "beta.weight" not in state_mm:
+                state_mm = dict(state_mm)
+                state_mm["beta.weight"] = state_mm.pop("beta")
+            model.load_state_dict(state_mm, strict=False)
             model = model.double()
             beta_param = model.beta if isinstance(model.beta, torch.nn.Parameter) else model.beta.weight
             # batch iter
