@@ -206,6 +206,8 @@ def main():
     parser.add_argument("--debug", action="store_true", help="Imprime diagnosticos por epoca.")
     parser.add_argument("--hessian-choice-only", action="store_true", help="Hessiano solo de loss_choice.")
     parser.add_argument("--cat-unique-threshold", type=int, default=50, help="Nunique<=threshold -> categorico + one-hot.")
+    parser.add_argument("--hessian-beta-only", action="store_true", help="Hessiano solo para betas de utilidad.")
+    parser.add_argument("--hessian-double", action="store_true", help="Hessiano en float64 (CPU recomendado).")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -337,7 +339,38 @@ def main():
             out.append(o["loss_choice"] if args.hessian_choice_only else o["loss"])
         return torch.stack(out).mean()
 
-    hess = compute_hessian_stats(model, loss_closure)
+    if args.hessian_beta_only:
+        beta_param = model.beta if isinstance(model.beta, torch.nn.Parameter) else model.beta.weight
+        params = [beta_param]
+        flat_init = parameters_to_vector(params).detach()
+
+        def _wrapped_loss(flat_params: torch.Tensor) -> torch.Tensor:
+            vector_to_parameters(flat_params, params)
+            return loss_closure()
+
+        if args.hessian_double:
+            flat_init = flat_init.double()
+            beta_param.data = beta_param.data.double()
+        H = torch.autograd.functional.hessian(_wrapped_loss, flat_init)
+        vector_to_parameters(flat_init, params)
+        eye = torch.eye(H.shape[0], device=H.device, dtype=H.dtype) * 1e-4
+        H_safe = H + eye
+        H_inv = torch.linalg.pinv(H_safe)
+        var = torch.diag(H_inv)
+        std = torch.sqrt(torch.clamp(var, min=1e-12))
+        theta = flat_init
+        hess = type("HessWrap", (), {})()
+        hess.theta = theta.detach()
+        hess.std = std.detach()
+        hess.tstat = (theta / std).detach()
+        hess.hessian = H.detach()
+        hess.var_covar = H_inv.detach()
+        if beta_param.dim() == 2:
+            hess.names = [f"beta[{i},{j}]" for i in range(beta_param.shape[0]) for j in range(beta_param.shape[1])]
+        else:
+            hess.names = [f"beta[{j}]" for j in range(beta_param.shape[0])]
+    else:
+        hess = compute_hessian_stats(model, loss_closure)
 
     run_dir = next_run_dir(args.results_dir)
     torch.save(model.state_dict(), run_dir / "model.pt")
@@ -402,13 +435,25 @@ def main():
     }
     save_metrics(metrics, run_dir)
 
+    # Reemplazar nombres beta por nombres de features (utilidad)
+    hess_names = list(hess.names)
+    try:
+        feat_names = list(preproc_u.get_feature_names_out(obs_u_cols))
+    except Exception:
+        feat_names = obs_u_cols
+    beta_idx = [i for i, n in enumerate(hess_names) if n.startswith("beta")]
+    for alt in range(args.num_choices):
+        for j, feat in enumerate(feat_names):
+            idx = alt * len(feat_names) + j
+            if idx < len(beta_idx):
+                hess_names[beta_idx[idx]] = f"beta[{alt}].{feat}"
     with open(run_dir / "hessian.json", "w", encoding="utf-8") as f:
         json.dump(
             {
                 "theta": hess.theta.tolist(),
                 "std": hess.std.tolist(),
                 "tstat": hess.tstat.tolist(),
-                "names": hess.names,
+                "names": hess_names,
             },
             f,
             indent=2,

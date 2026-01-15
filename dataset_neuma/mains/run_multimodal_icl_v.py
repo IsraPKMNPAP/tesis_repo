@@ -150,6 +150,7 @@ def main():
     parser.add_argument("--hessian-device", type=str, default="cpu", help="Dispositivo para Hessiano: cpu o cuda.")
     parser.add_argument("--hessian-beta-only", action="store_true", help="Hessiano solo para betas de utilidad.")
     parser.add_argument("--hessian-choice-only", action="store_true", help="Hessiano solo de loss_choice.")
+    parser.add_argument("--hessian-double", action="store_true", help="Hessiano en float64 (CPU recomendado).")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -289,6 +290,10 @@ def main():
                     vector_to_parameters(flat_params, params)
                     return loss_closure(model_h, h_dev)
 
+                if args.hessian_double:
+                    flat_init = flat_init.double()
+                    beta_param.data = beta_param.data.double()
+
                 H = torch.autograd.functional.hessian(_wrapped_loss, flat_init)
                 vector_to_parameters(flat_init, params)
                 eye = torch.eye(H.shape[0], device=H.device, dtype=H.dtype) * 1e-4
@@ -349,13 +354,22 @@ def main():
     save_metrics(metrics, run_dir)
 
     if hess is not None:
+        hess_names = list(hess.names)
+        # map beta names to obs_u feature names when possible
+        beta_idx = [i for i, n in enumerate(hess_names) if n.startswith("beta")]
+        if obs_u_cols:
+            for alt in range(args.num_choices):
+                for j, feat in enumerate(obs_u_cols):
+                    idx = alt * len(obs_u_cols) + j
+                    if idx < len(beta_idx):
+                        hess_names[beta_idx[idx]] = f"beta[{alt}].{feat}"
         with open(run_dir / "hessian.json", "w", encoding="utf-8") as f:
             json.dump(
                 {
                     "theta": hess.theta.tolist(),
                     "std": hess.std.tolist(),
                     "tstat": hess.tstat.tolist(),
-                    "names": hess.names,
+                    "names": hess_names,
                 },
                 f,
                 indent=2,
