@@ -125,6 +125,7 @@ def build_datasets(
     scaler: str = "standard",
     cat_unique_threshold: int = 50,
     min_var: float = 1e-6,
+    obs_u_buy_only: bool = False,
 ):
     X_lt_tr, preproc_lt = prepare_preprocessor(df_tr, obs_lt_cols, scaler=scaler, cat_unique_threshold=cat_unique_threshold)
     X_lt_val = preproc_lt.transform(df_val[obs_lt_cols].copy())
@@ -148,16 +149,28 @@ def build_datasets(
     y_tr = pd.to_numeric(df_tr[label_col], errors="coerce").to_numpy(dtype=np.int64)
     y_val = pd.to_numeric(df_val[label_col], errors="coerce").to_numpy(dtype=np.int64)
 
+    X_u_tr_final = to_float_array(X_u_tr)
+    X_u_val_final = to_float_array(X_u_val)
+    if obs_u_buy_only:
+        if num_choices < 2:
+            raise ValueError("obs_u_buy_only requiere num_choices >= 2.")
+        tr_exp = np.zeros((len(X_u_tr_final), num_choices, X_u_tr_final.shape[1]), dtype=np.float32)
+        val_exp = np.zeros((len(X_u_val_final), num_choices, X_u_val_final.shape[1]), dtype=np.float32)
+        tr_exp[:, 1, :] = X_u_tr_final
+        val_exp[:, 1, :] = X_u_val_final
+        X_u_tr_final = tr_exp
+        X_u_val_final = val_exp
+
     train_ds = ICLVDataset(
         obs_lt=to_float_array(X_lt_tr),
-        obs_u=to_float_array(X_u_tr),
+        obs_u=X_u_tr_final,
         indicators=ind_tr_mat,
         choices=y_tr,
         num_choices=num_choices,
     )
     val_ds = ICLVDataset(
         obs_lt=to_float_array(X_lt_val),
-        obs_u=to_float_array(X_u_val),
+        obs_u=X_u_val_final,
         indicators=ind_val_mat,
         choices=y_val,
         num_choices=num_choices,
@@ -242,6 +255,8 @@ def main():
     parser.add_argument("--hessian-beta-only", action="store_true", help="Hessiano solo para betas de utilidad.")
     parser.add_argument("--hessian-double", action="store_true", help="Hessiano en float64 (CPU recomendado).")
     parser.add_argument("--hessian-ridge", type=float, default=1e-6, help="Ridge para Hessiano.")
+    parser.add_argument("--obs-u-buy-only", action="store_true", help="Aplica obs_u solo a alternativa buy (alt=1).")
+    parser.add_argument("--check-obs-u-identical", action="store_true", help="Diagnostica si obs_u es identico entre alternativas.")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -301,12 +316,20 @@ def main():
         scaler=args.scaler,
         cat_unique_threshold=args.cat_unique_threshold,
         min_var=args.min_var,
+        obs_u_buy_only=args.obs_u_buy_only,
     )
     # test usando preprocesadores de train
     X_lt_te = preproc_lt.transform(test_df[obs_lt_cols].copy())
     X_u_te = preproc_u.transform(test_df[obs_u_cols].copy())
     if u_mask is not None and len(u_mask):
         X_u_te = to_float_array(X_u_te)[:, u_mask]
+    if args.obs_u_buy_only:
+        if args.num_choices < 2:
+            raise ValueError("obs_u_buy_only requiere num_choices >= 2.")
+        X_u_te_2d = to_float_array(X_u_te)
+        te_exp = np.zeros((len(X_u_te_2d), args.num_choices, X_u_te_2d.shape[1]), dtype=np.float32)
+        te_exp[:, 1, :] = X_u_te_2d
+        X_u_te = te_exp
     if obs_i_cols:
         ind_tr_mat, ind_te_mat = encode_indicator_blocks(train_df[obs_i_cols].copy(), test_df[obs_i_cols].copy(), obs_i_cols)
     else:
@@ -314,11 +337,20 @@ def main():
     y_te = pd.to_numeric(test_df[label_col], errors="coerce").to_numpy(dtype=np.int64)
     test_ds = ICLVDataset(
         obs_lt=to_float_array(X_lt_te),
-        obs_u=to_float_array(X_u_te),
+        obs_u=X_u_te,
         indicators=ind_te_mat,
         choices=y_te,
         num_choices=args.num_choices,
     )
+
+    if args.check_obs_u_identical:
+        obs_u_t = train_ds.obs_u
+        if obs_u_t.shape[1] > 1:
+            diffs = (obs_u_t - obs_u_t[:, 0:1, :]).abs().max().item()
+            if diffs < 1e-8:
+                print("[diag] obs_u es identico entre alternativas (todas).")
+            else:
+                print(f"[diag] max |obs_u - obs_u_alt0| = {diffs:.6f}")
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False)
