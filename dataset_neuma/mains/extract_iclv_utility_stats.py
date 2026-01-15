@@ -411,10 +411,53 @@ def main() -> None:
                 )
 
     out_df = pd.DataFrame(rows)
+
+    # Effects: compra (alt=1) vs no compra (alt=0), sin covarianza entre betas
+    effects_rows = []
+    for model_name, beta_mat, feats, std_map in [
+        ("icl_v", beta, feature_names, None),
+        ("multimodal_icl_v", beta_mm, mm_obs_u_cols, None),
+    ]:
+        if beta_mat.shape[0] < 2:
+            continue
+        for j, feat in enumerate(feats):
+            b1 = beta_mat[1, j]
+            b0 = beta_mat[0, j]
+            diff = b1 - b0
+            # std aproximada sin cov: sqrt(std1^2 + std0^2)
+            std1 = std0 = np.nan
+            if not out_df.empty:
+                rows_m = out_df[(out_df["model"] == model_name) & (out_df["feature"] == feat)]
+                if not rows_m.empty:
+                    stds = rows_m.sort_values("alt")["std"].to_numpy()
+                    if len(stds) >= 2:
+                        std0, std1 = stds[0], stds[1]
+            if np.isfinite(std0) and np.isfinite(std1):
+                std_eff = np.sqrt(std0**2 + std1**2)
+                t_eff = diff / std_eff if std_eff > 0 else np.nan
+            else:
+                std_eff = np.nan
+                t_eff = np.nan
+            effects_rows.append(
+                {
+                    "model": model_name,
+                    "feature": feat,
+                    "effect_alt1_vs_alt0": float(diff),
+                    "std_approx": float(std_eff) if std_eff == std_eff else np.nan,
+                    "tstat_approx": float(t_eff) if t_eff == t_eff else np.nan,
+                    "base_alt": 0,
+                }
+            )
     iclv_out = args.iclv_dir / "utility_stats.csv"
     mm_out = args.mm_dir / "utility_stats.csv"
     out_df[out_df["model"] == "icl_v"].to_csv(iclv_out, index=False)
     out_df[out_df["model"] == "multimodal_icl_v"].to_csv(mm_out, index=False)
+    if effects_rows:
+        eff_df = pd.DataFrame(effects_rows)
+        eff_df[eff_df["model"] == "icl_v"].to_csv(args.iclv_dir / "utility_effects.csv", index=False)
+        eff_df[eff_df["model"] == "multimodal_icl_v"].to_csv(args.mm_dir / "utility_effects.csv", index=False)
+        print("Saved effects:", args.iclv_dir / "utility_effects.csv")
+        print("Saved effects:", args.mm_dir / "utility_effects.csv")
     print(f"Saved: {iclv_out} (rows: {len(out_df[out_df['model']=='icl_v'])})")
     print(f"Saved: {mm_out} (rows: {len(out_df[out_df['model']=='multimodal_icl_v'])})")
 
