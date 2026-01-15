@@ -241,6 +241,7 @@ def main():
     parser.add_argument("--min-var", type=float, default=1e-6, help="Filtro de baja varianza para obs_u.")
     parser.add_argument("--hessian-beta-only", action="store_true", help="Hessiano solo para betas de utilidad.")
     parser.add_argument("--hessian-double", action="store_true", help="Hessiano en float64 (CPU recomendado).")
+    parser.add_argument("--hessian-ridge", type=float, default=1e-6, help="Ridge para Hessiano.")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -388,8 +389,10 @@ def main():
             flat_init = flat_init.double()
             beta_param.data = beta_param.data.double()
         H = torch.autograd.functional.hessian(_wrapped_loss, flat_init)
+        if len(train_ds) > 0:
+            H = H * float(len(train_ds))
         vector_to_parameters(flat_init, params)
-        eye = torch.eye(H.shape[0], device=H.device, dtype=H.dtype) * 1e-4
+        eye = torch.eye(H.shape[0], device=H.device, dtype=H.dtype) * float(args.hessian_ridge)
         H_safe = H + eye
         H_inv = torch.linalg.pinv(H_safe)
         var = torch.diag(H_inv)
@@ -406,7 +409,7 @@ def main():
         else:
             hess.names = [f"beta[{j}]" for j in range(beta_param.shape[0])]
     else:
-        hess = compute_hessian_stats(model, loss_closure)
+        hess = compute_hessian_stats(model, loss_closure, n_samples=len(train_ds), ridge=args.hessian_ridge)
 
     run_dir = next_run_dir(args.results_dir)
     torch.save(model.state_dict(), run_dir / "model.pt")

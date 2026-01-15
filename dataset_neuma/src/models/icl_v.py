@@ -139,7 +139,12 @@ def param_names(model: nn.Module) -> List[str]:
     return names
 
 
-def compute_hessian_stats(model: nn.Module, loss_closure: Callable[[], torch.Tensor]) -> HessianResult:
+def compute_hessian_stats(
+    model: nn.Module,
+    loss_closure: Callable[[], torch.Tensor],
+    n_samples: int | None = None,
+    ridge: float = 1e-6,
+) -> HessianResult:
     """Calcula Hessiano numérico y errores estándar a partir de una loss closure."""
     named_params = trainable_named_params(model)
     params: Sequence[nn.Parameter] = [p for _, p in named_params]
@@ -152,10 +157,12 @@ def compute_hessian_stats(model: nn.Module, loss_closure: Callable[[], torch.Ten
         return loss_closure()
 
     H = torch.autograd.functional.hessian(_wrapped_loss, flat_init)
+    if n_samples is not None and n_samples > 0:
+        H = H * float(n_samples)
     # Restaurar parámetros
     vector_to_parameters(flat_init, params)
 
-    eye = torch.eye(H.shape[0], device=H.device, dtype=H.dtype) * 1e-4
+    eye = torch.eye(H.shape[0], device=H.device, dtype=H.dtype) * float(ridge)
     H_safe = H + eye
     try:
         H_inv = torch.linalg.pinv(H_safe)
