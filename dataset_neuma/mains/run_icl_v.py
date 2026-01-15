@@ -29,6 +29,52 @@ from utils.run_utils import next_run_dir, save_run_metadata
 from utils.splits import split_by_subject_train_val_test, save_split_info
 
 
+class SimpleMNL(torch.nn.Module):
+    """Logit multinomial simple (sin latentes ni indicadores)."""
+
+    def __init__(self, dim_obs_u: int, n_choices: int, beta_per_alt: bool = False):
+        super().__init__()
+        self.n_choices = int(n_choices)
+        self.beta_per_alt = bool(beta_per_alt)
+        if self.beta_per_alt:
+            self.beta = torch.nn.Parameter(torch.zeros(n_choices, dim_obs_u))
+        else:
+            self.beta = torch.nn.Linear(dim_obs_u, 1, bias=False)
+        self.ASC = torch.nn.Parameter(torch.zeros(n_choices))
+        self._reset_parameters()
+
+    def _reset_parameters(self):
+        if isinstance(self.beta, torch.nn.Linear):
+            torch.nn.init.xavier_uniform_(self.beta.weight)
+        else:
+            torch.nn.init.xavier_uniform_(self.beta)
+        torch.nn.init.zeros_(self.ASC)
+
+    def compute_utilities(self, obs_u: torch.Tensor) -> torch.Tensor:
+        if obs_u.dim() != 3:
+            raise ValueError(f"Se espera obs_u con shape [B, J, dim_obs_u]; se recibio {obs_u.shape}")
+        if self.beta_per_alt:
+            beta_term = (obs_u * self.beta.unsqueeze(0)).sum(-1)
+        else:
+            beta_term = self.beta(obs_u).squeeze(-1)
+        return beta_term + self.ASC.unsqueeze(0)
+
+    def forward(self, obs_lt, obs_u, indicators, choice):
+        V = self.compute_utilities(obs_u)
+        logp = torch.nn.functional.log_softmax(V, dim=1)
+        loss_choice = torch.nn.functional.nll_loss(logp, choice, reduction="mean")
+        ll = logp.gather(1, choice.view(-1, 1)).sum()
+        return {
+            "loss": loss_choice,
+            "logp": logp,
+            "LT": None,
+            "I_hat": None,
+            "loss_choice": loss_choice,
+            "loss_meas": torch.tensor(0.0, device=obs_u.device, dtype=loss_choice.dtype),
+            "log_likelihood": ll,
+        }
+
+
 def to_float_array(mat) -> np.ndarray:
     try:
         arr = mat.toarray()
@@ -126,9 +172,15 @@ def build_datasets(
     cat_unique_threshold: int = 50,
     min_var: float = 1e-6,
     obs_u_buy_only: bool = False,
+    mnl_only: bool = False,
 ):
-    X_lt_tr, preproc_lt = prepare_preprocessor(df_tr, obs_lt_cols, scaler=scaler, cat_unique_threshold=cat_unique_threshold)
-    X_lt_val = preproc_lt.transform(df_val[obs_lt_cols].copy())
+    if mnl_only:
+        X_lt_tr = np.zeros((len(df_tr), 0), dtype=np.float32)
+        X_lt_val = np.zeros((len(df_val), 0), dtype=np.float32)
+        preproc_lt = None
+    else:
+        X_lt_tr, preproc_lt = prepare_preprocessor(df_tr, obs_lt_cols, scaler=scaler, cat_unique_threshold=cat_unique_threshold)
+        X_lt_val = preproc_lt.transform(df_val[obs_lt_cols].copy())
 
     X_u_tr, preproc_u = prepare_preprocessor(df_tr, obs_u_cols, scaler=scaler, cat_unique_threshold=cat_unique_threshold)
     X_u_val = preproc_u.transform(df_val[obs_u_cols].copy())
@@ -140,7 +192,7 @@ def build_datasets(
         X_u_tr, X_u_val, feat_names_u, min_var=min_var, tag="obs_u"
     )
 
-    if indicator_cols:
+    if indicator_cols and not mnl_only:
         ind_tr_mat, ind_val_mat = encode_indicator_blocks(df_tr[indicator_cols].copy(), df_val[indicator_cols].copy(), indicator_cols)
     else:
         ind_tr_mat = np.zeros((len(df_tr), 0), dtype=np.float32)
@@ -259,6 +311,8 @@ def main():
     parser.add_argument("--check-obs-u-identical", action="store_true", help="Diagnostica si obs_u es identico entre alternativas.")
     parser.add_argument("--print-beta-norm", action="store_true", help="Imprime norma de beta por epoca.")
     parser.add_argument("--diag-obs-u", action="store_true", help="Imprime norma/varianza de obs_u por alternativa.")
+    parser.add_argument("--mnl-only", action="store_true", help="Usa logit simple (sin latentes ni indicadores).")
+    parser.add_argument("--no-indicators", action="store_true", help="Ignora obs_i (indicadores).")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -287,6 +341,8 @@ def main():
     obs_lt_cols = resolve_cols(df, str(obs_lt_file) if obs_lt_file else None, fallback_numeric=False, drop_cols=drop_cols)
     obs_u_cols = resolve_cols(df, str(obs_u_file) if obs_u_file else None, fallback_numeric=True, drop_cols=drop_cols)
     obs_i_cols = resolve_cols(df, str(obs_i_file) if obs_i_file else None, fallback_numeric=False, drop_cols=drop_cols)
+    if args.no_indicators:
+        obs_i_cols = []
 
     missing_lt = [c for c in obs_lt_raw if c not in df.columns]
     missing_u = [c for c in obs_u_raw if c not in df.columns]
@@ -319,9 +375,13 @@ def main():
         cat_unique_threshold=args.cat_unique_threshold,
         min_var=args.min_var,
         obs_u_buy_only=args.obs_u_buy_only,
+        mnl_only=args.mnl_only,
     )
     # test usando preprocesadores de train
-    X_lt_te = preproc_lt.transform(test_df[obs_lt_cols].copy())
+    if args.mnl_only:
+        X_lt_te = np.zeros((len(test_df), 0), dtype=np.float32)
+    else:
+        X_lt_te = preproc_lt.transform(test_df[obs_lt_cols].copy())
     X_u_te = preproc_u.transform(test_df[obs_u_cols].copy())
     if u_mask is not None and len(u_mask):
         X_u_te = to_float_array(X_u_te)[:, u_mask]
@@ -332,7 +392,7 @@ def main():
         te_exp = np.zeros((len(X_u_te_2d), args.num_choices, X_u_te_2d.shape[1]), dtype=np.float32)
         te_exp[:, 1, :] = X_u_te_2d
         X_u_te = te_exp
-    if obs_i_cols:
+    if obs_i_cols and not args.mnl_only:
         ind_tr_mat, ind_te_mat = encode_indicator_blocks(train_df[obs_i_cols].copy(), test_df[obs_i_cols].copy(), obs_i_cols)
     else:
         ind_te_mat = np.zeros((len(test_df), 0), dtype=np.float32)
@@ -374,16 +434,23 @@ def main():
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False)
     test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False)
 
-    model = DeterministicICLV(
-        dim_obs_lt=train_ds.obs_lt.shape[1],
-        dim_obs_u=train_ds.obs_u.shape[2],
-        n_latent=args.n_latent,
-        n_indicators=train_ds.indicators.shape[1],
-        n_choices=args.num_choices,
-        alpha=args.alpha,
-        delta_per_alt=args.delta_per_alt,
-        beta_per_alt=args.beta_per_alt,
-    )
+    if args.mnl_only:
+        model = SimpleMNL(
+            dim_obs_u=train_ds.obs_u.shape[2],
+            n_choices=args.num_choices,
+            beta_per_alt=args.beta_per_alt,
+        )
+    else:
+        model = DeterministicICLV(
+            dim_obs_lt=train_ds.obs_lt.shape[1],
+            dim_obs_u=train_ds.obs_u.shape[2],
+            n_latent=args.n_latent,
+            n_indicators=train_ds.indicators.shape[1],
+            n_choices=args.num_choices,
+            alpha=args.alpha,
+            delta_per_alt=args.delta_per_alt,
+            beta_per_alt=args.beta_per_alt,
+        )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
