@@ -667,10 +667,16 @@ def main():
             else:
                 coef = hess.theta[flat_idx] if flat_idx is not None else np.nan
             if biogeme_stats is not None:
-                sd = biogeme_stats["std"][idx]
-                tstat = biogeme_stats["tstat"][idx]
-                sd_r = biogeme_stats["std_robust"][idx]
-                tstat_r = biogeme_stats["tstat_robust"][idx]
+                if idx < len(biogeme_stats["std"]):
+                    sd = biogeme_stats["std"][idx]
+                    tstat = biogeme_stats["tstat"][idx]
+                    sd_r = biogeme_stats["std_robust"][idx]
+                    tstat_r = biogeme_stats["tstat_robust"][idx]
+                else:
+                    sd = np.nan
+                    tstat = np.nan
+                    sd_r = np.nan
+                    tstat_r = np.nan
             else:
                 sd = hess.std[flat_idx] if flat_idx is not None else np.nan
                 tstat = coef / sd if sd == sd and sd != 0 else np.nan
