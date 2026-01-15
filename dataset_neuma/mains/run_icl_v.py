@@ -12,6 +12,7 @@ import torch
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder, RobustScaler, StandardScaler
 from torch.utils.data import DataLoader
+from torch.nn.utils import parameters_to_vector, vector_to_parameters
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
