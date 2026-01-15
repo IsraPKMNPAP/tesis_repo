@@ -54,11 +54,31 @@ def prepare_preprocessor(df: pd.DataFrame, cols: Sequence[str], scaler: str = "s
     preprocessor = ColumnTransformer(
         transformers=[
             ("num", scaler_cls(), numeric),
-            ("cat", OneHotEncoder(handle_unknown="ignore"), categorical),
+            ("cat", OneHotEncoder(handle_unknown="ignore", drop="first"), categorical),
         ]
     )
     mat = preprocessor.fit_transform(df_prep)
     return mat, preprocessor
+
+
+def filter_low_variance(
+    mat_tr,
+    mat_val,
+    feature_names: Sequence[str],
+    min_var: float,
+    tag: str,
+) -> tuple[np.ndarray, np.ndarray, List[str], np.ndarray]:
+    X_tr = to_float_array(mat_tr)
+    X_val = to_float_array(mat_val)
+    if X_tr.shape[1] == 0:
+        return X_tr, X_val, list(feature_names), np.ones(0, dtype=bool)
+    var = np.var(X_tr, axis=0)
+    mask = var >= min_var
+    dropped = [name for name, keep in zip(feature_names, mask) if not keep]
+    if dropped:
+        print(f"[prep] dropped {len(dropped)} low-variance {tag} cols (var<{min_var}): {dropped[:20]}")
+    kept_names = [name for name, keep in zip(feature_names, mask) if keep]
+    return X_tr[:, mask], X_val[:, mask], kept_names, mask
 
 
 def encode_indicator_blocks(df_tr: pd.DataFrame, df_val: pd.DataFrame, cols: Sequence[str]) -> tuple[np.ndarray, np.ndarray]:
@@ -104,12 +124,20 @@ def build_datasets(
     num_choices: int,
     scaler: str = "standard",
     cat_unique_threshold: int = 50,
+    min_var: float = 1e-6,
 ):
     X_lt_tr, preproc_lt = prepare_preprocessor(df_tr, obs_lt_cols, scaler=scaler, cat_unique_threshold=cat_unique_threshold)
     X_lt_val = preproc_lt.transform(df_val[obs_lt_cols].copy())
 
     X_u_tr, preproc_u = prepare_preprocessor(df_tr, obs_u_cols, scaler=scaler, cat_unique_threshold=cat_unique_threshold)
     X_u_val = preproc_u.transform(df_val[obs_u_cols].copy())
+    try:
+        feat_names_u = list(preproc_u.get_feature_names_out(obs_u_cols))
+    except Exception:
+        feat_names_u = list(obs_u_cols)
+    X_u_tr, X_u_val, feat_names_u, u_mask = filter_low_variance(
+        X_u_tr, X_u_val, feat_names_u, min_var=min_var, tag="obs_u"
+    )
 
     if indicator_cols:
         ind_tr_mat, ind_val_mat = encode_indicator_blocks(df_tr[indicator_cols].copy(), df_val[indicator_cols].copy(), indicator_cols)
@@ -134,7 +162,7 @@ def build_datasets(
         choices=y_val,
         num_choices=num_choices,
     )
-    return train_ds, val_ds, preproc_lt, preproc_u
+    return train_ds, val_ds, preproc_lt, preproc_u, feat_names_u, u_mask
 
 
 def run_epoch(model, loader, device, train: bool = True, optimizer=None):
@@ -209,7 +237,8 @@ def main():
     parser.add_argument("--results-dir", type=Path, default=Path("./results/icl_v"))
     parser.add_argument("--debug", action="store_true", help="Imprime diagnosticos por epoca.")
     parser.add_argument("--hessian-choice-only", action="store_true", help="Hessiano solo de loss_choice.")
-    parser.add_argument("--cat-unique-threshold", type=int, default=50, help="Nunique<=threshold -> categorico + one-hot.")
+    parser.add_argument("--cat-unique-threshold", type=int, default=4, help="Nunique<=threshold -> categorico + one-hot.")
+    parser.add_argument("--min-var", type=float, default=1e-6, help="Filtro de baja varianza para obs_u.")
     parser.add_argument("--hessian-beta-only", action="store_true", help="Hessiano solo para betas de utilidad.")
     parser.add_argument("--hessian-double", action="store_true", help="Hessiano en float64 (CPU recomendado).")
     args = parser.parse_args()
@@ -260,7 +289,7 @@ def main():
         f"rows train={split_info['train_rows']} val={split_info['val_rows']} test={split_info['test_rows']}"
     )
 
-    train_ds, val_ds, preproc_lt, preproc_u = build_datasets(
+    train_ds, val_ds, preproc_lt, preproc_u, feat_names_u, u_mask = build_datasets(
         train_df,
         val_df,
         obs_lt_cols,
@@ -270,10 +299,13 @@ def main():
         num_choices=args.num_choices,
         scaler=args.scaler,
         cat_unique_threshold=args.cat_unique_threshold,
+        min_var=args.min_var,
     )
     # test usando preprocesadores de train
     X_lt_te = preproc_lt.transform(test_df[obs_lt_cols].copy())
     X_u_te = preproc_u.transform(test_df[obs_u_cols].copy())
+    if u_mask is not None and len(u_mask):
+        X_u_te = to_float_array(X_u_te)[:, u_mask]
     if obs_i_cols:
         ind_tr_mat, ind_te_mat = encode_indicator_blocks(train_df[obs_i_cols].copy(), test_df[obs_i_cols].copy(), obs_i_cols)
     else:
@@ -394,10 +426,7 @@ def main():
     # utility beta stats (solo betas)
     beta_stats = []
     beta_idx = [i for i, n in enumerate(hess.names) if n.startswith("beta")]
-    try:
-        feat_names = list(preproc_u.get_feature_names_out(obs_u_cols))
-    except Exception:
-        feat_names = obs_u_cols
+    feat_names = feat_names_u
     for alt in range(args.num_choices):
         for j, feat in enumerate(feat_names):
             idx = alt * len(feat_names) + j
@@ -441,10 +470,7 @@ def main():
 
     # Reemplazar nombres beta por nombres de features (utilidad)
     hess_names = list(hess.names)
-    try:
-        feat_names = list(preproc_u.get_feature_names_out(obs_u_cols))
-    except Exception:
-        feat_names = obs_u_cols
+    feat_names = feat_names_u
     beta_idx = [i for i, n in enumerate(hess_names) if n.startswith("beta")]
     for alt in range(args.num_choices):
         for j, feat in enumerate(feat_names):
