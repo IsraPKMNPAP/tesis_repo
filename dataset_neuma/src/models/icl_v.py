@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, List, Sequence
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
