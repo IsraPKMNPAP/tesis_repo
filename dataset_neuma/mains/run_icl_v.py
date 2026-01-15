@@ -313,6 +313,9 @@ def main():
     parser.add_argument("--diag-obs-u", action="store_true", help="Imprime norma/varianza de obs_u por alternativa.")
     parser.add_argument("--mnl-only", action="store_true", help="Usa logit simple (sin latentes ni indicadores).")
     parser.add_argument("--no-indicators", action="store_true", help="Ignora obs_i (indicadores).")
+    parser.add_argument("--biogeme-stats", action="store_true", help="Calcula stats tipo Biogeme para betas.")
+    parser.add_argument("--biogeme-max-rows", type=int, default=2000, help="Limite de filas para Biogeme/OPG.")
+    parser.add_argument("--biogeme-seed", type=int, default=42)
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -506,7 +509,95 @@ def main():
             count += obs_lt.size(0)
         return total / max(1, count) if count == 0 else total
 
-    if args.hessian_beta_only:
+    biogeme_stats = None
+    if args.biogeme_stats:
+        # Biogeme/BHHH over betas only
+        if args.hessian_double:
+            model = model.double()
+        beta_param = model.beta if isinstance(model.beta, torch.nn.Parameter) else model.beta.weight
+        # OPG (B matrix)
+        grads = []
+        n = 0
+        for obs_lt, obs_u, indicators, choice in train_loader:
+            if args.biogeme_max_rows and n >= args.biogeme_max_rows:
+                break
+            obs_lt = obs_lt.to(device)
+            obs_u = obs_u.to(device)
+            indicators = indicators.to(device)
+            if args.hessian_double:
+                obs_lt = obs_lt.double()
+                obs_u = obs_u.double()
+                indicators = indicators.double()
+            choice_t = torch.as_tensor(choice, device=device, dtype=torch.long)
+            for i in range(obs_lt.size(0)):
+                if args.biogeme_max_rows and n >= args.biogeme_max_rows:
+                    break
+                out = model(obs_lt[i : i + 1], obs_u[i : i + 1], indicators[i : i + 1], choice_t[i : i + 1])
+                logp_i = out["logp"][0, int(choice_t[i].item())]
+                grad = torch.autograd.grad(logp_i, beta_param, retain_graph=False, create_graph=False)[0]
+                grads.append(grad.detach().flatten().double().cpu().numpy())
+                n += 1
+        if grads:
+            G = np.stack(grads, axis=0)
+            B = G.T @ G
+        else:
+            B = None
+
+        # Hessian of sum log-likelihood for betas
+        flat_init = parameters_to_vector([beta_param]).detach()
+
+        def _loss_flat(flat_params: torch.Tensor) -> torch.Tensor:
+            vector_to_parameters(flat_params, [beta_param])
+            total = 0.0
+            count = 0
+            for obs_lt, obs_u, indicators, choice in train_loader:
+                if args.biogeme_max_rows and count >= args.biogeme_max_rows:
+                    break
+                obs_lt = obs_lt.to(device)
+                obs_u = obs_u.to(device)
+                indicators = indicators.to(device)
+                if args.hessian_double:
+                    obs_lt = obs_lt.double()
+                    obs_u = obs_u.double()
+                    indicators = indicators.double()
+                choice_t = torch.as_tensor(choice, device=device, dtype=torch.long)
+                out = model(obs_lt, obs_u, indicators, choice_t)
+                ll = out["logp"].gather(1, choice_t.view(-1, 1)).sum()
+                total = total + ll
+                count += obs_lt.size(0)
+            return total if count > 0 else torch.tensor(0.0, device=device, dtype=flat_params.dtype)
+
+        H = torch.autograd.functional.hessian(_loss_flat, flat_init)
+        vector_to_parameters(flat_init, [beta_param])
+        A = H.detach().cpu().numpy()
+        eigvals = np.linalg.eigvalsh(-A) if A.size else np.array([])
+        cond = (np.max(eigvals) / np.min(eigvals)) if eigvals.size and np.min(eigvals) != 0 else np.inf
+        try:
+            invA = np.linalg.pinv(-A)
+        except Exception:
+            invA = np.linalg.pinv(-A + 1e-6 * np.eye(A.shape[0]))
+        cov_classic = invA
+        std_classic = np.sqrt(np.clip(np.diag(cov_classic), 1e-12, None))
+        t_classic = flat_init.detach().double().cpu().numpy() / std_classic
+        if B is not None:
+            cov_robust = invA @ B @ invA
+            std_robust = np.sqrt(np.clip(np.diag(cov_robust), 1e-12, None))
+            t_robust = flat_init.detach().double().cpu().numpy() / std_robust
+        else:
+            std_robust = np.full_like(std_classic, np.nan)
+            t_robust = np.full_like(t_classic, np.nan)
+        biogeme_stats = {
+            "std": std_classic,
+            "tstat": t_classic,
+            "std_robust": std_robust,
+            "tstat_robust": t_robust,
+            "lambda_min": float(np.min(eigvals)) if eigvals.size else np.nan,
+            "lambda_max": float(np.max(eigvals)) if eigvals.size else np.nan,
+            "cond": float(cond),
+            "n_obs": int(n),
+        }
+
+    if args.hessian_beta_only and not args.biogeme_stats:
         if args.hessian_double:
             model = model.double()
         beta_param = model.beta if isinstance(model.beta, torch.nn.Parameter) else model.beta.weight
@@ -538,7 +629,7 @@ def main():
             hess.names = [f"beta[{i},{j}]" for i in range(beta_param.shape[0]) for j in range(beta_param.shape[1])]
         else:
             hess.names = [f"beta[{j}]" for j in range(beta_param.shape[0])]
-    else:
+    elif not args.biogeme_stats:
         if args.hessian_double:
             model = model.double()
         hess = compute_hessian_stats(model, loss_closure_sum, n_samples=None, ridge=args.hessian_ridge)
@@ -560,15 +651,30 @@ def main():
 
     # utility beta stats (solo betas)
     beta_stats = []
-    beta_idx = [i for i, n in enumerate(hess.names) if n.startswith("beta")]
+    beta_idx = [i for i, n in enumerate(hess.names) if n.startswith("beta")] if hess is not None else []
     feat_names = feat_names_u
+    beta_flat = None
+    if biogeme_stats is not None:
+        beta_param = model.beta if isinstance(model.beta, torch.nn.Parameter) else model.beta.weight
+        beta_flat = beta_param.detach().flatten().cpu().numpy()
     for alt in range(args.num_choices):
         for j, feat in enumerate(feat_names):
             idx = alt * len(feat_names) + j
             flat_idx = beta_idx[idx] if idx < len(beta_idx) else None
-            coef = hess.theta[flat_idx] if flat_idx is not None else np.nan
-            sd = hess.std[flat_idx] if flat_idx is not None else np.nan
-            tstat = coef / sd if sd == sd and sd != 0 else np.nan
+            if biogeme_stats is not None:
+                coef = beta_flat[idx] if (beta_flat is not None and idx < len(beta_flat)) else np.nan
+            else:
+                coef = hess.theta[flat_idx] if flat_idx is not None else np.nan
+            if biogeme_stats is not None:
+                sd = biogeme_stats["std"][idx]
+                tstat = biogeme_stats["tstat"][idx]
+                sd_r = biogeme_stats["std_robust"][idx]
+                tstat_r = biogeme_stats["tstat_robust"][idx]
+            else:
+                sd = hess.std[flat_idx] if flat_idx is not None else np.nan
+                tstat = coef / sd if sd == sd and sd != 0 else np.nan
+                sd_r = np.nan
+                tstat_r = np.nan
             if tstat == tstat:
                 if abs(tstat) >= 2.58:
                     stars = "***"
@@ -587,6 +693,8 @@ def main():
                     "coef": float(coef),
                     "std": float(sd) if sd == sd else np.nan,
                     "tstat": float(tstat) if tstat == tstat else np.nan,
+                    "std_robust": float(sd_r) if sd_r == sd_r else np.nan,
+                    "tstat_robust": float(tstat_r) if tstat_r == tstat_r else np.nan,
                     "stars": stars,
                 }
             )
@@ -598,32 +706,33 @@ def main():
         "obs_lt_cols": obs_lt_cols,
         "obs_u_cols": obs_u_cols,
         "obs_i_cols": obs_i_cols,
-        "coef_summary": summarize_coefs(hess.names, hess.theta, hess.std, top_k=5),
+        "coef_summary": summarize_coefs(hess.names, hess.theta, hess.std, top_k=5) if hess is not None else [],
         "utility_beta_stats": beta_stats,
+        "biogeme_diag": biogeme_stats if biogeme_stats is not None else None,
     }
     save_metrics(metrics, run_dir)
 
-    # Reemplazar nombres beta por nombres de features (utilidad)
-    hess_names = list(hess.names)
-    feat_names = feat_names_u
-    beta_idx = [i for i, n in enumerate(hess_names) if n.startswith("beta")]
-    for alt in range(args.num_choices):
-        for j, feat in enumerate(feat_names):
-            idx = alt * len(feat_names) + j
-            if idx < len(beta_idx):
-                hess_names[beta_idx[idx]] = f"beta[{alt}].{feat}"
-    with open(run_dir / "hessian.json", "w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "theta": hess.theta.tolist(),
-                "std": hess.std.tolist(),
-                "tstat": hess.tstat.tolist(),
-                "names": hess_names,
-            },
-            f,
-            indent=2,
-            ensure_ascii=False,
-        )
+    if hess is not None:
+        # Reemplazar nombres beta por nombres de features (utilidad)
+        hess_names = list(hess.names)
+        beta_idx = [i for i, n in enumerate(hess_names) if n.startswith("beta")]
+        for alt in range(args.num_choices):
+            for j, feat in enumerate(feat_names):
+                idx = alt * len(feat_names) + j
+                if idx < len(beta_idx):
+                    hess_names[beta_idx[idx]] = f"beta[{alt}].{feat}"
+        with open(run_dir / "hessian.json", "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "theta": hess.theta.tolist(),
+                    "std": hess.std.tolist(),
+                    "tstat": hess.tstat.tolist(),
+                    "names": hess_names,
+                },
+                f,
+                indent=2,
+                ensure_ascii=False,
+            )
 
     torch.save(preproc_lt, run_dir / "preproc_lt.pkl")
     torch.save(preproc_u, run_dir / "preproc_u.pkl")
