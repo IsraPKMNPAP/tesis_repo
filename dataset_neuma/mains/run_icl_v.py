@@ -715,7 +715,16 @@ def main():
         "obs_i_cols": obs_i_cols,
         "coef_summary": summarize_coefs(hess.names, hess.theta, hess.std, top_k=5) if hess is not None else [],
         "utility_beta_stats": beta_stats,
-        "biogeme_diag": biogeme_stats if biogeme_stats is not None else None,
+        "biogeme_diag": (
+            {
+                "lambda_min": float(biogeme_stats["lambda_min"]),
+                "lambda_max": float(biogeme_stats["lambda_max"]),
+                "cond": float(biogeme_stats["cond"]),
+                "n_obs": int(biogeme_stats["n_obs"]),
+            }
+            if biogeme_stats is not None
+            else None
+        ),
     }
     save_metrics(metrics, run_dir)
 
