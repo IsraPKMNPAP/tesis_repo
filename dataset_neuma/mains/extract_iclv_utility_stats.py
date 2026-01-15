@@ -16,7 +16,7 @@ from utils.features import load_features_file
 
 def load_feature_names_from_preproc(preproc_path: Path, obs_u_cols: List[str]) -> List[str]:
     try:
-        preproc = torch.load(preproc_path)
+        preproc = torch.load(preproc_path, weights_only=False)
         if hasattr(preproc, "get_feature_names_out"):
             return list(preproc.get_feature_names_out(obs_u_cols))
     except Exception:
@@ -181,8 +181,8 @@ def main() -> None:
             obs_lt_cols_use = [c.strip().lower() for c in (load_features_file(obs_lt_file) if obs_lt_file else [])]
             obs_u_cols_use = [c.strip().lower() for c in (load_features_file(obs_u_file) if obs_u_file else [])]
             obs_i_cols_use = [c.strip().lower() for c in (load_features_file(obs_i_file) if obs_i_file else [])]
-            preproc_lt = torch.load(args.iclv_dir / "preproc_lt.pkl")
-            preproc_u = torch.load(args.iclv_dir / "preproc_u.pkl")
+            preproc_lt = torch.load(args.iclv_dir / "preproc_lt.pkl", weights_only=False)
+            preproc_u = torch.load(args.iclv_dir / "preproc_u.pkl", weights_only=False)
             X_lt = preproc_lt.transform(df[obs_lt_cols_use].copy())
             X_u = preproc_u.transform(df[obs_u_cols_use].copy())
             ind = encode_indicators(df, obs_i_cols_use)
@@ -324,7 +324,11 @@ def main() -> None:
                 img_proj_dim=int(mm_metrics.get("img_proj_dim", 32)),
                 beta_per_alt=("beta[" in " ".join(json.loads((args.mm_dir / "hessian.json").read_text(encoding="utf-8"))["names"]) if (args.mm_dir / "hessian.json").exists() else False),
             )
-            model.load_state_dict(state_mm)
+        # handle beta param name differences between Linear vs Parameter
+        if "beta" in state_mm and "beta.weight" not in state_mm:
+            state_mm = dict(state_mm)
+            state_mm["beta.weight"] = state_mm.pop("beta")
+        model.load_state_dict(state_mm, strict=False)
             model = model.double()
             beta_param = model.beta if isinstance(model.beta, torch.nn.Parameter) else model.beta.weight
             # batch iter
