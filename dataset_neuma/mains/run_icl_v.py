@@ -257,6 +257,8 @@ def main():
     parser.add_argument("--hessian-ridge", type=float, default=1e-6, help="Ridge para Hessiano.")
     parser.add_argument("--obs-u-buy-only", action="store_true", help="Aplica obs_u solo a alternativa buy (alt=1).")
     parser.add_argument("--check-obs-u-identical", action="store_true", help="Diagnostica si obs_u es identico entre alternativas.")
+    parser.add_argument("--print-beta-norm", action="store_true", help="Imprime norma de beta por epoca.")
+    parser.add_argument("--diag-obs-u", action="store_true", help="Imprime norma/varianza de obs_u por alternativa.")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -351,6 +353,22 @@ def main():
                 print("[diag] obs_u es identico entre alternativas (todas).")
             else:
                 print(f"[diag] max |obs_u - obs_u_alt0| = {diffs:.6f}")
+    if args.diag_obs_u:
+        obs_u_t = train_ds.obs_u
+        if obs_u_t.shape[1] > 1:
+            alt0 = obs_u_t[:, 0, :]
+            alt1 = obs_u_t[:, 1, :]
+            print(
+                "[diag] obs_u alt0 mean=%.4f std=%.4f l2=%.4f | alt1 mean=%.4f std=%.4f l2=%.4f"
+                % (
+                    float(alt0.mean().item()),
+                    float(alt0.std().item()),
+                    float(alt0.norm().item() / max(1, alt0.shape[0])),
+                    float(alt1.mean().item()),
+                    float(alt1.std().item()),
+                    float(alt1.norm().item() / max(1, alt1.shape[0])),
+                )
+            )
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False)
@@ -391,6 +409,12 @@ def main():
                 f"[debug] loss_choice={tr_metrics['loss_choice']:.4f} loss_meas={tr_metrics['loss_meas']:.4f} "
                 f"obs_u_std={obs_u_std:.4f} beta_norm={beta_norm:.4f} delta_norm={delta_norm:.4f}"
             )
+        if args.print_beta_norm and not args.debug:
+            if hasattr(model.beta, "weight"):
+                beta_norm = float(model.beta.weight.norm().item())
+            else:
+                beta_norm = float(model.beta.norm().item())
+            print(f"[beta] epoch={epoch} beta_norm={beta_norm:.6f}")
 
     tr_metrics = run_epoch(model, train_loader, device, train=False)
     val_metrics = run_epoch(model, val_loader, device, train=False)
