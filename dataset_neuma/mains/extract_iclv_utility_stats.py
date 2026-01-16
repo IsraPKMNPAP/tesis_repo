@@ -316,18 +316,39 @@ def main() -> None:
             ind_t = torch.tensor(ind, dtype=torch.float64)
             y_t = torch.tensor(y, dtype=torch.long)
             # rebuild model
-            from src.models.icl_v import DeterministicICLV
-            model = DeterministicICLV(
-                dim_obs_lt=obs_lt_t.shape[1],
-                dim_obs_u=obs_u_t.shape[2],
-                n_latent=int(iclv_metrics.get("n_latent", 3)),
-                n_indicators=ind_t.shape[1],
-                n_choices=n_alts,
-                alpha=1.0,
-                delta_per_alt=True,
-                beta_per_alt=("beta[" in " ".join(json.loads((args.iclv_dir / "hessian.json").read_text(encoding="utf-8"))["names"]) if (args.iclv_dir / "hessian.json").exists() else False),
-            )
-            model.load_state_dict(state)
+            mnl_only = bool(run_args.get("mnl_only", False))
+            if mnl_only:
+                class SimpleMNL(nn.Module):
+                    def __init__(self, dim_obs_u: int, n_choices: int):
+                        super().__init__()
+                        self.beta = nn.Linear(dim_obs_u, 1, bias=False)
+                        self.ASC = nn.Parameter(torch.zeros(n_choices))
+
+                    def forward(self, obs_lt, obs_u, indicators, choice):
+                        logp = F.log_softmax(self.beta(obs_u).squeeze(-1) + self.ASC.unsqueeze(0), dim=1)
+                        ll = logp.gather(1, choice.view(-1, 1)).sum()
+                        return {"logp": logp, "log_likelihood": ll}
+
+                model = SimpleMNL(dim_obs_u=obs_u_t.shape[2], n_choices=n_alts)
+                # map beta.weight key from checkpoint
+                if "beta.weight" in state and "beta" not in state:
+                    state = dict(state)
+                    state["beta.weight"] = state.pop("beta.weight")
+                model.load_state_dict(state, strict=False)
+            else:
+                from src.models.icl_v import DeterministicICLV
+
+                model = DeterministicICLV(
+                    dim_obs_lt=obs_lt_t.shape[1],
+                    dim_obs_u=obs_u_t.shape[2],
+                    n_latent=int(iclv_metrics.get("n_latent", 3)),
+                    n_indicators=ind_t.shape[1],
+                    n_choices=n_alts,
+                    alpha=1.0,
+                    delta_per_alt=True,
+                    beta_per_alt=("beta[" in " ".join(json.loads((args.iclv_dir / "hessian.json").read_text(encoding="utf-8"))["names"]) if (args.iclv_dir / "hessian.json").exists() else False),
+                )
+                model.load_state_dict(state, strict=False)
             model = model.double()
             beta_param = model.beta if isinstance(model.beta, torch.nn.Parameter) else model.beta.weight
             # iterate in batches
