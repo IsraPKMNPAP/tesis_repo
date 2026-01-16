@@ -461,6 +461,7 @@ def main() -> None:
     opg_std_mm = opg_t_mm = None
     biog_std_mm = biog_t_mm = biog_std_r_mm = biog_t_r_mm = None
     biog_diag_mm = {}
+    n_alts_mm = 0
     if mm_metrics is not None:
         mm_obs_u_cols = mm_metrics.get("obs_u_cols", [])
         state_mm = torch.load(args.mm_dir / "model_last.pt", map_location="cpu", weights_only=True)
