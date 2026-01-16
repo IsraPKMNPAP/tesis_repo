@@ -190,6 +190,13 @@ def main() -> None:
     args = parser.parse_args()
 
     run_args = load_run_args(args.iclv_dir)
+    metrics_path = args.iclv_dir / "metrics.json"
+    metrics = {}
+    if metrics_path.exists():
+        try:
+            metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+        except Exception:
+            metrics = {}
     data_path = args.data or Path(run_args.get("data", ""))
     if not data_path:
         raise ValueError("Se requiere --data o run_metadata.json con data.")
@@ -230,14 +237,22 @@ def main() -> None:
         drop_cols = {label_col}
         obs_lt_raw = resolve_cols_multimodal(df, run_args.get("obs_lt_cols"), fallback_numeric=False, drop_cols=drop_cols)
         obs_u_raw = resolve_cols_multimodal(df, run_args.get("obs_u_cols"), fallback_numeric=True, drop_cols=drop_cols)
+        obs_lt_target = [str(c).lower() for c in metrics.get("obs_lt_cols", [])]
+        obs_u_target = [str(c).lower() for c in metrics.get("obs_u_cols", [])]
         if obs_lt_raw:
             lt_block, lt_names = preprocess_block_like_multimodal(df, obs_lt_raw, prefix="lt_")
+            if obs_lt_target:
+                lt_block = lt_block.reindex(columns=obs_lt_target, fill_value=0)
+                lt_names = obs_lt_target
             df = df.join(lt_block)
             obs_lt_cols = lt_names
         else:
             obs_lt_cols = []
         if obs_u_raw:
             u_block, u_names = preprocess_block_like_multimodal(df, obs_u_raw, prefix="u_")
+            if obs_u_target:
+                u_block = u_block.reindex(columns=obs_u_target, fill_value=0)
+                u_names = obs_u_target
             df = df.join(u_block)
             obs_u_cols = u_names
         else:
