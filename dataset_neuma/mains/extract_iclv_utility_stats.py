@@ -462,6 +462,8 @@ def main() -> None:
     biog_std_mm = biog_t_mm = biog_std_r_mm = biog_t_r_mm = None
     biog_diag_mm = {}
     n_alts_mm = 0
+    beta_mm = None
+    mm_obs_u_cols = []
     if mm_metrics is not None:
         mm_obs_u_cols = mm_metrics.get("obs_u_cols", [])
         state_mm = torch.load(args.mm_dir / "model_last.pt", map_location="cpu", weights_only=True)
@@ -535,7 +537,7 @@ def main() -> None:
                 state_mm = None
                 beta_mm = None
                 n_alts_mm = 0
-                return
+                mm_obs_u_cols = []
             model = model.double()
             beta_param = model.beta if isinstance(model.beta, torch.nn.Parameter) else model.beta.weight
             # batch iter
@@ -590,7 +592,7 @@ def main() -> None:
                     model, beta_param, batch_iter_b, max_rows=None
                 )
 
-    if (args.mm_dir / "hessian.json").exists() and not args.use_opg and not args.biogeme_stats:
+    if mm_metrics is not None and (args.mm_dir / "hessian.json").exists() and not args.use_opg and not args.biogeme_stats:
         theta, std, names = load_hessian_stats(args.mm_dir / "hessian.json")
         beta_idx = [i for i, n in enumerate(names) if n.startswith("beta")]
         for alt in range(n_alts_mm):
@@ -611,7 +613,7 @@ def main() -> None:
                         "method": "hessian",
                     }
                 )
-    elif args.use_opg and opg_std_mm is not None and opg_std_mm.size:
+    elif mm_metrics is not None and args.use_opg and opg_std_mm is not None and opg_std_mm.size:
         for alt in range(n_alts_mm):
             for j, feat in enumerate(mm_obs_u_cols):
                 idx = alt * beta_mm.shape[1] + j
@@ -631,7 +633,7 @@ def main() -> None:
                 )
         if biog_diag_mm:
             print(f"[biogeme] mm lambda_min={biog_diag_mm.get('lambda_min')} lambda_max={biog_diag_mm.get('lambda_max')} cond={biog_diag_mm.get('cond')}")
-    elif args.biogeme_stats and biog_std_mm is not None and biog_std_mm.size:
+    elif mm_metrics is not None and args.biogeme_stats and biog_std_mm is not None and biog_std_mm.size:
         for alt in range(n_alts_mm):
             for j, feat in enumerate(mm_obs_u_cols):
                 idx = alt * beta_mm.shape[1] + j
@@ -651,7 +653,7 @@ def main() -> None:
                 )
         if biog_diag_mm:
             print(f"[biogeme] mm lambda_min={biog_diag_mm.get('lambda_min')} lambda_max={biog_diag_mm.get('lambda_max')} cond={biog_diag_mm.get('cond')}")
-    else:
+    elif mm_metrics is not None:
         for alt in range(n_alts_mm):
             for j, feat in enumerate(mm_obs_u_cols):
                 rows.append(
@@ -669,11 +671,11 @@ def main() -> None:
 
     # Effects: compra (alt=1) vs no compra (alt=0), sin covarianza entre betas
     effects_rows = []
-    for model_name, beta_mat, feats, std_map in [
-        ("icl_v", beta, feature_names, None),
-        ("multimodal_icl_v", beta_mm, mm_obs_u_cols, None),
-    ]:
-        if beta_mat.shape[0] < 2:
+    effect_models = [("icl_v", beta, feature_names, None)]
+    if mm_metrics is not None and beta_mm is not None:
+        effect_models.append(("multimodal_icl_v", beta_mm, mm_obs_u_cols, None))
+    for model_name, beta_mat, feats, std_map in effect_models:
+        if beta_mat is None or beta_mat.shape[0] < 2:
             continue
         for j, feat in enumerate(feats):
             b1 = beta_mat[1, j]
@@ -706,15 +708,19 @@ def main() -> None:
     iclv_out = args.iclv_dir / "utility_stats.csv"
     mm_out = args.mm_dir / "utility_stats.csv"
     out_df[out_df["model"] == "icl_v"].to_csv(iclv_out, index=False)
-    out_df[out_df["model"] == "multimodal_icl_v"].to_csv(mm_out, index=False)
+    if mm_metrics is not None:
+        out_df[out_df["model"] == "multimodal_icl_v"].to_csv(mm_out, index=False)
     if effects_rows:
         eff_df = pd.DataFrame(effects_rows)
         eff_df[eff_df["model"] == "icl_v"].to_csv(args.iclv_dir / "utility_effects.csv", index=False)
-        eff_df[eff_df["model"] == "multimodal_icl_v"].to_csv(args.mm_dir / "utility_effects.csv", index=False)
+        if mm_metrics is not None:
+            eff_df[eff_df["model"] == "multimodal_icl_v"].to_csv(args.mm_dir / "utility_effects.csv", index=False)
         print("Saved effects:", args.iclv_dir / "utility_effects.csv")
-        print("Saved effects:", args.mm_dir / "utility_effects.csv")
+        if mm_metrics is not None:
+            print("Saved effects:", args.mm_dir / "utility_effects.csv")
     print(f"Saved: {iclv_out} (rows: {len(out_df[out_df['model']=='icl_v'])})")
-    print(f"Saved: {mm_out} (rows: {len(out_df[out_df['model']=='multimodal_icl_v'])})")
+    if mm_metrics is not None:
+        print(f"Saved: {mm_out} (rows: {len(out_df[out_df['model']=='multimodal_icl_v'])})")
 
 
 if __name__ == "__main__":
