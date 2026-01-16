@@ -60,6 +60,38 @@ def prepare_preprocessor(
     return mat, preprocessor
 
 
+def preprocess_block_like_multimodal(
+    df: pd.DataFrame, cols: List[str], prefix: str
+) -> Tuple[pd.DataFrame, List[str]]:
+    import pandas.api.types as ptypes
+
+    num_cols = [c for c in cols if ptypes.is_numeric_dtype(df[c])]
+    cat_cols = [c for c in cols if c not in num_cols]
+
+    out_parts = []
+    new_names: List[str] = []
+
+    if num_cols:
+        means = df[num_cols].mean()
+        stds = df[num_cols].std().replace(0, 1)
+        num_block = (df[num_cols] - means) / stds
+        num_names = [f"{prefix}{c}" for c in num_cols]
+        num_block.columns = num_names
+        new_names.extend(num_names)
+        out_parts.append(num_block)
+
+    if cat_cols:
+        cat_block = pd.get_dummies(df[cat_cols].astype(str), prefix=[f"{prefix}{c}" for c in cat_cols])
+        new_names.extend(cat_block.columns.tolist())
+        out_parts.append(cat_block)
+
+    if out_parts:
+        block = pd.concat(out_parts, axis=1)
+    else:
+        block = pd.DataFrame(index=df.index)
+    return block, new_names
+
+
 def filter_low_variance(mat: np.ndarray, feature_names: List[str], min_var: float) -> Tuple[np.ndarray, List[str], np.ndarray]:
     X = to_float_array(mat)
     if X.shape[1] == 0:
@@ -100,12 +132,12 @@ def build_design_matrices(
 
 def infer_n_choices_from_state(state: dict, fallback: int = 2) -> int:
     if "ASC" in state:
-        return int(state["ASC"].numel())
+        return int(state["ASC"].numel()) + 1
     for key in ("beta", "beta.weight"):
         if key in state:
             beta = state[key]
             if beta.ndim == 2:
-                return int(beta.shape[0])
+                return int(beta.shape[0]) + 1
     return fallback
 
 
@@ -117,6 +149,14 @@ def bootstrap_indices(y: np.ndarray, n: int, seed: int) -> np.ndarray:
 def resolve_cols(arg) -> List[str]:
     if isinstance(arg, list):
         return [str(c).strip().lower() for c in arg if str(c).strip()]
+    if isinstance(arg, str) and arg.strip():
+        path = Path(arg)
+        if path.exists():
+            return [c.strip().lower() for c in load_features_file(path)]
+    return []
+
+
+def resolve_cols_from_file(arg) -> List[str]:
     if isinstance(arg, str) and arg.strip():
         path = Path(arg)
         if path.exists():
@@ -167,16 +207,47 @@ def main() -> None:
     obs_u_buy_only = bool(run_args.get("obs_u_buy_only", False))
     n_latent = int(run_args.get("n_latent", 1))
 
-    X_lt, X_u, feat_names_u = build_design_matrices(
-        df,
-        obs_lt_cols,
-        obs_u_cols,
-        n_choices,
-        scaler,
-        cat_unique_threshold,
-        min_var,
-        obs_u_buy_only,
-    )
+    needs_multimodal_preproc = bool(run_args.get("img_emb_col") or run_args.get("eeg_emb_col"))
+    if obs_lt_cols and not set(obs_lt_cols).issubset(df.columns):
+        needs_multimodal_preproc = True
+    if obs_u_cols and not set(obs_u_cols).issubset(df.columns):
+        needs_multimodal_preproc = True
+
+    if needs_multimodal_preproc:
+        obs_lt_raw = resolve_cols_from_file(run_args.get("obs_lt_cols"))
+        obs_u_raw = resolve_cols_from_file(run_args.get("obs_u_cols"))
+        if obs_lt_raw:
+            lt_block, lt_names = preprocess_block_like_multimodal(df, obs_lt_raw, prefix="lt_")
+            df = df.join(lt_block)
+            obs_lt_cols = lt_names
+        else:
+            obs_lt_cols = []
+        if obs_u_raw:
+            u_block, u_names = preprocess_block_like_multimodal(df, obs_u_raw, prefix="u_")
+            df = df.join(u_block)
+            obs_u_cols = u_names
+        else:
+            obs_u_cols = []
+
+        X_lt = df[obs_lt_cols].to_numpy(dtype=np.float32) if obs_lt_cols else np.zeros((len(df), 0), dtype=np.float32)
+        X_u_raw = df[obs_u_cols].to_numpy(dtype=np.float32) if obs_u_cols else np.zeros((len(df), 0), dtype=np.float32)
+        feat_names_u = list(obs_u_cols)
+        if obs_u_buy_only:
+            X_u = np.zeros((len(df), n_choices, X_u_raw.shape[1]), dtype=np.float32)
+            X_u[:, 1, :] = X_u_raw
+        else:
+            X_u = X_u_raw[:, None, :].repeat(n_choices, axis=1)
+    else:
+        X_lt, X_u, feat_names_u = build_design_matrices(
+            df,
+            obs_lt_cols,
+            obs_u_cols,
+            n_choices,
+            scaler,
+            cat_unique_threshold,
+            min_var,
+            obs_u_buy_only,
+        )
 
     device = torch.device(args.device)
     base_model = DeterministicICLV(
