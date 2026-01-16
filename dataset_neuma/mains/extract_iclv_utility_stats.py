@@ -334,6 +334,10 @@ def main() -> None:
                 if "beta.weight" in state and "beta" not in state:
                     state = dict(state)
                     state["beta.weight"] = state.pop("beta.weight")
+                # handle ASC shape mismatch (old runs with base alt)
+                if "ASC" in state and state["ASC"].numel() != model.ASC.numel():
+                    state = dict(state)
+                    state.pop("ASC", None)
                 model.load_state_dict(state, strict=False)
             else:
                 from src.models.icl_v import DeterministicICLV
