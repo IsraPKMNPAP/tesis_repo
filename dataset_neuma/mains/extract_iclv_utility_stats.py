@@ -315,7 +315,7 @@ def main() -> None:
             obs_u_t = torch.tensor(X_u, dtype=torch.float64)
             mnl_only = bool(run_args.get("mnl_only", False))
             if mnl_only:
-                n_alts = int(run_args.get("num_choices", 2))
+                n_alts = int(run_args.get("num_choices", df["bought"].nunique()))
             if obs_u_t.dim() == 2:
                 obs_u_t = obs_u_t.unsqueeze(1).expand(-1, n_alts, -1)
             ind_t = torch.tensor(ind, dtype=torch.float64)
@@ -329,6 +329,8 @@ def main() -> None:
                         self.ASC = nn.Parameter(torch.zeros(n_choices))
 
                     def forward(self, obs_lt, obs_u, indicators, choice):
+                        if obs_u.dim() == 2:
+                            obs_u = obs_u.unsqueeze(1).expand(-1, self.ASC.numel(), -1)
                         logp = F.log_softmax(self.beta(obs_u).squeeze(-1) + self.ASC.unsqueeze(0), dim=1)
                         ll = logp.gather(1, choice.view(-1, 1)).sum()
                         return {"logp": logp, "log_likelihood": ll}
