@@ -227,6 +227,15 @@ def main() -> None:
                     "coef": float(beta_mean[idx]),
                     "std": float(beta_std[idx]) if beta_std[idx] == beta_std[idx] else np.nan,
                     "tstat": float(tstat[idx]) if tstat[idx] == tstat[idx] else np.nan,
+                    "stars": (
+                        "***"
+                        if np.isfinite(tstat[idx]) and abs(tstat[idx]) >= 2.58
+                        else "**"
+                        if np.isfinite(tstat[idx]) and abs(tstat[idx]) >= 1.96
+                        else "*"
+                        if np.isfinite(tstat[idx]) and abs(tstat[idx]) >= 1.64
+                        else ""
+                    ),
                 }
             )
 
