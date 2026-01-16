@@ -264,6 +264,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Extrae betas y estadisticos de utilidad ICLV.")
     parser.add_argument("--iclv-dir", type=Path, default=Path("./results/icl_v_standard/run_0001"))
     parser.add_argument("--mm-dir", type=Path, default=Path("./results/multimodal_icl_v_standard/run_0001"))
+    parser.add_argument("--skip-mm", action="store_true", help="Omitir extraccion multimodal.")
     parser.add_argument("--use-opg", action="store_true", help="Usar OPG/Fisher para std/tstat en betas.")
     parser.add_argument("--opg-max-rows", type=int, default=2000)
     parser.add_argument("--biogeme-stats", action="store_true", help="Calcula A/B (Biogeme) para betas.")
@@ -449,14 +450,22 @@ def main() -> None:
                 )
 
     # ICLV multimodal
-    mm_metrics = json.loads((args.mm_dir / "metrics.json").read_text(encoding="utf-8"))
-    mm_obs_u_cols = mm_metrics.get("obs_u_cols", [])
-    state_mm = torch.load(args.mm_dir / "model_last.pt", map_location="cpu", weights_only=True)
-    beta_mm, n_alts_mm = extract_beta_from_state(state_mm)
-    opg_std_mm = opg_t_mm = None
-    biog_std_mm = biog_t_mm = biog_std_r_mm = biog_t_r_mm = None
-    biog_diag_mm = {}
-    if args.use_opg:
+    if args.skip_mm:
+        mm_metrics = None
+    else:
+        try:
+            mm_metrics = json.loads((args.mm_dir / "metrics.json").read_text(encoding="utf-8"))
+        except Exception:
+            print("[warn] No se pudo leer metrics.json multimodal, omitiendo multimodal.")
+            mm_metrics = None
+    if mm_metrics is not None:
+        mm_obs_u_cols = mm_metrics.get("obs_u_cols", [])
+        state_mm = torch.load(args.mm_dir / "model_last.pt", map_location="cpu", weights_only=True)
+        beta_mm, n_alts_mm = extract_beta_from_state(state_mm)
+        opg_std_mm = opg_t_mm = None
+        biog_std_mm = biog_t_mm = biog_std_r_mm = biog_t_r_mm = None
+        biog_diag_mm = {}
+    if mm_metrics is not None and args.use_opg:
         run_args = load_run_args(args.mm_dir)
         data_path = Path(run_args.get("data", ""))
         obs_lt_file = run_args.get("obs_lt_cols")
@@ -514,7 +523,18 @@ def main() -> None:
             if "beta" in state_mm and "beta.weight" not in state_mm:
                 state_mm = dict(state_mm)
                 state_mm["beta.weight"] = state_mm.pop("beta")
-            model.load_state_dict(state_mm, strict=False)
+            try:
+                model.load_state_dict(state_mm, strict=False)
+            except RuntimeError as exc:
+                print(f"[warn] No se pudo cargar modelo multimodal: {exc}")
+                mm_metrics = None
+                opg_std_mm = opg_t_mm = None
+                biog_std_mm = biog_t_mm = biog_std_r_mm = biog_t_r_mm = None
+                biog_diag_mm = {}
+                state_mm = None
+                beta_mm = None
+                n_alts_mm = 0
+                return
             model = model.double()
             beta_param = model.beta if isinstance(model.beta, torch.nn.Parameter) else model.beta.weight
             # batch iter
