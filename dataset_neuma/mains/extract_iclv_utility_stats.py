@@ -311,12 +311,14 @@ def main() -> None:
             # build tensors
             obs_lt_t = torch.tensor(X_lt, dtype=torch.float64)
             obs_u_t = torch.tensor(X_u, dtype=torch.float64)
+            mnl_only = bool(run_args.get("mnl_only", False))
+            if mnl_only:
+                n_alts = int(run_args.get("num_choices", 2))
             if obs_u_t.dim() == 2:
                 obs_u_t = obs_u_t.unsqueeze(1).expand(-1, n_alts, -1)
             ind_t = torch.tensor(ind, dtype=torch.float64)
             y_t = torch.tensor(y, dtype=torch.long)
             # rebuild model
-            mnl_only = bool(run_args.get("mnl_only", False))
             if mnl_only:
                 class SimpleMNL(nn.Module):
                     def __init__(self, dim_obs_u: int, n_choices: int):
