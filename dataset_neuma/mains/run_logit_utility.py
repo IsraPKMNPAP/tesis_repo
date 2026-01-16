@@ -118,7 +118,21 @@ def main() -> None:
     for name, b, s, t in zip(names, coef, std, tstat):
         rows.append({"feature": name, "coef": b, "std": s, "tstat": t, "stars": stars_for_t(t)})
     out = pd.DataFrame(rows)
+    # Metrics: loglik, AIC/BIC, LLR vs null
+    prob = clf.predict_proba(X)[:, 1]
+    prob = np.clip(prob, 1e-6, 1 - 1e-6)
+    ll = (y * np.log(prob) + (1 - y) * np.log(1 - prob)).sum()
+    k = len(coef)
+    n = len(y)
+    aic = 2 * k - 2 * ll
+    bic = np.log(n) * k - 2 * ll
+    p0 = y.mean()
+    p0 = min(max(p0, 1e-6), 1 - 1e-6)
+    ll_null = (y * np.log(p0) + (1 - y) * np.log(1 - p0)).sum()
+    llr = 2 * (ll - ll_null)
+
     print(out.to_string(index=False))
+    print("Metrics:", {"log_likelihood": float(ll), "aic": float(aic), "bic": float(bic), "loglik_null": float(ll_null), "loglik_ratio": float(llr)})
 
 
 if __name__ == "__main__":

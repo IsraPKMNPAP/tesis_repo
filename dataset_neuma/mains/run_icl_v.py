@@ -506,10 +506,24 @@ def main():
     def pack_iclv_metrics(m):
         cls = classification_metrics(m["y_true"], m["y_prob"])
         nll = -m["log_likelihood"] / max(1, m["n"])
+        k = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        n = max(1, m["n"])
+        # log-likelihood null (Bernoulli)
+        y = np.asarray(m["y_true"])
+        p = y.mean() if y.size else 0.5
+        p = min(max(p, 1e-6), 1 - 1e-6)
+        ll_null = (y * np.log(p) + (1 - y) * np.log(1 - p)).sum() if y.size else float("nan")
+        aic = 2 * k - 2 * m["log_likelihood"]
+        bic = np.log(n) * k - 2 * m["log_likelihood"]
+        llr = 2 * (m["log_likelihood"] - ll_null) if y.size else float("nan")
         return {
             **cls,
             "mean_nll": float(nll),
             "log_likelihood": float(m["log_likelihood"]),
+            "aic": float(aic),
+            "bic": float(bic),
+            "loglik_null": float(ll_null),
+            "loglik_ratio": float(llr),
             "pseudo_r2": float(pseudo_r2_mcfadden(m["log_likelihood"], m["y_true"], args.num_choices)),
         }
 
