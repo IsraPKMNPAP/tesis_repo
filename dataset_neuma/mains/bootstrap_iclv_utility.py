@@ -164,6 +164,19 @@ def resolve_cols_from_file(arg) -> List[str]:
     return []
 
 
+def resolve_cols_multimodal(
+    df: pd.DataFrame, file_path: str | None, fallback_numeric: bool, drop_cols: set
+) -> List[str]:
+    if file_path:
+        cols = [c.strip().lower() for c in load_features_file(file_path)]
+    else:
+        cols = []
+    if not cols and fallback_numeric:
+        cols = [c for c in df.columns if c not in drop_cols and pd.api.types.is_numeric_dtype(df[c])]
+    cols = [c for c in cols if c in df.columns]
+    return cols
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Bootstrap de betas de utilidad para ICLV (reajuste solo beta).")
     parser.add_argument("--iclv-dir", type=Path, required=True)
@@ -214,8 +227,9 @@ def main() -> None:
         needs_multimodal_preproc = True
 
     if needs_multimodal_preproc:
-        obs_lt_raw = resolve_cols_from_file(run_args.get("obs_lt_cols"))
-        obs_u_raw = resolve_cols_from_file(run_args.get("obs_u_cols"))
+        drop_cols = {label_col}
+        obs_lt_raw = resolve_cols_multimodal(df, run_args.get("obs_lt_cols"), fallback_numeric=False, drop_cols=drop_cols)
+        obs_u_raw = resolve_cols_multimodal(df, run_args.get("obs_u_cols"), fallback_numeric=True, drop_cols=drop_cols)
         if obs_lt_raw:
             lt_block, lt_names = preprocess_block_like_multimodal(df, obs_lt_raw, prefix="lt_")
             df = df.join(lt_block)
