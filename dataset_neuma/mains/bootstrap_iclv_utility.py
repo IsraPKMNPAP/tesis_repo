@@ -156,7 +156,10 @@ def main() -> None:
     obs_u_cols = resolve_cols(run_args.get("obs_u_cols"))
     if not obs_u_cols:
         obs_u_cols = json.loads((args.iclv_dir / "metrics.json").read_text(encoding="utf-8")).get("obs_u_cols", [])
-    state = torch.load(args.iclv_dir / "model.pt", map_location="cpu", weights_only=True)
+    model_path = args.iclv_dir / "model.pt"
+    if not model_path.exists():
+        model_path = args.iclv_dir / "model_last.pt"
+    state = torch.load(model_path, map_location="cpu", weights_only=True)
     n_choices = int(run_args.get("num_choices", infer_n_choices_from_state(state)))
     scaler = run_args.get("scaler", "standard")
     cat_unique_threshold = int(run_args.get("cat_unique_threshold", 4))
