@@ -331,6 +331,18 @@ def main() -> None:
         raise ValueError("No se generaron columnas obs_u después del preprocesamiento; revisa obs_u_cols y el dataset.")
     print(f"[bootstrap] obs_u_cols={len(feat_names_u)} base_dummy_cols={len(base_dummy_cols)} X_u_shape={X_u.shape}")
     if np.isnan(X_u).any() or np.isinf(X_u).any():
+        bad = np.isnan(X_u) | np.isinf(X_u)
+        bad_cols = bad.any(axis=(0, 1))
+        bad_names = [n for n, flag in zip(feat_names_u, bad_cols) if flag]
+        print(f"[bootstrap][diag] X_u NaN/Inf cols ({len(bad_names)}): {bad_names}")
+        if obs_u_cols:
+            df_u = df[obs_u_cols].copy()
+            nan_counts = df_u.isna().sum()
+            if (nan_counts > 0).any():
+                print("[bootstrap][diag] NaN en df obs_u:", nan_counts[nan_counts > 0].to_dict())
+            inf_mask = np.isinf(df_u.select_dtypes(include=[np.number])).any()
+            if inf_mask.any():
+                print("[bootstrap][diag] Inf en df obs_u:", inf_mask[inf_mask].index.tolist())
         raise ValueError("X_u contiene NaN/Inf; revisar imputaciones/preprocesamiento.")
 
     device = torch.device(args.device)
