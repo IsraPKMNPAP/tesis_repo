@@ -13,6 +13,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder, RobustScaler, StandardScaler
 
 from src.models.icl_v import DeterministicICLV
+from utils.features import load_features_file
 
 
 def load_run_args(run_dir: Path) -> dict:
@@ -102,6 +103,16 @@ def bootstrap_indices(y: np.ndarray, n: int, seed: int) -> np.ndarray:
     return rng.choice(np.arange(len(y)), size=n, replace=True)
 
 
+def resolve_cols(arg) -> List[str]:
+    if isinstance(arg, list):
+        return [str(c).strip().lower() for c in arg if str(c).strip()]
+    if isinstance(arg, str) and arg.strip():
+        path = Path(arg)
+        if path.exists():
+            return [c.strip().lower() for c in load_features_file(path)]
+    return []
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Bootstrap de betas de utilidad para ICLV (reajuste solo beta).")
     parser.add_argument("--iclv-dir", type=Path, required=True)
@@ -130,8 +141,8 @@ def main() -> None:
     label_col = run_args.get("label_col", "bought").lower()
     y = pd.to_numeric(df[label_col], errors="coerce").to_numpy(dtype=np.int64)
 
-    obs_lt_cols = [c.strip().lower() for c in (run_args.get("obs_lt_cols") or [])] if isinstance(run_args.get("obs_lt_cols"), list) else []
-    obs_u_cols = [c.strip().lower() for c in (run_args.get("obs_u_cols") or [])] if isinstance(run_args.get("obs_u_cols"), list) else []
+    obs_lt_cols = resolve_cols(run_args.get("obs_lt_cols"))
+    obs_u_cols = resolve_cols(run_args.get("obs_u_cols"))
     if not obs_u_cols:
         obs_u_cols = json.loads((args.iclv_dir / "metrics.json").read_text(encoding="utf-8")).get("obs_u_cols", [])
     n_choices = int(run_args.get("num_choices", 2))
