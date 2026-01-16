@@ -61,15 +61,26 @@ def prepare_preprocessor(
 
 
 def preprocess_block_like_multimodal(
-    df: pd.DataFrame, cols: List[str], prefix: str
-) -> Tuple[pd.DataFrame, List[str]]:
+    df: pd.DataFrame,
+    cols: List[str],
+    prefix: str,
+    cat_unique_threshold: int,
+    zero_base_cats: bool = True,
+) -> Tuple[pd.DataFrame, List[str], List[str], dict]:
     import pandas.api.types as ptypes
 
-    num_cols = [c for c in cols if ptypes.is_numeric_dtype(df[c])]
-    cat_cols = [c for c in cols if c not in num_cols]
+    num_cols = []
+    cat_cols = []
+    for c in cols:
+        if not ptypes.is_numeric_dtype(df[c]) or df[c].nunique(dropna=True) <= cat_unique_threshold:
+            cat_cols.append(c)
+        else:
+            num_cols.append(c)
 
     out_parts = []
     new_names: List[str] = []
+    base_dummy_cols: List[str] = []
+    feature_types: dict = {}
 
     if num_cols:
         means = df[num_cols].mean()
@@ -78,18 +89,37 @@ def preprocess_block_like_multimodal(
         num_names = [f"{prefix}{c}" for c in num_cols]
         num_block.columns = num_names
         new_names.extend(num_names)
+        for name in num_names:
+            feature_types[name] = "num"
         out_parts.append(num_block)
 
     if cat_cols:
-        cat_block = pd.get_dummies(df[cat_cols].astype(str), prefix=[f"{prefix}{c}" for c in cat_cols])
+        cat_block = pd.get_dummies(
+            df[cat_cols].astype(str),
+            prefix=[f"{prefix}{c}" for c in cat_cols],
+            drop_first=False,
+        )
+        if zero_base_cats:
+            for c in cat_cols:
+                vals = df[c].dropna().astype(str).unique().tolist()
+                if not vals:
+                    continue
+                vals_sorted = sorted(vals)
+                base_val = vals_sorted[0]
+                base_col = f"{prefix}{c}_{base_val}"
+                if base_col in cat_block.columns:
+                    cat_block[base_col] = 0
+                    base_dummy_cols.append(base_col)
         new_names.extend(cat_block.columns.tolist())
+        for name in cat_block.columns:
+            feature_types[name] = "cat"
         out_parts.append(cat_block)
 
     if out_parts:
         block = pd.concat(out_parts, axis=1)
     else:
         block = pd.DataFrame(index=df.index)
-    return block, new_names
+    return block, new_names, base_dummy_cols, feature_types
 
 
 def filter_low_variance(mat: np.ndarray, feature_names: List[str], min_var: float) -> Tuple[np.ndarray, List[str], np.ndarray]:
@@ -233,6 +263,8 @@ def main() -> None:
     if obs_u_cols and not set(obs_u_cols).issubset(df.columns):
         needs_multimodal_preproc = True
 
+    base_dummy_cols: List[str] = []
+    feature_types: dict = {}
     if needs_multimodal_preproc:
         drop_cols = {label_col}
         obs_lt_raw = resolve_cols_multimodal(df, run_args.get("obs_lt_cols"), fallback_numeric=False, drop_cols=drop_cols)
@@ -240,7 +272,10 @@ def main() -> None:
         obs_lt_target = [str(c).lower() for c in metrics.get("obs_lt_cols", [])]
         obs_u_target = [str(c).lower() for c in metrics.get("obs_u_cols", [])]
         if obs_lt_raw:
-            lt_block, lt_names = preprocess_block_like_multimodal(df, obs_lt_raw, prefix="lt_")
+            lt_block, lt_names, _, lt_types = preprocess_block_like_multimodal(
+                df, obs_lt_raw, prefix="lt_", cat_unique_threshold=cat_unique_threshold, zero_base_cats=False
+            )
+            feature_types.update(lt_types)
             if obs_lt_target:
                 lt_block = lt_block.reindex(columns=obs_lt_target, fill_value=0)
                 lt_names = obs_lt_target
@@ -249,10 +284,15 @@ def main() -> None:
         else:
             obs_lt_cols = []
         if obs_u_raw:
-            u_block, u_names = preprocess_block_like_multimodal(df, obs_u_raw, prefix="u_")
+            u_block, u_names, u_base_cols, u_types = preprocess_block_like_multimodal(
+                df, obs_u_raw, prefix="u_", cat_unique_threshold=cat_unique_threshold, zero_base_cats=True
+            )
+            base_dummy_cols = u_base_cols
+            feature_types.update(u_types)
             if obs_u_target:
                 u_block = u_block.reindex(columns=obs_u_target, fill_value=0)
                 u_names = obs_u_target
+                base_dummy_cols = [c for c in base_dummy_cols if c in obs_u_target]
             df = df.join(u_block)
             obs_u_cols = u_names
         else:
@@ -261,6 +301,10 @@ def main() -> None:
         X_lt = df[obs_lt_cols].to_numpy(dtype=np.float32) if obs_lt_cols else np.zeros((len(df), 0), dtype=np.float32)
         X_u_raw = df[obs_u_cols].to_numpy(dtype=np.float32) if obs_u_cols else np.zeros((len(df), 0), dtype=np.float32)
         feat_names_u = list(obs_u_cols)
+        if base_dummy_cols:
+            for col in base_dummy_cols:
+                if col in obs_u_cols:
+                    X_u_raw[:, obs_u_cols.index(col)] = 0.0
         if obs_u_buy_only:
             X_u = np.zeros((len(df), n_choices, X_u_raw.shape[1]), dtype=np.float32)
             X_u[:, 1, :] = X_u_raw
@@ -330,15 +374,19 @@ def main() -> None:
     rows = []
     base_alt = 0
     alt_list = [a for a in range(n_choices) if a != base_alt]
+    base_set = set(base_dummy_cols)
     for alt_pos, alt in enumerate(alt_list):
         for j, feat in enumerate(feat_names_u):
             idx = alt_pos * len(feat_names_u) + j
             if idx >= beta_mean.shape[0]:
                 continue
+            if feat in base_set:
+                continue
             rows.append(
                 {
                     "alt": alt,
                     "feature": feat,
+                    "feature_type": feature_types.get(feat, "unknown"),
                     "coef": float(beta_mean[idx]),
                     "std": float(beta_std[idx]) if beta_std[idx] == beta_std[idx] else np.nan,
                     "tstat": float(tstat[idx]) if tstat[idx] == tstat[idx] else np.nan,

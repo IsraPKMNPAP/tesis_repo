@@ -37,11 +37,22 @@ def resolve_cols(df: pd.DataFrame, file_path: str | None, fallback_numeric: bool
     return cols
 
 
-def preprocess_block(train_df: pd.DataFrame, val_df: pd.DataFrame, cols: List[str], prefix: str) -> tuple[pd.DataFrame, pd.DataFrame, List[str]]:
+def preprocess_block(
+    train_df: pd.DataFrame,
+    val_df: pd.DataFrame,
+    cols: List[str],
+    prefix: str,
+    cat_unique_threshold: int,
+) -> tuple[pd.DataFrame, pd.DataFrame, List[str]]:
     import pandas.api.types as ptypes
 
-    num_cols = [c for c in cols if ptypes.is_numeric_dtype(train_df[c])]
-    cat_cols = [c for c in cols if c not in num_cols]
+    num_cols = []
+    cat_cols = []
+    for c in cols:
+        if not ptypes.is_numeric_dtype(train_df[c]) or train_df[c].nunique(dropna=True) <= cat_unique_threshold:
+            cat_cols.append(c)
+        else:
+            num_cols.append(c)
 
     out_tr_parts = []
     out_val_parts = []
@@ -61,6 +72,16 @@ def preprocess_block(train_df: pd.DataFrame, val_df: pd.DataFrame, cols: List[st
     if cat_cols:
         tr_cat = pd.get_dummies(train_df[cat_cols].astype(str), prefix=[f"{prefix}{c}" for c in cat_cols])
         val_cat = pd.get_dummies(val_df[cat_cols].astype(str), prefix=[f"{prefix}{c}" for c in cat_cols])
+        # drop first level per categorical to set base
+        drop_cols = []
+        for c in cat_cols:
+            cols_c = [col for col in tr_cat.columns if col.startswith(f"{prefix}{c}_")]
+            if cols_c:
+                cols_c_sorted = sorted(cols_c)
+                drop_cols.append(cols_c_sorted[0])
+        if drop_cols:
+            tr_cat = tr_cat.drop(columns=drop_cols, errors="ignore")
+            val_cat = val_cat.drop(columns=drop_cols, errors="ignore")
         tr_cols = tr_cat.columns
         val_cat = val_cat.reindex(columns=tr_cols, fill_value=0)
         new_names.extend(tr_cols.tolist())
@@ -144,6 +165,7 @@ def main():
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--cat-unique-threshold", type=int, default=4)
     parser.add_argument("--results-dir", type=Path, default=Path("./results/multimodal_icl_v"))
     parser.add_argument("--skip-hessian", action="store_true", help="No calcular Hessiano (ahorra memoria).")
     parser.add_argument("--hessian-max-params", type=int, default=2000, help="Maximo de parametros para Hessiano completo.")
@@ -203,16 +225,16 @@ def main():
     )
 
     # one-hot + estandarizar
-    lt_tr, lt_val, lt_names = preprocess_block(train_df, val_df, orig_obs_lt_cols, prefix="lt_")
-    u_tr, u_val, u_names = preprocess_block(train_df, val_df, orig_obs_u_cols, prefix="u_")
+    lt_tr, lt_val, lt_names = preprocess_block(train_df, val_df, orig_obs_lt_cols, prefix="lt_", cat_unique_threshold=args.cat_unique_threshold)
+    u_tr, u_val, u_names = preprocess_block(train_df, val_df, orig_obs_u_cols, prefix="u_", cat_unique_threshold=args.cat_unique_threshold)
     train_df = train_df.join(lt_tr).join(u_tr)
     val_df = val_df.join(lt_val).join(u_val)
     obs_lt_cols = lt_names
     obs_u_cols = u_names
 
     # aplicar mismas columnas a test
-    lt_tr2, lt_te, _ = preprocess_block(train_df, test_df, orig_obs_lt_cols, prefix="lt_")
-    u_tr2, u_te, _ = preprocess_block(train_df, test_df, orig_obs_u_cols, prefix="u_")
+    lt_tr2, lt_te, _ = preprocess_block(train_df, test_df, orig_obs_lt_cols, prefix="lt_", cat_unique_threshold=args.cat_unique_threshold)
+    u_tr2, u_te, _ = preprocess_block(train_df, test_df, orig_obs_u_cols, prefix="u_", cat_unique_threshold=args.cat_unique_threshold)
     test_df = test_df.join(lt_te).join(u_te)
 
     train_ds = MultimodalICLVDataset(train_df, obs_lt_cols, obs_u_cols, label_col, img_emb_col, eeg_emb_col, num_choices=args.num_choices)
@@ -365,9 +387,11 @@ def main():
         # map beta names to obs_u feature names when possible
         beta_idx = [i for i, n in enumerate(hess_names) if n.startswith("beta")]
         if obs_u_cols:
-            for alt in range(args.num_choices):
+            base_alt = getattr(model, "base_alt", 0)
+            alt_list = [a for a in range(args.num_choices) if a != base_alt]
+            for alt_pos, alt in enumerate(alt_list):
                 for j, feat in enumerate(obs_u_cols):
-                    idx = alt * len(obs_u_cols) + j
+                    idx = alt_pos * len(obs_u_cols) + j
                     if idx < len(beta_idx):
                         hess_names[beta_idx[idx]] = f"beta[{alt}].{feat}"
         with open(run_dir / "hessian.json", "w", encoding="utf-8") as f:
