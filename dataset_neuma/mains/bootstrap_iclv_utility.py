@@ -98,6 +98,17 @@ def build_design_matrices(
     return to_float_array(X_lt), X_u, feat_names_u
 
 
+def infer_n_choices_from_state(state: dict, fallback: int = 2) -> int:
+    if "ASC" in state:
+        return int(state["ASC"].numel())
+    for key in ("beta", "beta.weight"):
+        if key in state:
+            beta = state[key]
+            if beta.ndim == 2:
+                return int(beta.shape[0])
+    return fallback
+
+
 def bootstrap_indices(y: np.ndarray, n: int, seed: int) -> np.ndarray:
     rng = np.random.default_rng(seed)
     return rng.choice(np.arange(len(y)), size=n, replace=True)
@@ -119,7 +130,7 @@ def main() -> None:
     parser.add_argument("--data", type=Path, default=None)
     parser.add_argument("--n-bootstrap", type=int, default=200)
     parser.add_argument("--max-iter", type=int, default=50)
-    parser.add_argument("--lr", type=float, default=1e-2)
+    parser.add_argument("--lr", type=float, default=None)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--by-subject", action="store_true", help="Bootstrap por sujeto.")
@@ -145,7 +156,8 @@ def main() -> None:
     obs_u_cols = resolve_cols(run_args.get("obs_u_cols"))
     if not obs_u_cols:
         obs_u_cols = json.loads((args.iclv_dir / "metrics.json").read_text(encoding="utf-8")).get("obs_u_cols", [])
-    n_choices = int(run_args.get("num_choices", 2))
+    state = torch.load(args.iclv_dir / "model.pt", map_location="cpu", weights_only=True)
+    n_choices = int(run_args.get("num_choices", infer_n_choices_from_state(state)))
     scaler = run_args.get("scaler", "standard")
     cat_unique_threshold = int(run_args.get("cat_unique_threshold", 4))
     min_var = float(run_args.get("min_var", 1e-6))
@@ -173,8 +185,8 @@ def main() -> None:
         delta_per_alt=True,
         beta_per_alt=bool(run_args.get("beta_per_alt", False)),
     ).to(device)
-    state = torch.load(args.iclv_dir / "model.pt", map_location="cpu", weights_only=True)
     base_model.load_state_dict(state, strict=False)
+    lr = float(run_args.get("lr", 1e-2)) if args.lr is None else args.lr
 
     beta_param = base_model.beta if isinstance(base_model.beta, torch.nn.Parameter) else base_model.beta.weight
     beta_dim = beta_param.numel()
@@ -197,7 +209,7 @@ def main() -> None:
             p.requires_grad = False
         beta_param_b = model.beta if isinstance(model.beta, torch.nn.Parameter) else model.beta.weight
         beta_param_b.requires_grad = True
-        optimizer = torch.optim.Adam([beta_param_b], lr=args.lr)
+        optimizer = torch.optim.Adam([beta_param_b], lr=lr)
 
         for _ in range(args.max_iter):
             out = model(obs_lt=X_lt_b, obs_u=X_u_b, indicators=None, choice=y_b)
