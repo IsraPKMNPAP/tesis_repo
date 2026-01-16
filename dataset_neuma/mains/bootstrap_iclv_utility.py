@@ -322,6 +322,10 @@ def main() -> None:
             obs_u_buy_only,
         )
 
+    if len(feat_names_u) == 0:
+        raise ValueError("No se generaron columnas obs_u después del preprocesamiento; revisa obs_u_cols y el dataset.")
+    print(f"[bootstrap] obs_u_cols={len(feat_names_u)} base_dummy_cols={len(base_dummy_cols)} X_u_shape={X_u.shape}")
+
     device = torch.device(args.device)
     base_model = DeterministicICLV(
         dim_obs_lt=X_lt.shape[1],
@@ -401,6 +405,34 @@ def main() -> None:
                     ),
                 }
             )
+
+    if not rows and feat_names_u:
+        print("[bootstrap][warn] Sin filas tras remover columnas base; incluyendo todas las columnas para diagnostico.")
+        rows = []
+        for alt_pos, alt in enumerate(alt_list):
+            for j, feat in enumerate(feat_names_u):
+                idx = alt_pos * len(feat_names_u) + j
+                if idx >= beta_mean.shape[0]:
+                    continue
+                rows.append(
+                    {
+                        "alt": alt,
+                        "feature": feat,
+                        "feature_type": feature_types.get(feat, "unknown"),
+                        "coef": float(beta_mean[idx]),
+                        "std": float(beta_std[idx]) if beta_std[idx] == beta_std[idx] else np.nan,
+                        "tstat": float(tstat[idx]) if tstat[idx] == tstat[idx] else np.nan,
+                        "stars": (
+                            "***"
+                            if np.isfinite(tstat[idx]) and abs(tstat[idx]) >= 2.58
+                            else "**"
+                            if np.isfinite(tstat[idx]) and abs(tstat[idx]) >= 1.96
+                            else "*"
+                            if np.isfinite(tstat[idx]) and abs(tstat[idx]) >= 1.64
+                            else ""
+                        ),
+                    }
+                )
 
     out_df = pd.DataFrame(rows)
     out_path = args.iclv_dir / "utility_stats_bootstrap.csv"
