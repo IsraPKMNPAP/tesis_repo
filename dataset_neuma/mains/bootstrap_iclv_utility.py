@@ -293,6 +293,9 @@ def main() -> None:
                 u_block = u_block.reindex(columns=obs_u_target, fill_value=0)
                 u_names = obs_u_target
                 base_dummy_cols = [c for c in base_dummy_cols if c in obs_u_target]
+                for name in obs_u_target:
+                    if name not in feature_types:
+                        feature_types[name] = "cat" if "_" in name else "num"
             df = df.join(u_block)
             obs_u_cols = u_names
         else:
@@ -341,7 +344,8 @@ def main() -> None:
 
     beta_param = base_model.beta if isinstance(base_model.beta, torch.nn.Parameter) else base_model.beta.weight
     beta_dim = beta_param.numel()
-    beta_boot = np.zeros((args.n_bootstrap, beta_dim), dtype=np.float64)
+    beta_boot = []
+    n_skipped = 0
 
     for b in range(args.n_bootstrap):
         if args.by_subject and "subject" in df.columns:
@@ -369,8 +373,17 @@ def main() -> None:
             loss.backward()
             optimizer.step()
 
-        beta_boot[b, :] = beta_param_b.detach().cpu().numpy().reshape(-1)
+        beta_vec = beta_param_b.detach().cpu().numpy().reshape(-1)
+        if np.isnan(beta_vec).any() or np.isinf(beta_vec).any():
+            n_skipped += 1
+            continue
+        beta_boot.append(beta_vec)
 
+    if n_skipped:
+        print(f"[bootstrap][warn] skipped={n_skipped} due to NaN/Inf betas")
+    if not beta_boot:
+        raise ValueError("Todas las corridas bootstrap devolvieron NaN/Inf en betas.")
+    beta_boot = np.vstack(beta_boot)
     beta_mean = beta_boot.mean(axis=0)
     beta_std = beta_boot.std(axis=0, ddof=1)
     tstat = beta_mean / np.where(beta_std == 0, np.nan, beta_std)
