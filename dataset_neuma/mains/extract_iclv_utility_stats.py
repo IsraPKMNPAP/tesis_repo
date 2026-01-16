@@ -279,6 +279,8 @@ def main() -> None:
     feature_names = load_feature_names_from_preproc(args.iclv_dir / "preproc_u.pkl", obs_u_cols)
     state = torch.load(args.iclv_dir / "model.pt", map_location="cpu", weights_only=True)
     beta, n_alts = extract_beta_from_state(state)
+    mnl_only = bool(load_run_args(args.iclv_dir).get("mnl_only", False))
+    n_alts_loop = beta.shape[0]
 
     opg_std = opg_t = None
     biog_std = biog_t = biog_std_r = biog_t_r = None
@@ -370,7 +372,7 @@ def main() -> None:
     if (args.iclv_dir / "hessian.json").exists() and not args.use_opg and not args.biogeme_stats:
         theta, std, names = load_hessian_stats(args.iclv_dir / "hessian.json")
         beta_idx = [i for i, n in enumerate(names) if n.startswith("beta")]
-        for alt in range(n_alts):
+        for alt in range(n_alts_loop):
             for j, feat in enumerate(feature_names):
                 idx = alt * beta.shape[1] + j
                 if idx >= beta.shape[1] * n_alts:
@@ -391,7 +393,7 @@ def main() -> None:
                     }
                 )
     elif args.use_opg and opg_std is not None and opg_std.size:
-        for alt in range(n_alts):
+        for alt in range(n_alts_loop):
             for j, feat in enumerate(feature_names):
                 idx = alt * beta.shape[1] + j
                 coef = beta[alt, j]
@@ -411,7 +413,7 @@ def main() -> None:
         if biog_diag:
             print(f"[biogeme] iclv lambda_min={biog_diag.get('lambda_min')} lambda_max={biog_diag.get('lambda_max')} cond={biog_diag.get('cond')}")
     elif args.biogeme_stats and biog_std is not None and biog_std.size:
-        for alt in range(n_alts):
+        for alt in range(n_alts_loop):
             for j, feat in enumerate(feature_names):
                 idx = alt * beta.shape[1] + j
                 coef = beta[alt, j]
