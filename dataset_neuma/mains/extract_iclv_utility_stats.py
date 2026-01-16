@@ -301,7 +301,10 @@ def main() -> None:
             obs_i_cols_use = [c.strip().lower() for c in (load_features_file(obs_i_file) if obs_i_file else [])]
             preproc_lt = torch.load(args.iclv_dir / "preproc_lt.pkl", weights_only=False)
             preproc_u = torch.load(args.iclv_dir / "preproc_u.pkl", weights_only=False)
-            X_lt = preproc_lt.transform(df[obs_lt_cols_use].copy())
+            if preproc_lt is None or not obs_lt_cols_use:
+                X_lt = np.zeros((len(df), 0), dtype=np.float32)
+            else:
+                X_lt = preproc_lt.transform(df[obs_lt_cols_use].copy())
             X_u = preproc_u.transform(df[obs_u_cols_use].copy())
             ind = encode_indicators(df, obs_i_cols_use)
             y = pd.to_numeric(df[iclv_metrics.get("label_col", "bought")], errors="coerce").to_numpy(dtype=np.int64) if "label_col" in iclv_metrics else pd.to_numeric(df["bought"], errors="coerce").to_numpy(dtype=np.int64)
