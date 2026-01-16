@@ -214,6 +214,8 @@ def main() -> None:
     parser.add_argument("--n-bootstrap", type=int, default=200)
     parser.add_argument("--max-iter", type=int, default=50)
     parser.add_argument("--lr", type=float, default=None)
+    parser.add_argument("--l2", type=float, default=1e-4, help="Ridge L2 para estabilizar el bootstrap.")
+    parser.add_argument("--grad-clip", type=float, default=5.0, help="Clip de gradientes para evitar NaN.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--by-subject", action="store_true", help="Bootstrap por sujeto.")
@@ -328,6 +330,8 @@ def main() -> None:
     if len(feat_names_u) == 0:
         raise ValueError("No se generaron columnas obs_u después del preprocesamiento; revisa obs_u_cols y el dataset.")
     print(f"[bootstrap] obs_u_cols={len(feat_names_u)} base_dummy_cols={len(base_dummy_cols)} X_u_shape={X_u.shape}")
+    if np.isnan(X_u).any() or np.isinf(X_u).any():
+        raise ValueError("X_u contiene NaN/Inf; revisar imputaciones/preprocesamiento.")
 
     device = torch.device(args.device)
     base_model = DeterministicICLV(
@@ -369,8 +373,14 @@ def main() -> None:
         for _ in range(args.max_iter):
             out = model(obs_lt=X_lt_b, obs_u=X_u_b, indicators=None, choice=y_b)
             loss = -out["loglik_choice_sum"]
+            if args.l2 > 0:
+                loss = loss + args.l2 * (beta_param_b ** 2).sum()
+            if not torch.isfinite(loss):
+                break
             optimizer.zero_grad()
             loss.backward()
+            if args.grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_([beta_param_b], args.grad_clip)
             optimizer.step()
 
         beta_vec = beta_param_b.detach().cpu().numpy().reshape(-1)
