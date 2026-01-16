@@ -458,13 +458,13 @@ def main() -> None:
         except Exception:
             print("[warn] No se pudo leer metrics.json multimodal, omitiendo multimodal.")
             mm_metrics = None
+    opg_std_mm = opg_t_mm = None
+    biog_std_mm = biog_t_mm = biog_std_r_mm = biog_t_r_mm = None
+    biog_diag_mm = {}
     if mm_metrics is not None:
         mm_obs_u_cols = mm_metrics.get("obs_u_cols", [])
         state_mm = torch.load(args.mm_dir / "model_last.pt", map_location="cpu", weights_only=True)
         beta_mm, n_alts_mm = extract_beta_from_state(state_mm)
-        opg_std_mm = opg_t_mm = None
-        biog_std_mm = biog_t_mm = biog_std_r_mm = biog_t_r_mm = None
-        biog_diag_mm = {}
     if mm_metrics is not None and args.use_opg:
         run_args = load_run_args(args.mm_dir)
         data_path = Path(run_args.get("data", ""))
