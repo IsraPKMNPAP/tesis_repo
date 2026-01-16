@@ -519,9 +519,11 @@ def main():
     feat_names = feat_names_u
     beta_param = model.beta if isinstance(model.beta, torch.nn.Parameter) else model.beta.weight
     beta_flat = beta_param.detach().flatten().cpu().numpy()
-    for alt in range(args.num_choices):
+    base_alt = 0
+    alt_list = [a for a in range(args.num_choices) if a != base_alt]
+    for alt_pos, alt in enumerate(alt_list):
         for j, feat in enumerate(feat_names):
-            idx = alt * len(feat_names) + j
+            idx = alt_pos * len(feat_names) + j
             flat_idx = beta_idx[idx] if idx < len(beta_idx) else None
             coef = beta_flat[idx] if idx < len(beta_flat) else np.nan
             sd = hess.std[flat_idx] if flat_idx is not None else np.nan
@@ -573,9 +575,11 @@ def main():
         # Reemplazar nombres beta por nombres de features (utilidad)
         hess_names = list(hess.names)
         beta_idx = [i for i, n in enumerate(hess_names) if n.startswith("beta")]
-        for alt in range(args.num_choices):
+        base_alt = 0
+        alt_list = [a for a in range(args.num_choices) if a != base_alt]
+        for alt_pos, alt in enumerate(alt_list):
             for j, feat in enumerate(feat_names):
-                idx = alt * len(feat_names) + j
+                idx = alt_pos * len(feat_names) + j
                 if idx < len(beta_idx):
                     hess_names[beta_idx[idx]] = f"beta[{alt}].{feat}"
         with open(run_dir / "hessian.json", "w", encoding="utf-8") as f:

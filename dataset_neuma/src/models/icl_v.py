@@ -35,6 +35,9 @@ class DeterministicICLV(nn.Module):
         self.n_indicators = int(n_indicators)
         self.alpha = float(alpha)
         self.beta_per_alt = bool(beta_per_alt)
+        self.base_alt = 0
+        jm1 = self.n_choices - 1
+        
 
         # Bloque estructural y de medición
         self.Gamma = nn.Linear(dim_obs_lt, n_latent)
@@ -42,14 +45,14 @@ class DeterministicICLV(nn.Module):
 
         # Bloque de utilidad
         if self.beta_per_alt:
-            self.beta = nn.Parameter(torch.zeros(n_choices, dim_obs_u))
+            self.beta = nn.Parameter(torch.zeros(jm1, dim_obs_u))
         else:
             self.beta = nn.Linear(dim_obs_u, 1, bias=False)
         if delta_per_alt:
-            self.delta = nn.Parameter(torch.zeros(n_choices, n_latent))
+            self.delta = nn.Parameter(torch.zeros(jm1, n_latent))
         else:
             self.delta = nn.Parameter(torch.zeros(n_latent))
-        self.ASC = nn.Parameter(torch.zeros(n_choices))
+        self.ASC = nn.Parameter(torch.zeros(jm1))
 
         self._reset_parameters()
 
@@ -72,16 +75,26 @@ class DeterministicICLV(nn.Module):
         """V_nj = beta^T OBS_U_nj + delta_j^T LT_n + ASC_j."""
         if obs_u.dim() != 3:
             raise ValueError(f"Se espera obs_u con shape [B, J, dim_obs_u]; se recibio {obs_u.shape}")
+        B, J, _ = obs_u.shape
+        device = obs_u.device
+        dtype = obs_u.dtype
+        # ASC completo con base=0
+        asc_full = torch.zeros(J, device=device, dtype=dtype)
+        if self.ASC.numel() > 0:
+            asc_full[1:] = self.ASC
         if self.beta_per_alt:
-            # obs_u: [B, J, dim_obs_u], beta: [J, dim_obs_u]
-            beta_term = (obs_u * self.beta.unsqueeze(0)).sum(-1)
+            beta_full = torch.zeros(J, obs_u.size(-1), device=device, dtype=dtype)
+            beta_full[1:, :] = self.beta
+            beta_term = (obs_u * beta_full.unsqueeze(0)).sum(-1)
         else:
             beta_term = self.beta(obs_u).squeeze(-1)  # [B, J]
         if self.delta.dim() == 2:
-            delta_term = LT @ self.delta.t()  # [B, J]
+            delta_full = torch.zeros(J, LT.size(-1), device=device, dtype=dtype)
+            delta_full[1:, :] = self.delta
+            delta_term = LT @ delta_full.t()
         else:
             delta_term = (LT @ self.delta).unsqueeze(1).expand_as(beta_term)  # [B, J]
-        asc_term = self.ASC.unsqueeze(0)  # [1, J]
+        asc_term = asc_full.unsqueeze(0)
         return beta_term + delta_term + asc_term
 
     def forward(
