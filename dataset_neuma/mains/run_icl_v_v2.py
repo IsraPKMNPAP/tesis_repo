@@ -95,16 +95,36 @@ def build_design_matrices(
         X_u_te = X_u_te[:, mask]
         feat_names_u = [n for n, keep in zip(feat_names_u, mask) if keep]
 
+    X_lt_tr = to_float_array(X_lt_tr)
+    X_lt_val = to_float_array(X_lt_val)
+    X_lt_te = to_float_array(X_lt_te)
+    X_i_tr = to_float_array(X_i_tr)
+    X_i_val = to_float_array(X_i_val)
+    X_i_te = to_float_array(X_i_te)
+
+    # Standardize all blocks (including one-hot columns) using train stats
+    def standardize_block(train: np.ndarray, val: np.ndarray, test: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        if train.shape[1] == 0:
+            return train, val, test
+        mean = train.mean(axis=0)
+        std = train.std(axis=0)
+        std = np.where(std == 0, 1.0, std)
+        return (train - mean) / std, (val - mean) / std, (test - mean) / std
+
+    X_lt_tr, X_lt_val, X_lt_te = standardize_block(X_lt_tr, X_lt_val, X_lt_te)
+    X_u_tr, X_u_val, X_u_te = standardize_block(X_u_tr, X_u_val, X_u_te)
+    X_i_tr, X_i_val, X_i_te = standardize_block(X_i_tr, X_i_val, X_i_te)
+
     return (
-        to_float_array(X_lt_tr),
-        to_float_array(X_lt_val),
-        to_float_array(X_lt_te),
+        X_lt_tr,
+        X_lt_val,
+        X_lt_te,
         X_u_tr,
         X_u_val,
         X_u_te,
-        to_float_array(X_i_tr),
-        to_float_array(X_i_val),
-        to_float_array(X_i_te),
+        X_i_tr,
+        X_i_val,
+        X_i_te,
         feat_names_u,
     )
 
