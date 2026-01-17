@@ -22,11 +22,18 @@ def warn_missing(df: pd.DataFrame, cols: list[str], label: str) -> list[str]:
     return [c for c in cols if c in df.columns]
 
 
-def expand_categoricals(df: pd.DataFrame, cols: list[str], prefix: str) -> tuple[pd.DataFrame, list[str]]:
+def expand_categoricals(
+    df: pd.DataFrame, cols: list[str], prefix: str, cat_unique_threshold: int
+) -> tuple[pd.DataFrame, list[str]]:
     if not cols:
         return df, cols
-    cat_cols = [c for c in cols if not pd.api.types.is_numeric_dtype(df[c])]
-    num_cols = [c for c in cols if c not in cat_cols]
+    cat_cols = []
+    num_cols = []
+    for c in cols:
+        if not pd.api.types.is_numeric_dtype(df[c]) or df[c].nunique(dropna=True) <= cat_unique_threshold:
+            cat_cols.append(c)
+        else:
+            num_cols.append(c)
     if not cat_cols:
         return df, cols
     dummies = pd.get_dummies(df[cat_cols].astype(str), prefix=[f"{prefix}{c}" for c in cat_cols], drop_first=True)
@@ -44,6 +51,8 @@ def main() -> None:
     parser.add_argument("--obs-i-cols", type=Path, required=True)
     parser.add_argument("--label-col", type=str, default="bought")
     parser.add_argument("--n-draws", type=int, default=200)
+    parser.add_argument("--n-latent", type=int, default=1)
+    parser.add_argument("--cat-unique-threshold", type=int, default=4)
     parser.add_argument("--results-dir", type=Path, default=Path("./results/icl_v_biogeme"))
     args = parser.parse_args()
 
@@ -58,9 +67,9 @@ def main() -> None:
     obs_i_cols = warn_missing(df, load_cols(args.obs_i_cols), "obs_i")
 
     # Convertir categóricas a dummies (Biogeme requiere float)
-    df, obs_lt_cols = expand_categoricals(df, obs_lt_cols, prefix="lt_")
-    df, obs_u_cols = expand_categoricals(df, obs_u_cols, prefix="u_")
-    df, obs_i_cols = expand_categoricals(df, obs_i_cols, prefix="i_")
+    df, obs_lt_cols = expand_categoricals(df, obs_lt_cols, prefix="lt_", cat_unique_threshold=args.cat_unique_threshold)
+    df, obs_u_cols = expand_categoricals(df, obs_u_cols, prefix="u_", cat_unique_threshold=args.cat_unique_threshold)
+    df, obs_i_cols = expand_categoricals(df, obs_i_cols, prefix="i_", cat_unique_threshold=args.cat_unique_threshold)
 
     # Coerce numeric + drop NaN en columnas relevantes
     keep_cols = [label_col] + obs_lt_cols + obs_u_cols + obs_i_cols
@@ -77,16 +86,22 @@ def main() -> None:
     obs_u_vars = [Variable(c) for c in obs_u_cols]
     obs_i_vars = [Variable(c) for c in obs_i_cols]
 
-    # Latent variable: LV = Gamma * X + omega (Normal)
-    gamma_betas = [Beta(f"gamma_{c}", 0, None, None, 0) for c in obs_lt_cols]
-    omega = Draws("omega", "NORMAL")
-    LV = sum(b * x for b, x in zip(gamma_betas, obs_lt_vars)) + omega
+    # Latent variables: LV_k = Gamma_k * X + omega_k (Normal)
+    gamma_betas = [
+        [Beta(f"gamma_{k}_{c}", 0, None, None, 0) for c in obs_lt_cols]
+        for k in range(args.n_latent)
+    ]
+    omegas = [Draws(f"omega_{k}", "NORMAL") for k in range(args.n_latent)]
+    LVs = [
+        sum(b * x for b, x in zip(gamma_betas[k], obs_lt_vars)) + omegas[k]
+        for k in range(args.n_latent)
+    ]
 
     # Utility (binary logit, base alt=0)
     ASC1 = Beta("ASC_1", 0, None, None, 0)
     beta_u = [Beta(f"beta_{c}", 0, None, None, 0) for c in obs_u_cols]
-    delta = Beta("delta_lv", 0, None, None, 0)
-    U1 = ASC1 + sum(b * x for b, x in zip(beta_u, obs_u_vars)) + delta * LV
+    delta = [Beta(f"delta_lv_{k}", 0, None, None, 0) for k in range(args.n_latent)]
+    U1 = ASC1 + sum(b * x for b, x in zip(beta_u, obs_u_vars)) + sum(d * lv for d, lv in zip(delta, LVs))
     V = {0: 0, 1: U1}
     av = {0: 1, 1: 1}
     P = models.logit(V, av, Choice)
@@ -97,7 +112,7 @@ def main() -> None:
         alpha = Beta(f"alpha_i{idx}", 0, None, None, 0)
         lam = Beta(f"lambda_i{idx}", 1, None, None, 0)
         sigma = Beta(f"sigma_i{idx}", 1, 1e-6, None, 0)
-        mu = alpha + lam * LV
+        mu = alpha + sum(lam * lv for lv in LVs)
         z = (y - mu) / sigma
         log_pdf = -0.5 * (np.log(2 * np.pi) + 2 * log(sigma) + z * z)
         meas_loglik += log_pdf
