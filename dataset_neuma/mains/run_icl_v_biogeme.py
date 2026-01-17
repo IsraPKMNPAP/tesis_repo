@@ -23,7 +23,11 @@ def warn_missing(df: pd.DataFrame, cols: list[str], label: str) -> list[str]:
 
 
 def expand_categoricals(
-    df: pd.DataFrame, cols: list[str], prefix: str, cat_unique_threshold: int
+    df: pd.DataFrame,
+    cols: list[str],
+    prefix: str,
+    cat_unique_threshold: int,
+    standardize_numeric: bool,
 ) -> tuple[pd.DataFrame, list[str]]:
     if not cols:
         return df, cols
@@ -34,6 +38,16 @@ def expand_categoricals(
             cat_cols.append(c)
         else:
             num_cols.append(c)
+    # Standardize numeric only (mean 0, std 1)
+    if standardize_numeric and num_cols:
+        for c in num_cols:
+            col = pd.to_numeric(df[c], errors="coerce")
+            mu = col.mean()
+            sd = col.std()
+            if sd and not np.isnan(sd):
+                df[c] = (col - mu) / sd
+            else:
+                df[c] = col - mu
     if not cat_cols:
         return df, cols
     dummies = pd.get_dummies(df[cat_cols].astype(str), prefix=[f"{prefix}{c}" for c in cat_cols], drop_first=True)
@@ -53,6 +67,7 @@ def main() -> None:
     parser.add_argument("--n-draws", type=int, default=200)
     parser.add_argument("--n-latent", type=int, default=1)
     parser.add_argument("--cat-unique-threshold", type=int, default=4)
+    parser.add_argument("--standardize-numeric-only", action="store_true", help="Estandariza solo numéricas.")
     parser.add_argument("--results-dir", type=Path, default=Path("./results/icl_v_biogeme"))
     args = parser.parse_args()
 
@@ -67,9 +82,15 @@ def main() -> None:
     obs_i_cols = warn_missing(df, load_cols(args.obs_i_cols), "obs_i")
 
     # Convertir categóricas a dummies (Biogeme requiere float)
-    df, obs_lt_cols = expand_categoricals(df, obs_lt_cols, prefix="lt_", cat_unique_threshold=args.cat_unique_threshold)
-    df, obs_u_cols = expand_categoricals(df, obs_u_cols, prefix="u_", cat_unique_threshold=args.cat_unique_threshold)
-    df, obs_i_cols = expand_categoricals(df, obs_i_cols, prefix="i_", cat_unique_threshold=args.cat_unique_threshold)
+    df, obs_lt_cols = expand_categoricals(
+        df, obs_lt_cols, prefix="lt_", cat_unique_threshold=args.cat_unique_threshold, standardize_numeric=args.standardize_numeric_only
+    )
+    df, obs_u_cols = expand_categoricals(
+        df, obs_u_cols, prefix="u_", cat_unique_threshold=args.cat_unique_threshold, standardize_numeric=args.standardize_numeric_only
+    )
+    df, obs_i_cols = expand_categoricals(
+        df, obs_i_cols, prefix="i_", cat_unique_threshold=args.cat_unique_threshold, standardize_numeric=args.standardize_numeric_only
+    )
 
     # Coerce numeric + drop NaN en columnas relevantes
     keep_cols = [label_col] + obs_lt_cols + obs_u_cols + obs_i_cols
@@ -110,9 +131,16 @@ def main() -> None:
     meas_loglik = 0
     for idx, y in enumerate(obs_i_vars):
         alpha = Beta(f"alpha_i{idx}", 0, None, None, 0)
-        lam = Beta(f"lambda_i{idx}", 1, None, None, 0)
-        sigma = Beta(f"sigma_i{idx}", 1, 1e-6, None, 0)
-        mu = alpha + sum(lam * lv for lv in LVs)
+        # Fix one lambda per LV to anchor scale
+        lam = []
+        for k in range(args.n_latent):
+            if idx == 0:
+                lam.append(Beta(f"lambda_i{idx}_lv{k}", 1, None, None, 1))
+            else:
+                lam.append(Beta(f"lambda_i{idx}_lv{k}", 0, None, None, 0))
+        # Fix sigma for first indicator
+        sigma = Beta(f"sigma_i{idx}", 1, 1e-6, None, 1 if idx == 0 else 0)
+        mu = alpha + sum(lam_k * lv for lam_k, lv in zip(lam, LVs))
         z = (y - mu) / sigma
         log_pdf = -0.5 * (np.log(2 * np.pi) + 2 * log(sigma) + z * z)
         meas_loglik += log_pdf
