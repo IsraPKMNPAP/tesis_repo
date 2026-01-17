@@ -215,6 +215,7 @@ def main() -> None:
     parser.add_argument("--max-iter", type=int, default=50)
     parser.add_argument("--lr", type=float, default=None)
     parser.add_argument("--l2", type=float, default=1e-4, help="Ridge L2 para estabilizar el bootstrap.")
+    parser.add_argument("--l2-cat-only", action="store_true", help="Aplicar ridge solo a features categóricas.")
     parser.add_argument("--grad-clip", type=float, default=5.0, help="Clip de gradientes para evitar NaN.")
     parser.add_argument("--n-draws", type=int, default=50, help="Numero de draws para ICLV v2.")
     parser.add_argument("--seed", type=int, default=42)
@@ -390,7 +391,17 @@ def main() -> None:
             out = model(obs_lt=X_lt_b, obs_u=X_u_b, indicators=None, choice=y_b, n_draws=args.n_draws)
             loss = -out["loglik_choice_sum"]
             if args.l2 > 0:
-                loss = loss + args.l2 * (beta_param_b ** 2).sum()
+                if args.l2_cat_only and feature_types:
+                    num_feats = len(feat_names_u)
+                    cat_mask = np.array([feature_types.get(f, "num") == "cat" for f in feat_names_u], dtype=bool)
+                    cat_mask = np.tile(cat_mask, n_choices - 1)
+                    if cat_mask.size == beta_param_b.numel():
+                        beta_vec = beta_param_b.view(-1)
+                        loss = loss + args.l2 * (beta_vec[cat_mask] ** 2).sum()
+                    else:
+                        loss = loss + args.l2 * (beta_param_b ** 2).sum()
+                else:
+                    loss = loss + args.l2 * (beta_param_b ** 2).sum()
             if not torch.isfinite(loss):
                 break
             optimizer.zero_grad()
