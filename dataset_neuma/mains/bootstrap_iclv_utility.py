@@ -284,6 +284,24 @@ def main() -> None:
                     break
         except Exception:
             beta_dim_expected = None
+    # Apply same categorical collapsing as run_icl_v
+    if "supermarketvisitduration" in df.columns:
+        mapping = {
+            "<15 minutes": 10,
+            "30-60 minutes": 45,
+            ">60 minutes": 70,
+        }
+        df["supermarketvisitduration"] = (
+            df["supermarketvisitduration"]
+            .astype(str)
+            .map(mapping)
+            .fillna(df["supermarketvisitduration"])
+        )
+        df["supermarketvisitduration"] = pd.to_numeric(df["supermarketvisitduration"], errors="coerce")
+    if "offer" in df.columns:
+        offer = df["offer"].astype(str).str.strip().str.lower()
+        df["offer"] = np.where(offer.isin(["no", "nan", "none", "0", "0.0", ""]), "no", "yes")
+
     if not needs_multimodal_preproc and preproc_u_path.exists():
         preproc_u = torch.load(preproc_u_path, map_location="cpu")
         train_subjects = set(load_split_subjects(args.iclv_dir))
@@ -294,6 +312,7 @@ def main() -> None:
             feat_names_u = list(preproc_u.get_feature_names_out(obs_u_cols))
         except Exception:
             feat_names_u = list(obs_u_cols)
+        feature_types = {n: ("cat" if n.startswith("cat__") else "num") for n in feat_names_u}
         # Apply the same low-variance filter used in training
         var = np.var(to_float_array(X_u_tr), axis=0) if X_u_tr.shape[1] else np.array([])
         min_var = float(run_args.get("min_var", 1e-6))
@@ -308,9 +327,10 @@ def main() -> None:
                 X_u_all = X_u_all[:, :beta_dim_expected]
                 feat_names_u = feat_names_u[:beta_dim_expected]
             else:
-                pad = beta_dim_expected - X_u_all.shape[1]
-                X_u_all = np.pad(X_u_all, ((0, 0), (0, pad)), mode="constant")
-                feat_names_u = feat_names_u + [f"pad_{i}" for i in range(pad)]
+                raise ValueError(
+                    f"obs_u dim mismatch: got {X_u_all.shape[1]} expected {beta_dim_expected}. "
+                    "Revisa preproc_u.pkl y columnas."
+                )
         if obs_u_buy_only:
             X_u = np.zeros((len(X_u_all), n_choices, X_u_all.shape[1]), dtype=np.float32)
             X_u[:, 1, :] = X_u_all
