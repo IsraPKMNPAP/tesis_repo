@@ -367,8 +367,11 @@ def main() -> None:
     for b in range(args.n_bootstrap):
         if args.by_subject and "subject" in df.columns:
             rng = np.random.default_rng(args.seed + b)
-            subs = rng.choice(df["subject"].unique(), size=len(df["subject"].unique()), replace=True)
-            idx = df[df["subject"].isin(subs)].index.to_numpy()
+            uniq = df["subject"].unique()
+            subs = rng.choice(uniq, size=len(uniq), replace=True)
+            grouped = df.groupby("subject").indices
+            idx_list = [grouped[s] for s in subs]
+            idx = np.concatenate(idx_list)
         else:
             idx = bootstrap_indices(y, len(y), seed=args.seed + b)
 
