@@ -132,21 +132,30 @@ def main() -> None:
     tstat = get_with_fallback(results, ["get_t_stats", "getTTest"])
     pval = get_with_fallback(results, ["get_p_values", "getPValues"])
     general = get_with_fallback(results, ["get_general_statistics", "getGeneralStatistics"])
+    est_params = get_with_fallback(results, ["get_estimated_parameters", "getEstimatedParameters"])
 
     out_rows = []
     if betas is None:
         raise RuntimeError("No se pudieron leer betas desde Biogeme.")
     for name in betas.keys():
-        out_rows.append(
-            {
-                "name": name,
-                "beta": betas[name],
-                "std": std[name] if std is not None else np.nan,
-                "tstat": tstat[name] if tstat is not None else np.nan,
-                "pval": pval[name] if pval is not None else np.nan,
-            }
-        )
+        std_val = std[name] if std is not None and name in std else np.nan
+        t_val = tstat[name] if tstat is not None and name in tstat else np.nan
+        p_val = pval[name] if pval is not None and name in pval else np.nan
+        out_rows.append({"name": name, "beta": betas[name], "std": std_val, "tstat": t_val, "pval": p_val})
     out = pd.DataFrame(out_rows)
+    # Fallback from estimated parameters table when std/tstat are missing
+    if est_params is not None:
+        try:
+            est = est_params if isinstance(est_params, pd.DataFrame) else pd.DataFrame(est_params)
+            est.columns = [c.lower().strip().replace(" ", "_") for c in est.columns]
+            if "value" in est.columns and "parameter" in est.columns:
+                est = est.set_index("parameter")
+                for col_map in [("std_err", "std"), ("t_test", "tstat"), ("p_value", "pval")]:
+                    src, dst = col_map
+                    if src in est.columns:
+                        out[dst] = out[dst].fillna(out["name"].map(est[src]))
+        except Exception:
+            pass
 
     out_path = args.results_dir / "biogeme_params.csv"
     out.to_csv(out_path, index=False)
