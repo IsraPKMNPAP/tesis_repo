@@ -110,24 +110,43 @@ def main() -> None:
     biogeme.model_name = "icl_v_biogeme"
     results = biogeme.estimate()
 
-    betas = results.get_beta_values()
-    std = results.get_std_errors()
-    tstat = results.get_t_stats()
-    pval = results.get_p_values()
-    general = results.get_general_statistics()
+    def get_with_fallback(obj, names):
+        for name in names:
+            if hasattr(obj, name):
+                try:
+                    return getattr(obj, name)()
+                except TypeError:
+                    return getattr(obj, name)
+        raw = getattr(obj, "raw_estimation_results", None)
+        if raw is not None:
+            for name in names:
+                if hasattr(raw, name):
+                    try:
+                        return getattr(raw, name)()
+                    except TypeError:
+                        return getattr(raw, name)
+        return None
 
-    out = pd.DataFrame(
-        [
+    betas = get_with_fallback(results, ["get_beta_values", "getBetaValues"])
+    std = get_with_fallback(results, ["get_std_errors", "getStdErrValues", "getStdErr"])
+    tstat = get_with_fallback(results, ["get_t_stats", "getTTest"])
+    pval = get_with_fallback(results, ["get_p_values", "getPValues"])
+    general = get_with_fallback(results, ["get_general_statistics", "getGeneralStatistics"])
+
+    out_rows = []
+    if betas is None:
+        raise RuntimeError("No se pudieron leer betas desde Biogeme.")
+    for name in betas.keys():
+        out_rows.append(
             {
                 "name": name,
                 "beta": betas[name],
-                "std": std[name],
-                "tstat": tstat[name],
-                "pval": pval[name],
+                "std": std[name] if std is not None else np.nan,
+                "tstat": tstat[name] if tstat is not None else np.nan,
+                "pval": pval[name] if pval is not None else np.nan,
             }
-            for name in betas.keys()
-        ]
-    )
+        )
+    out = pd.DataFrame(out_rows)
 
     out_path = args.results_dir / "biogeme_params.csv"
     out.to_csv(out_path, index=False)
