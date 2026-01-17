@@ -9,6 +9,7 @@ from typing import List, Tuple
 import numpy as np
 import pandas as pd
 import torch
+import warnings
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder, RobustScaler, StandardScaler
 
@@ -303,11 +304,27 @@ def main() -> None:
         df["offer"] = np.where(offer.isin(["no", "nan", "none", "0", "0.0", ""]), "no", "yes")
 
     if not needs_multimodal_preproc and preproc_u_path.exists():
+        warnings.filterwarnings("ignore", message="You are using `torch.load` with `weights_only=False`")
         preproc_u = torch.load(preproc_u_path, map_location="cpu")
         train_subjects = set(load_split_subjects(args.iclv_dir))
         df_train = df[df["subject"].isin(train_subjects)].copy() if train_subjects else df
-        X_u_all = preproc_u.transform(df[obs_u_cols].copy())
-        X_u_tr = preproc_u.transform(df_train[obs_u_cols].copy())
+        df_u_all = df[obs_u_cols].copy()
+        df_u_tr = df_train[obs_u_cols].copy()
+        for c in obs_u_cols:
+            if pd.api.types.is_numeric_dtype(df_u_all[c]):
+                med = pd.to_numeric(df_u_tr[c], errors="coerce").median()
+                df_u_all[c] = pd.to_numeric(df_u_all[c], errors="coerce").fillna(med)
+                df_u_tr[c] = pd.to_numeric(df_u_tr[c], errors="coerce").fillna(med)
+            else:
+                df_u_all[c] = df_u_all[c].astype(str).str.strip().str.lower()
+                df_u_tr[c] = df_u_tr[c].astype(str).str.strip().str.lower()
+                mode = df_u_tr[c].mode(dropna=True)
+                fill_val = mode.iloc[0] if len(mode) else "missing"
+                df_u_all[c] = df_u_all[c].fillna(fill_val)
+                df_u_tr[c] = df_u_tr[c].fillna(fill_val)
+        warnings.filterwarnings("ignore", message="Found unknown categories in columns")
+        X_u_all = preproc_u.transform(df_u_all)
+        X_u_tr = preproc_u.transform(df_u_tr)
         try:
             feat_names_u = list(preproc_u.get_feature_names_out(obs_u_cols))
         except Exception:
@@ -337,6 +354,7 @@ def main() -> None:
         else:
             X_u = X_u_all[:, None, :].repeat(n_choices, axis=1)
         if preproc_lt_path.exists():
+            warnings.filterwarnings("ignore", message="You are using `torch.load` with `weights_only=False`")
             preproc_lt = torch.load(preproc_lt_path, map_location="cpu")
             X_lt = to_float_array(preproc_lt.transform(df[obs_lt_cols].copy()))
         else:
