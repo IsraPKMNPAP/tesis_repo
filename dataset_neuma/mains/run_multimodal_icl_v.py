@@ -201,6 +201,24 @@ def main():
         if c in df.columns:
             df[c] = df[c].fillna(df[c].median())
 
+    # Normalize categorical-heavy columns to reduce sparse dummies
+    if "supermarketvisitduration" in df.columns:
+        mapping = {
+            "<15 minutes": 10,
+            "30-60 minutes": 45,
+            ">60 minutes": 70,
+        }
+        df["supermarketvisitduration"] = (
+            df["supermarketvisitduration"]
+            .astype(str)
+            .map(mapping)
+            .fillna(df["supermarketvisitduration"])
+        )
+        df["supermarketvisitduration"] = pd.to_numeric(df["supermarketvisitduration"], errors="coerce")
+    if "offer" in df.columns:
+        offer = df["offer"].astype(str).str.strip().str.lower()
+        df["offer"] = np.where(offer.isin(["no", "nan", "none", "0", "0.0", ""]), "no", "yes")
+
     df = df.dropna(subset=[label_col, img_emb_col, eeg_emb_col])
 
     drop_cols = {label_col}

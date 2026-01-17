@@ -327,6 +327,24 @@ def main():
         raise ValueError(f"No se encontro columna de etiqueta '{label_col}'.")
     if "subject" not in df.columns and "id_sub" in df.columns:
         df["subject"] = df["id_sub"].astype(str)
+
+    # Normalize categorical-heavy columns to reduce sparse dummies
+    if "supermarketvisitduration" in df.columns:
+        mapping = {
+            "<15 minutes": 10,
+            "30-60 minutes": 45,
+            ">60 minutes": 70,
+        }
+        df["supermarketvisitduration"] = (
+            df["supermarketvisitduration"]
+            .astype(str)
+            .map(mapping)
+            .fillna(df["supermarketvisitduration"])
+        )
+        df["supermarketvisitduration"] = pd.to_numeric(df["supermarketvisitduration"], errors="coerce")
+    if "offer" in df.columns:
+        offer = df["offer"].astype(str).str.strip().str.lower()
+        df["offer"] = np.where(offer.isin(["no", "nan", "none", "0", "0.0", ""]), "no", "yes")
     if "subject" not in df.columns:
         raise ValueError("Se requiere columna 'subject' para split por sujeto.")
 
