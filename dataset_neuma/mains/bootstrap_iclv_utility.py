@@ -13,6 +13,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder, RobustScaler, StandardScaler
 
 from src.models.icl_v_v2 import ICLV
+from src.models.icl_v import DeterministicICLV
 from utils.features import load_features_file
 
 
@@ -224,6 +225,7 @@ def main() -> None:
     args = parser.parse_args()
 
     run_args = load_run_args(args.iclv_dir)
+    cmd_argv = str(run_args.get("cmd_argv", ""))
     metrics_path = args.iclv_dir / "metrics.json"
     metrics = {}
     if metrics_path.exists():
@@ -270,6 +272,18 @@ def main() -> None:
     base_dummy_cols: List[str] = []
     feature_types: dict = {}
     preproc_u_path = args.iclv_dir / "preproc_u.pkl"
+    preproc_lt_path = args.iclv_dir / "preproc_lt.pkl"
+    beta_dim_expected = None
+    if "model.pt" in model_path.name:
+        try:
+            for key in ("beta.weight", "beta"):
+                if key in state:
+                    beta_t = state[key]
+                    if beta_t.ndim == 2:
+                        beta_dim_expected = int(beta_t.shape[1])
+                    break
+        except Exception:
+            beta_dim_expected = None
     if not needs_multimodal_preproc and preproc_u_path.exists():
         preproc_u = torch.load(preproc_u_path, map_location="cpu")
         train_subjects = set(load_split_subjects(args.iclv_dir))
@@ -289,12 +303,24 @@ def main() -> None:
             feat_names_u = [n for n, keep in zip(feat_names_u, mask) if keep]
         else:
             X_u_all = to_float_array(X_u_all)
+        if beta_dim_expected is not None and X_u_all.shape[1] != beta_dim_expected:
+            if X_u_all.shape[1] > beta_dim_expected:
+                X_u_all = X_u_all[:, :beta_dim_expected]
+                feat_names_u = feat_names_u[:beta_dim_expected]
+            else:
+                pad = beta_dim_expected - X_u_all.shape[1]
+                X_u_all = np.pad(X_u_all, ((0, 0), (0, pad)), mode="constant")
+                feat_names_u = feat_names_u + [f"pad_{i}" for i in range(pad)]
         if obs_u_buy_only:
             X_u = np.zeros((len(X_u_all), n_choices, X_u_all.shape[1]), dtype=np.float32)
             X_u[:, 1, :] = X_u_all
         else:
             X_u = X_u_all[:, None, :].repeat(n_choices, axis=1)
-        X_lt = np.zeros((len(df), 0), dtype=np.float32)
+        if preproc_lt_path.exists():
+            preproc_lt = torch.load(preproc_lt_path, map_location="cpu")
+            X_lt = to_float_array(preproc_lt.transform(df[obs_lt_cols].copy()))
+        else:
+            X_lt = np.zeros((len(df), 0), dtype=np.float32)
     elif needs_multimodal_preproc:
         drop_cols = {label_col}
         obs_lt_raw = resolve_cols_multimodal(df, run_args.get("obs_lt_cols"), fallback_numeric=False, drop_cols=drop_cols)
@@ -374,15 +400,27 @@ def main() -> None:
         raise ValueError("X_u contiene NaN/Inf; revisar imputaciones/preprocesamiento.")
 
     device = torch.device(args.device)
-    base_model = ICLV(
-        dim_obs_lt=X_lt.shape[1],
-        dim_obs_u=X_u.shape[2],
-        n_latent=n_latent,
-        n_indicators=0,
-        n_choices=n_choices,
-        delta_per_alt=True,
-        beta_per_alt=bool(run_args.get("beta_per_alt", False)),
-    ).to(device)
+    use_v2 = "run_icl_v_v2" in cmd_argv
+    if use_v2:
+        base_model = ICLV(
+            dim_obs_lt=X_lt.shape[1],
+            dim_obs_u=X_u.shape[2],
+            n_latent=n_latent,
+            n_indicators=0,
+            n_choices=n_choices,
+            delta_per_alt=True,
+            beta_per_alt=bool(run_args.get("beta_per_alt", False)),
+        ).to(device)
+    else:
+        base_model = DeterministicICLV(
+            dim_obs_lt=X_lt.shape[1],
+            dim_obs_u=X_u.shape[2],
+            n_latent=n_latent,
+            n_indicators=0,
+            n_choices=n_choices,
+            delta_per_alt=True,
+            beta_per_alt=bool(run_args.get("beta_per_alt", False)),
+        ).to(device)
     base_model.load_state_dict(state, strict=False)
     lr = float(run_args.get("lr", 1e-2)) if args.lr is None else args.lr
 
@@ -414,7 +452,10 @@ def main() -> None:
         optimizer = torch.optim.Adam([beta_param_b], lr=lr)
 
         for _ in range(args.max_iter):
-            out = model(obs_lt=X_lt_b, obs_u=X_u_b, indicators=None, choice=y_b, n_draws=args.n_draws)
+            if use_v2:
+                out = model(obs_lt=X_lt_b, obs_u=X_u_b, indicators=None, choice=y_b, n_draws=args.n_draws)
+            else:
+                out = model(obs_lt=X_lt_b, obs_u=X_u_b, indicators=None, choice=y_b)
             loss = -out["loglik_choice_sum"]
             if args.l2 > 0:
                 if args.l2_cat_only and feature_types:
