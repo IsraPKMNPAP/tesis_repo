@@ -84,6 +84,7 @@ def main() -> None:
     parser.add_argument("--max-obs-u", type=int, default=5, help="Max columnas obs_u si --minimal.")
     parser.add_argument("--max-obs-i", type=int, default=1, help="Max columnas obs_i si --minimal.")
     parser.add_argument("--max-obs-lt", type=int, default=0, help="Max columnas obs_lt si --minimal (0 = todas).")
+    parser.add_argument("--optimizer", type=str, default="BFGS", help="Algoritmo de optimizacion Biogeme.")
     parser.add_argument("--results-dir", type=Path, default=Path("./results/icl_v_biogeme"))
     args = parser.parse_args()
 
@@ -184,6 +185,7 @@ def main() -> None:
 
     args.results_dir.mkdir(parents=True, exist_ok=True)
     biogeme = bio.BIOGEME(database, logprob, number_of_draws=args.n_draws)
+    biogeme.algorithm = args.optimizer
     biogeme.model_name = "icl_v_biogeme"
     results = biogeme.estimate()
 
