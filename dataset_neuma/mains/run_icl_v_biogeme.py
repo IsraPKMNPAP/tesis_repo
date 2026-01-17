@@ -132,7 +132,14 @@ def main() -> None:
     tstat = get_with_fallback(results, ["get_t_stats", "getTTest"])
     pval = get_with_fallback(results, ["get_p_values", "getPValues"])
     general = get_with_fallback(results, ["get_general_statistics", "getGeneralStatistics"])
-    est_params = get_with_fallback(results, ["get_pandas_estimated_parameters", "get_estimated_parameters", "getEstimatedParameters"])
+    est_params = get_with_fallback(
+        results,
+        [
+            "get_pandas_estimated_parameters",
+            "get_estimated_parameters",
+            "getEstimatedParameters",
+        ],
+    )
 
     out_rows = []
     if betas is None:
@@ -148,12 +155,20 @@ def main() -> None:
         try:
             est = est_params if isinstance(est_params, pd.DataFrame) else pd.DataFrame(est_params)
             est.columns = [c.lower().strip().replace(" ", "_") for c in est.columns]
+            if "parameter" not in est.columns and "name" in est.columns:
+                est = est.rename(columns={"name": "parameter"})
             if "value" in est.columns and "parameter" in est.columns:
                 est = est.set_index("parameter")
-                for col_map in [("std_err", "std"), ("t_test", "tstat"), ("p_value", "pval")]:
-                    src, dst = col_map
-                    if src in est.columns:
-                        out[dst] = out[dst].fillna(out["name"].map(est[src]))
+                col_candidates = {
+                    "std": ["std_err", "robust_std_err.", "robust_std_err", "std_err."],
+                    "tstat": ["t_test", "robust_t-stat.", "robust_t_stat", "t_stat", "t_test."],
+                    "pval": ["p_value", "robust_p-value", "robust_p_value", "p_value."],
+                }
+                for dst, candidates in col_candidates.items():
+                    for src in candidates:
+                        if src in est.columns:
+                            out[dst] = out[dst].fillna(out["name"].map(est[src]))
+                            break
             else:
                 print("[warn] estimated_parameters columns:", est.columns.tolist())
         except Exception as exc:
