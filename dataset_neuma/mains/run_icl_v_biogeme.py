@@ -22,6 +22,18 @@ def warn_missing(df: pd.DataFrame, cols: list[str], label: str) -> list[str]:
     return [c for c in cols if c in df.columns]
 
 
+def stars_from_p(p: float) -> str:
+    if p is None or np.isnan(p):
+        return ""
+    if p <= 0.01:
+        return "***"
+    if p <= 0.05:
+        return "**"
+    if p <= 0.1:
+        return "*"
+    return ""
+
+
 def expand_categoricals(
     df: pd.DataFrame,
     cols: list[str],
@@ -68,6 +80,10 @@ def main() -> None:
     parser.add_argument("--n-latent", type=int, default=1)
     parser.add_argument("--cat-unique-threshold", type=int, default=4)
     parser.add_argument("--standardize-numeric-only", action="store_true", help="Estandariza solo numéricas.")
+    parser.add_argument("--minimal", action="store_true", help="Usa subconjuntos pequeños para facilitar convergencia.")
+    parser.add_argument("--max-obs-u", type=int, default=5, help="Max columnas obs_u si --minimal.")
+    parser.add_argument("--max-obs-i", type=int, default=1, help="Max columnas obs_i si --minimal.")
+    parser.add_argument("--max-obs-lt", type=int, default=0, help="Max columnas obs_lt si --minimal (0 = todas).")
     parser.add_argument("--results-dir", type=Path, default=Path("./results/icl_v_biogeme"))
     args = parser.parse_args()
 
@@ -80,6 +96,12 @@ def main() -> None:
     obs_lt_cols = warn_missing(df, load_cols(args.obs_lt_cols), "obs_lt")
     obs_u_cols = warn_missing(df, load_cols(args.obs_u_cols), "obs_u")
     obs_i_cols = warn_missing(df, load_cols(args.obs_i_cols), "obs_i")
+    if args.minimal:
+        if args.max_obs_lt and args.max_obs_lt > 0:
+            obs_lt_cols = obs_lt_cols[: args.max_obs_lt]
+        obs_u_cols = obs_u_cols[: args.max_obs_u]
+        obs_i_cols = obs_i_cols[: args.max_obs_i]
+        print(f"[biogeme] minimal obs_lt={len(obs_lt_cols)} obs_u={len(obs_u_cols)} obs_i={len(obs_i_cols)}")
 
     # Convertir categóricas a dummies (Biogeme requiere float)
     df, obs_lt_cols = expand_categoricals(
@@ -229,6 +251,8 @@ def main() -> None:
         except Exception as exc:
             print(f"[warn] failed to parse estimated_parameters: {exc}")
 
+    if "stars" not in out.columns:
+        out["stars"] = out["pval"].apply(stars_from_p)
     out_path = args.results_dir / "biogeme_params.csv"
     out.to_csv(out_path, index=False)
     print(f"Saved params: {out_path}")
