@@ -12,7 +12,7 @@ import torch
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder, RobustScaler, StandardScaler
 
-from src.models.icl_v import DeterministicICLV
+from src.models.icl_v_v2 import ICLV
 from utils.features import load_features_file
 
 
@@ -216,6 +216,7 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=None)
     parser.add_argument("--l2", type=float, default=1e-4, help="Ridge L2 para estabilizar el bootstrap.")
     parser.add_argument("--grad-clip", type=float, default=5.0, help="Clip de gradientes para evitar NaN.")
+    parser.add_argument("--n-draws", type=int, default=50, help="Numero de draws para ICLV v2.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--by-subject", action="store_true", help="Bootstrap por sujeto.")
@@ -346,7 +347,7 @@ def main() -> None:
         raise ValueError("X_u contiene NaN/Inf; revisar imputaciones/preprocesamiento.")
 
     device = torch.device(args.device)
-    base_model = DeterministicICLV(
+    base_model = ICLV(
         dim_obs_lt=X_lt.shape[1],
         dim_obs_u=X_u.shape[2],
         n_latent=n_latent,
@@ -383,7 +384,7 @@ def main() -> None:
         optimizer = torch.optim.Adam([beta_param_b], lr=lr)
 
         for _ in range(args.max_iter):
-            out = model(obs_lt=X_lt_b, obs_u=X_u_b, indicators=None, choice=y_b)
+            out = model(obs_lt=X_lt_b, obs_u=X_u_b, indicators=None, choice=y_b, n_draws=args.n_draws)
             loss = -out["loglik_choice_sum"]
             if args.l2 > 0:
                 loss = loss + args.l2 * (beta_param_b ** 2).sum()
