@@ -346,18 +346,29 @@ def main():
 
     # Normalize categorical-heavy columns to reduce sparse dummies
     if "supermarketvisitduration" in df.columns:
-        mapping = {
-            "<15 minutes": 10,
-            "30-60 minutes": 45,
-            ">60 minutes": 70,
-        }
-        df["supermarketvisitduration"] = (
+        s = (
             df["supermarketvisitduration"]
             .astype(str)
-            .map(mapping)
-            .fillna(df["supermarketvisitduration"])
+            .str.strip()
+            .str.lower()
+            .str.replace("–", "-", regex=False)
         )
-        df["supermarketvisitduration"] = pd.to_numeric(df["supermarketvisitduration"], errors="coerce")
+        mapping = {
+            "<15 minutes": 10,
+            "< 15 minutes": 10,
+            "30-60 minutes": 45,
+            ">60 minutes": 70,
+            "nan": np.nan,
+            "none": np.nan,
+            "": np.nan,
+        }
+        mapped = s.map(mapping)
+        numeric_fallback = pd.to_numeric(df["supermarketvisitduration"], errors="coerce")
+        df["supermarketvisitduration"] = mapped.combine_first(numeric_fallback)
+        if df["supermarketvisitduration"].isna().any():
+            df["supermarketvisitduration"] = df["supermarketvisitduration"].fillna(
+                df["supermarketvisitduration"].median()
+            )
     if "offer" in df.columns:
         offer = df["offer"].astype(str).str.strip().str.lower()
         df["offer"] = np.where(offer.isin(["no", "nan", "none", "0", "0.0", ""]), "no", "yes")

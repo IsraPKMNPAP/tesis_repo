@@ -287,24 +287,35 @@ def main() -> None:
             beta_dim_expected = None
     # Apply same categorical collapsing as run_icl_v
     if "supermarketvisitduration" in df.columns:
-        mapping = {
-            "<15 minutes": 10,
-            "30-60 minutes": 45,
-            ">60 minutes": 70,
-        }
-        df["supermarketvisitduration"] = (
+        s = (
             df["supermarketvisitduration"]
             .astype(str)
-            .map(mapping)
-            .fillna(df["supermarketvisitduration"])
+            .str.strip()
+            .str.lower()
+            .str.replace("–", "-", regex=False)
         )
-        df["supermarketvisitduration"] = pd.to_numeric(df["supermarketvisitduration"], errors="coerce")
+        mapping = {
+            "<15 minutes": 10,
+            "< 15 minutes": 10,
+            "30-60 minutes": 45,
+            ">60 minutes": 70,
+            "nan": np.nan,
+            "none": np.nan,
+            "": np.nan,
+        }
+        mapped = s.map(mapping)
+        numeric_fallback = pd.to_numeric(df["supermarketvisitduration"], errors="coerce")
+        df["supermarketvisitduration"] = mapped.combine_first(numeric_fallback)
+        if df["supermarketvisitduration"].isna().any():
+            df["supermarketvisitduration"] = df["supermarketvisitduration"].fillna(
+                df["supermarketvisitduration"].median()
+            )
     if "offer" in df.columns:
         offer = df["offer"].astype(str).str.strip().str.lower()
         df["offer"] = np.where(offer.isin(["no", "nan", "none", "0", "0.0", ""]), "no", "yes")
 
     if not needs_multimodal_preproc and preproc_u_path.exists():
-        warnings.filterwarnings("ignore", message="You are using `torch.load` with `weights_only=False`")
+        warnings.filterwarnings("ignore", message="You are using `torch.load` with `weights_only=False`", category=FutureWarning)
         preproc_u = torch.load(preproc_u_path, map_location="cpu")
         train_subjects = set(load_split_subjects(args.iclv_dir))
         df_train = df[df["subject"].isin(train_subjects)].copy() if train_subjects else df
@@ -322,7 +333,7 @@ def main() -> None:
                 fill_val = mode.iloc[0] if len(mode) else "missing"
                 df_u_all[c] = df_u_all[c].fillna(fill_val)
                 df_u_tr[c] = df_u_tr[c].fillna(fill_val)
-        warnings.filterwarnings("ignore", message="Found unknown categories in columns")
+        warnings.filterwarnings("ignore", message="Found unknown categories in columns", category=UserWarning)
         X_u_all = preproc_u.transform(df_u_all)
         X_u_tr = preproc_u.transform(df_u_tr)
         try:
@@ -354,7 +365,7 @@ def main() -> None:
         else:
             X_u = X_u_all[:, None, :].repeat(n_choices, axis=1)
         if preproc_lt_path.exists():
-            warnings.filterwarnings("ignore", message="You are using `torch.load` with `weights_only=False`")
+            warnings.filterwarnings("ignore", message="You are using `torch.load` with `weights_only=False`", category=FutureWarning)
             preproc_lt = torch.load(preproc_lt_path, map_location="cpu")
             X_lt = to_float_array(preproc_lt.transform(df[obs_lt_cols].copy()))
         else:
