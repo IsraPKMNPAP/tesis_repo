@@ -131,15 +131,27 @@ def main() -> None:
     meas_loglik = 0
     for idx, y in enumerate(obs_i_vars):
         alpha = Beta(f"alpha_i{idx}", 0, None, None, 0)
-        # Fix one lambda per LV to anchor scale
+        # Structured loadings for identification:
+        # - If n_latent == 1: fix lambda for first indicator to 1
+        # - If n_latent >= 2: fix indicator 0 to LV0, indicator 1 to LV1
         lam = []
         for k in range(args.n_latent):
-            if idx == 0:
-                lam.append(Beta(f"lambda_i{idx}_lv{k}", 1, None, None, 1))
-            else:
-                lam.append(Beta(f"lambda_i{idx}_lv{k}", 0, None, None, 0))
-        # Fix sigma for first indicator
-        sigma = Beta(f"sigma_i{idx}", 1, 1e-6, None, 1 if idx == 0 else 0)
+            fixed = 0
+            init = 0
+            if args.n_latent == 1 and idx == 0 and k == 0:
+                fixed = 1
+                init = 1
+            elif args.n_latent >= 2:
+                if idx == 0 and k == 0:
+                    fixed = 1
+                    init = 1
+                elif idx == 1 and k == 1:
+                    fixed = 1
+                    init = 1
+            lam.append(Beta(f"lambda_i{idx}_lv{k}", init, None, None, fixed))
+
+        # Fix sigma as constant = 1.0 (avoid estimation instability)
+        sigma = 1.0
         mu = alpha + sum(lam_k * lv for lam_k, lv in zip(lam, LVs))
         z = (y - mu) / sigma
         log_pdf = -0.5 * (np.log(2 * np.pi) + 2 * log(sigma) + z * z)
