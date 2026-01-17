@@ -70,6 +70,17 @@ class DeterministicICLV(nn.Module):
             nn.init.xavier_uniform_(self.beta)
         nn.init.zeros_(self.ASC)
         nn.init.zeros_(self.delta)
+        if self.Lambda is not None and self.Lambda.weight.numel() > 0:
+            with torch.no_grad():
+                self.Lambda.weight[0, 0] = 1.0
+            self.Lambda.weight.register_hook(self._freeze_lambda_anchor_grad)
+
+    def _freeze_lambda_anchor_grad(self, grad: torch.Tensor) -> torch.Tensor:
+        if grad is None or grad.numel() == 0:
+            return grad
+        grad = grad.clone()
+        grad[0, 0] = 0.0
+        return grad
 
     def compute_utilities(self, obs_u: torch.Tensor, LT: torch.Tensor) -> torch.Tensor:
         """V_nj = beta^T OBS_U_nj + delta_j^T LT_n + ASC_j."""
@@ -104,10 +115,12 @@ class DeterministicICLV(nn.Module):
         indicators: torch.Tensor,
         choice: torch.Tensor,
     ):
-        LT = self.Gamma(obs_lt)  # [B, n_latent]
-        if self.Lambda is not None and self.Lambda.weight.numel() > 0:
-            with torch.no_grad():
-                self.Lambda.weight[0, 0] = 1.0
+        LT_mean = self.Gamma(obs_lt)  # [B, n_latent]
+        if self.training:
+            epsilon = torch.randn_like(LT_mean)
+            LT = LT_mean + epsilon
+        else:
+            LT = LT_mean
         I_hat = self.Lambda(LT) if (self.Lambda is not None and self.n_indicators > 0) else None
 
         V = self.compute_utilities(obs_u, LT)  # [B, J]

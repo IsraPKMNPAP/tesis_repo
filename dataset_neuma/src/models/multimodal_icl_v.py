@@ -79,6 +79,17 @@ class MultimodalICLVDeterministic(nn.Module):
                     nn.init.zeros_(m.bias)
         nn.init.zeros_(self.ASC)
         nn.init.zeros_(self.delta)
+        if self.Lambda is not None and self.Lambda[0].weight.numel() > 0:
+            with torch.no_grad():
+                self.Lambda[0].weight[0, 0] = 1.0
+            self.Lambda[0].weight.register_hook(self._freeze_lambda_anchor_grad)
+
+    def _freeze_lambda_anchor_grad(self, grad: torch.Tensor) -> torch.Tensor:
+        if grad is None or grad.numel() == 0:
+            return grad
+        grad = grad.clone()
+        grad[0, 0] = 0.0
+        return grad
 
     def compute_utilities(self, obs_u: torch.Tensor, LT: torch.Tensor) -> torch.Tensor:
         if obs_u.dim() != 3:
@@ -109,10 +120,12 @@ class MultimodalICLVDeterministic(nn.Module):
 
     def forward(self, obs_lt: torch.Tensor, obs_u: torch.Tensor, eeg_emb: torch.Tensor, img_emb: torch.Tensor, choice: torch.Tensor):
         img_p = self.img_proj(img_emb)
-        LT = self.Gamma(torch.cat([obs_lt, img_p], dim=-1))
-        if self.Lambda is not None and self.Lambda[0].weight.numel() > 0:
-            with torch.no_grad():
-                self.Lambda[0].weight[0, 0] = 1.0
+        LT_mean = self.Gamma(torch.cat([obs_lt, img_p], dim=-1))
+        if self.training:
+            epsilon = torch.randn_like(LT_mean)
+            LT = LT_mean + epsilon
+        else:
+            LT = LT_mean
         eeg_hat = self.Lambda(LT) if self.Lambda is not None else None
 
         V = self.compute_utilities(obs_u, LT)
