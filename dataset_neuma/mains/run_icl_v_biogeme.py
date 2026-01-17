@@ -132,7 +132,7 @@ def main() -> None:
     tstat = get_with_fallback(results, ["get_t_stats", "getTTest"])
     pval = get_with_fallback(results, ["get_p_values", "getPValues"])
     general = get_with_fallback(results, ["get_general_statistics", "getGeneralStatistics"])
-    est_params = get_with_fallback(results, ["get_estimated_parameters", "getEstimatedParameters"])
+    est_params = get_with_fallback(results, ["get_pandas_estimated_parameters", "get_estimated_parameters", "getEstimatedParameters"])
 
     out_rows = []
     if betas is None:
@@ -154,8 +154,10 @@ def main() -> None:
                     src, dst = col_map
                     if src in est.columns:
                         out[dst] = out[dst].fillna(out["name"].map(est[src]))
-        except Exception:
-            pass
+            else:
+                print("[warn] estimated_parameters columns:", est.columns.tolist())
+        except Exception as exc:
+            print(f"[warn] failed to parse estimated_parameters: {exc}")
 
     out_path = args.results_dir / "biogeme_params.csv"
     out.to_csv(out_path, index=False)
