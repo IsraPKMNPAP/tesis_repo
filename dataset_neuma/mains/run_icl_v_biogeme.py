@@ -107,14 +107,14 @@ def main() -> None:
 
     args.results_dir.mkdir(parents=True, exist_ok=True)
     biogeme = bio.BIOGEME(database, logprob, number_of_draws=args.n_draws)
-    biogeme.modelName = "icl_v_biogeme"
+    biogeme.model_name = "icl_v_biogeme"
     results = biogeme.estimate()
 
-    general = results.getGeneralStatistics()
-    betas = results.getBetaValues()
-    std = results.getBetaStdErrors()
-    tstat = results.getTTest()
-    pval = results.getPValues()
+    betas = results.get_beta_values()
+    std = results.get_std_errors()
+    tstat = results.get_t_stats()
+    pval = results.get_p_values()
+    general = results.get_general_statistics()
 
     out = pd.DataFrame(
         [
