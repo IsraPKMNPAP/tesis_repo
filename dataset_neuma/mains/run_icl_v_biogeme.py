@@ -8,7 +8,7 @@ import pandas as pd
 import biogeme.database as db
 import biogeme.biogeme as bio
 from biogeme import models
-from biogeme.expressions import Beta, Variable, bioDraws, MonteCarlo, log, exp
+from biogeme.expressions import Beta, Variable, Draws, MonteCarlo, log, exp
 
 
 def load_cols(path: Path) -> list[str]:
@@ -79,7 +79,7 @@ def main() -> None:
 
     # Latent variable: LV = Gamma * X + omega (Normal)
     gamma_betas = [Beta(f"gamma_{c}", 0, None, None, 0) for c in obs_lt_cols]
-    omega = bioDraws("omega", "NORMAL")
+    omega = Draws("omega", "NORMAL")
     LV = sum(b * x for b, x in zip(gamma_betas, obs_lt_vars)) + omega
 
     # Utility (binary logit, base alt=0)
@@ -106,7 +106,7 @@ def main() -> None:
     logprob = log(MonteCarlo(integrand))
 
     args.results_dir.mkdir(parents=True, exist_ok=True)
-    biogeme = bio.BIOGEME(database, logprob, numberOfDraws=args.n_draws)
+    biogeme = bio.BIOGEME(database, logprob, number_of_draws=args.n_draws)
     biogeme.modelName = "icl_v_biogeme"
     results = biogeme.estimate()
 
