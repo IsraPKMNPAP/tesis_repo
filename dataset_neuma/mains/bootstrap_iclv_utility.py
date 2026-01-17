@@ -269,7 +269,33 @@ def main() -> None:
 
     base_dummy_cols: List[str] = []
     feature_types: dict = {}
-    if needs_multimodal_preproc:
+    preproc_u_path = args.iclv_dir / "preproc_u.pkl"
+    if not needs_multimodal_preproc and preproc_u_path.exists():
+        preproc_u = torch.load(preproc_u_path, map_location="cpu")
+        train_subjects = set(load_split_subjects(args.iclv_dir))
+        df_train = df[df["subject"].isin(train_subjects)].copy() if train_subjects else df
+        X_u_all = preproc_u.transform(df[obs_u_cols].copy())
+        X_u_tr = preproc_u.transform(df_train[obs_u_cols].copy())
+        try:
+            feat_names_u = list(preproc_u.get_feature_names_out(obs_u_cols))
+        except Exception:
+            feat_names_u = list(obs_u_cols)
+        # Apply the same low-variance filter used in training
+        var = np.var(to_float_array(X_u_tr), axis=0) if X_u_tr.shape[1] else np.array([])
+        min_var = float(run_args.get("min_var", 1e-6))
+        if var.size:
+            mask = var >= min_var
+            X_u_all = to_float_array(X_u_all)[:, mask]
+            feat_names_u = [n for n, keep in zip(feat_names_u, mask) if keep]
+        else:
+            X_u_all = to_float_array(X_u_all)
+        if obs_u_buy_only:
+            X_u = np.zeros((len(X_u_all), n_choices, X_u_all.shape[1]), dtype=np.float32)
+            X_u[:, 1, :] = X_u_all
+        else:
+            X_u = X_u_all[:, None, :].repeat(n_choices, axis=1)
+        X_lt = np.zeros((len(df), 0), dtype=np.float32)
+    elif needs_multimodal_preproc:
         drop_cols = {label_col}
         obs_lt_raw = resolve_cols_multimodal(df, run_args.get("obs_lt_cols"), fallback_numeric=False, drop_cols=drop_cols)
         obs_u_raw = resolve_cols_multimodal(df, run_args.get("obs_u_cols"), fallback_numeric=True, drop_cols=drop_cols)
