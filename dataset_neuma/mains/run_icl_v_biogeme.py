@@ -22,6 +22,20 @@ def warn_missing(df: pd.DataFrame, cols: list[str], label: str) -> list[str]:
     return [c for c in cols if c in df.columns]
 
 
+def expand_categoricals(df: pd.DataFrame, cols: list[str], prefix: str) -> tuple[pd.DataFrame, list[str]]:
+    if not cols:
+        return df, cols
+    cat_cols = [c for c in cols if not pd.api.types.is_numeric_dtype(df[c])]
+    num_cols = [c for c in cols if c not in cat_cols]
+    if not cat_cols:
+        return df, cols
+    dummies = pd.get_dummies(df[cat_cols].astype(str), prefix=[f"{prefix}{c}" for c in cat_cols], drop_first=True)
+    df = df.drop(columns=cat_cols).join(dummies)
+    new_cols = num_cols + dummies.columns.tolist()
+    print(f"[biogeme] one-hot cols: {cat_cols} -> {len(dummies.columns)} dummies")
+    return df, new_cols
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="ICLV minimo en Biogeme.")
     parser.add_argument("--data", type=Path, required=True)
@@ -42,6 +56,18 @@ def main() -> None:
     obs_lt_cols = warn_missing(df, load_cols(args.obs_lt_cols), "obs_lt")
     obs_u_cols = warn_missing(df, load_cols(args.obs_u_cols), "obs_u")
     obs_i_cols = warn_missing(df, load_cols(args.obs_i_cols), "obs_i")
+
+    # Convertir categóricas a dummies (Biogeme requiere float)
+    df, obs_lt_cols = expand_categoricals(df, obs_lt_cols, prefix="lt_")
+    df, obs_u_cols = expand_categoricals(df, obs_u_cols, prefix="u_")
+    df, obs_i_cols = expand_categoricals(df, obs_i_cols, prefix="i_")
+
+    # Coerce numeric + drop NaN en columnas relevantes
+    keep_cols = [label_col] + obs_lt_cols + obs_u_cols + obs_i_cols
+    df = df[keep_cols].copy()
+    for c in keep_cols:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df = df.dropna().reset_index(drop=True)
 
     database = db.Database("neuma", df)
 
