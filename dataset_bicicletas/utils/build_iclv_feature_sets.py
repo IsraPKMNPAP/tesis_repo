@@ -110,6 +110,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Genera nuevos obs_lt/obs_u/obs_i filtrados por correlacion.")
     ap.add_argument("--data", type=str, required=True, help="CSV o PKL con dataset.")
     ap.add_argument("--label-col", type=str, required=True)
+    ap.add_argument("--map-action-labels", action="store_true", help="Mapea etiquetas action a {0..4}.")
     ap.add_argument("--obs-lt-cols-file", type=str, required=True)
     ap.add_argument("--obs-u-cols-file", type=str, required=True)
     ap.add_argument("--obs-i-cols-file", type=str, required=True)
@@ -123,6 +124,17 @@ def main() -> None:
     df = _read_df(Path(args.data)).reset_index(drop=True)
     if args.label_col not in df.columns:
         raise ValueError(f"label_col '{args.label_col}' no existe en el dataset.")
+
+    if args.map_action_labels:
+        label_map = {
+            "accelerate": 0,
+            "brake": 1,
+            "decelerate": 2,
+            "maintain speed": 3,
+            "wait": 4,
+        }
+        df[args.label_col] = df[args.label_col].map(label_map).fillna(df[args.label_col])
+        df = df.dropna(subset=[args.label_col]).reset_index(drop=True)
 
     obs_lt = _load_cols(args.obs_lt_cols_file)
     obs_u = _load_cols(args.obs_u_cols_file)
