@@ -43,13 +43,17 @@ def preprocess_block(
     cols: List[str],
     prefix: str,
     cat_unique_threshold: int,
+    force_numeric: List[str] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, List[str]]:
     import pandas.api.types as ptypes
 
     num_cols = []
     cat_cols = []
+    force_numeric = set(c.lower() for c in (force_numeric or []))
     for c in cols:
-        if not ptypes.is_numeric_dtype(train_df[c]) or train_df[c].nunique(dropna=True) <= cat_unique_threshold:
+        if c in force_numeric:
+            num_cols.append(c)
+        elif not ptypes.is_numeric_dtype(train_df[c]) or train_df[c].nunique(dropna=True) <= cat_unique_threshold:
             cat_cols.append(c)
         else:
             num_cols.append(c)
@@ -243,16 +247,34 @@ def main():
     )
 
     # one-hot + estandarizar
-    lt_tr, lt_val, lt_names = preprocess_block(train_df, val_df, orig_obs_lt_cols, prefix="lt_", cat_unique_threshold=args.cat_unique_threshold)
-    u_tr, u_val, u_names = preprocess_block(train_df, val_df, orig_obs_u_cols, prefix="u_", cat_unique_threshold=args.cat_unique_threshold)
+    lt_tr, lt_val, lt_names = preprocess_block(
+        train_df, val_df, orig_obs_lt_cols, prefix="lt_", cat_unique_threshold=args.cat_unique_threshold
+    )
+    u_tr, u_val, u_names = preprocess_block(
+        train_df,
+        val_df,
+        orig_obs_u_cols,
+        prefix="u_",
+        cat_unique_threshold=args.cat_unique_threshold,
+        force_numeric=["supermarketvisitduration"],
+    )
     train_df = train_df.join(lt_tr).join(u_tr)
     val_df = val_df.join(lt_val).join(u_val)
     obs_lt_cols = lt_names
     obs_u_cols = u_names
 
     # aplicar mismas columnas a test
-    lt_tr2, lt_te, _ = preprocess_block(train_df, test_df, orig_obs_lt_cols, prefix="lt_", cat_unique_threshold=args.cat_unique_threshold)
-    u_tr2, u_te, _ = preprocess_block(train_df, test_df, orig_obs_u_cols, prefix="u_", cat_unique_threshold=args.cat_unique_threshold)
+    lt_tr2, lt_te, _ = preprocess_block(
+        train_df, test_df, orig_obs_lt_cols, prefix="lt_", cat_unique_threshold=args.cat_unique_threshold
+    )
+    u_tr2, u_te, _ = preprocess_block(
+        train_df,
+        test_df,
+        orig_obs_u_cols,
+        prefix="u_",
+        cat_unique_threshold=args.cat_unique_threshold,
+        force_numeric=["supermarketvisitduration"],
+    )
     test_df = test_df.join(lt_te).join(u_te)
 
     train_ds = MultimodalICLVDataset(train_df, obs_lt_cols, obs_u_cols, label_col, img_emb_col, eeg_emb_col, num_choices=args.num_choices)
