@@ -267,7 +267,8 @@ def main() -> None:
         if beta_values is None:
             raise RuntimeError("No se pudieron leer betas para simulacion.")
         P1 = models.logit(V, av, 1)
-        sim = bio.BIOGEME(database, {"p1": P1}, number_of_draws=args.n_draws)
+        P1_mc = MonteCarlo(P1)
+        sim = bio.BIOGEME(database, {"p1": P1_mc}, number_of_draws=args.n_draws)
         sim.model_name = "icl_v_biogeme_sim"
         sim_res = sim.simulate(beta_values)
         p1 = sim_res["p1"].to_numpy(dtype=float)
