@@ -119,6 +119,11 @@ def main() -> None:
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--by-subject", action="store_true", help="Bootstrap por sujeto.")
     parser.add_argument("--beta-only", action="store_true", help="Resumir solo betas de utilidad.")
+    parser.add_argument(
+        "--tabular-only",
+        action="store_true",
+        help="Resumir solo parametros ligados a bloques tabulares (beta/Gamma).",
+    )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -241,8 +246,14 @@ def main() -> None:
         params.append(vec)
 
     samples = np.vstack(params)
+    if args.beta_only and args.tabular_only:
+        raise ValueError("--beta-only y --tabular-only son excluyentes.")
     if args.beta_only:
         keep_idx = [i for i, n in enumerate(base_names) if n.startswith("beta")]
+        samples = samples[:, keep_idx]
+        base_names = [base_names[i] for i in keep_idx]
+    elif args.tabular_only:
+        keep_idx = [i for i, n in enumerate(base_names) if n.startswith("beta") or n.startswith("Gamma")]
         samples = samples[:, keep_idx]
         base_names = [base_names[i] for i in keep_idx]
     summary = summarize_params(samples, base_names)
