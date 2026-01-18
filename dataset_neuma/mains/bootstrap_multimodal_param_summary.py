@@ -109,6 +109,59 @@ def expand_param_names(model: torch.nn.Module) -> tuple[List[torch.nn.Parameter]
     return params, names
 
 
+def parse_flat_index(name: str) -> int | None:
+    if "[" not in name or "]" not in name:
+        return None
+    try:
+        idx = name.rsplit("[", 1)[-1].split("]")[0]
+        return int(idx)
+    except Exception:
+        return None
+
+
+def build_param_annotations(
+    names: List[str],
+    u_names: List[str],
+    lt_names: List[str],
+    img_proj_dim: int,
+    n_choices: int,
+    beta_per_alt: bool,
+) -> pd.DataFrame:
+    base_alt = 0
+    alt_list = [a for a in range(n_choices) if a != base_alt]
+    gamma0_inputs = lt_names + [f"img_proj_{i}" for i in range(img_proj_dim)]
+    rows = []
+    for name in names:
+        block = "other"
+        var_name = name
+        alt = None
+        if name.startswith("beta"):
+            block = "utility"
+            idx = parse_flat_index(name)
+            if idx is not None and u_names:
+                if beta_per_alt:
+                    dim_u = len(u_names)
+                    alt_pos = idx // dim_u
+                    feat_idx = idx % dim_u
+                    if alt_pos < len(alt_list):
+                        alt = alt_list[alt_pos]
+                    var_name = u_names[feat_idx] if feat_idx < len(u_names) else var_name
+                else:
+                    var_name = u_names[idx] if idx < len(u_names) else var_name
+        elif name.startswith("Gamma.0.weight"):
+            block = "structural"
+            idx = parse_flat_index(name)
+            if idx is not None and gamma0_inputs:
+                in_dim = len(gamma0_inputs)
+                col = idx % in_dim
+                var_name = gamma0_inputs[col] if col < in_dim else var_name
+        elif name.startswith("Gamma.0.bias"):
+            block = "structural"
+            var_name = "intercept"
+        rows.append({"name": name, "block": block, "var_name": var_name, "alt": alt})
+    return pd.DataFrame(rows)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Bootstrap multimodal: resumen de coeficientes.")
     parser.add_argument("--iclv-dir", type=Path, required=True)
@@ -257,6 +310,15 @@ def main() -> None:
         samples = samples[:, keep_idx]
         base_names = [base_names[i] for i in keep_idx]
     summary = summarize_params(samples, base_names)
+    annotations = build_param_annotations(
+        base_names,
+        u_names,
+        lt_names,
+        int(run_args.get("img_proj_dim", 32)),
+        n_choices,
+        bool(run_args.get("beta_per_alt", False)),
+    )
+    summary = annotations.merge(summary, on="name", how="left")
     out_path = args.iclv_dir / "bootstrap_param_summary.csv"
     summary.to_csv(out_path, index=False)
     print(f"Saved: {out_path} (rows: {len(summary)})")
