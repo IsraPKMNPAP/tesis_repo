@@ -167,8 +167,10 @@ def main() -> None:
     parser.add_argument("--iclv-dir", type=Path, required=True)
     parser.add_argument("--data", type=Path, default=None)
     parser.add_argument("--n-bootstrap", type=int, default=100)
-    parser.add_argument("--max-iter", type=int, default=30)
+    parser.add_argument("--max-iter", type=int, default=300)
     parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--lbfgs-steps", type=int, default=30)
+    parser.add_argument("--early-stop-patience", type=int, default=20)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--by-subject", action="store_true", help="Bootstrap por sujeto.")
     parser.add_argument("--beta-only", action="store_true", help="Resumir solo betas de utilidad.")
@@ -260,7 +262,18 @@ def main() -> None:
     }
 
     base_model = MultimodalICLVDeterministic(**model_params).to(device)
+    ckpt_path = args.iclv_dir / "best_model.pt"
+    if not ckpt_path.exists():
+        ckpt_path = args.iclv_dir / "model_last.pt"
+    if ckpt_path.exists():
+        ckpt = torch.load(ckpt_path, map_location=device)
+        base_model.load_state_dict(ckpt, strict=False)
+    base_model.eval()
     base_params, base_names = expand_param_names(base_model)
+    print(
+        f"[bootstrap] beta_per_alt={model_params['beta_per_alt']} n_latent={model_params['n_latent']} "
+        f"obs_u_buy_only={obs_u_buy_only}"
+    )
 
     params = []
     rng = np.random.default_rng(args.seed)
@@ -286,13 +299,37 @@ def main() -> None:
         y_b = torch.tensor(y[idx], dtype=torch.long, device=device)
 
         model = MultimodalICLVDeterministic(**model_params).to(device)
+        model.load_state_dict(base_model.state_dict(), strict=False)
         opt = torch.optim.Adam(model.parameters(), lr=args.lr)
+        best_ll = -np.inf
+        patience = 0
         for _ in range(args.max_iter):
             out = model(obs_lt_b, obs_u_b, eeg_b, img_b, y_b)
             loss = out["loss"]
             opt.zero_grad()
             loss.backward()
             opt.step()
+            ll = float(out["log_likelihood"].item())
+            if ll > best_ll + 1e-6:
+                best_ll = ll
+                patience = 0
+            else:
+                patience += 1
+                if patience >= args.early_stop_patience:
+                    break
+
+        # Full-batch LBFGS refinement
+        if args.lbfgs_steps > 0:
+            lbfgs = torch.optim.LBFGS(model.parameters(), max_iter=args.lbfgs_steps, line_search_fn="strong_wolfe")
+
+            def closure():
+                lbfgs.zero_grad()
+                out_lb = model(obs_lt_b, obs_u_b, eeg_b, img_b, y_b)
+                loss_lb = out_lb["loss"]
+                loss_lb.backward()
+                return loss_lb
+
+            lbfgs.step(closure)
 
         params_list, _ = expand_param_names(model)
         vec = torch.nn.utils.parameters_to_vector(params_list).detach().cpu().numpy()
