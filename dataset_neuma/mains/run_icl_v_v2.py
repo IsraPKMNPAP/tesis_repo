@@ -163,6 +163,7 @@ def main() -> None:
     parser.add_argument("--test-frac", type=float, default=0.2)
     parser.add_argument("--cat-unique-threshold", type=int, default=4)
     parser.add_argument("--min-var", type=float, default=1e-6)
+    parser.add_argument("--obs-u-buy-only", action="store_true", help="Aplica obs_u solo a alternativa buy (alt=1).")
     parser.add_argument("--results-dir", type=Path, default=Path("./results/icl_v_v2"))
     args = parser.parse_args()
 
@@ -214,6 +215,17 @@ def main() -> None:
         cat_unique_threshold=args.cat_unique_threshold,
         min_var=args.min_var,
     )
+
+    if args.obs_u_buy_only:
+        if args.num_choices < 2:
+            raise ValueError("obs_u_buy_only requiere num_choices >= 2.")
+        def expand_buy_only(x: np.ndarray) -> np.ndarray:
+            out = np.zeros((x.shape[0], args.num_choices, x.shape[1]), dtype=np.float32)
+            out[:, 1, :] = x
+            return out
+        X_u_tr = expand_buy_only(X_u_tr)
+        X_u_val = expand_buy_only(X_u_val)
+        X_u_te = expand_buy_only(X_u_te)
 
     y_tr = pd.to_numeric(train_df[label_col], errors="coerce").to_numpy(dtype=int)
     y_val = pd.to_numeric(val_df[label_col], errors="coerce").to_numpy(dtype=int)
