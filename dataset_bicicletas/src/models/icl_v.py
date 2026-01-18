@@ -31,23 +31,30 @@ class DeterministicICLV(nn.Module):
         n_choices: int,
         alpha: float = 1.0,
         delta_per_alt: bool = True,
+        beta_per_alt: bool = False,
     ):
         super().__init__()
         self.n_choices = int(n_choices)
         self.n_indicators = int(n_indicators)
         self.alpha = float(alpha)
+        self.beta_per_alt = bool(beta_per_alt)
+        self.base_alt = 0
+        jm1 = self.n_choices - 1
 
         # Bloque estructural (Gamma) y de medicion (Lambda)
         self.Gamma = nn.Linear(dim_obs_lt, n_latent)
         self.Lambda = nn.Linear(n_latent, n_indicators) if n_indicators > 0 else None
 
         # Bloque de utilidad (beta por alternativa)
-        self.beta = nn.Parameter(torch.zeros(n_choices, dim_obs_u))
+        if self.beta_per_alt:
+            self.beta = nn.Parameter(torch.zeros(jm1, dim_obs_u))
+        else:
+            self.beta = nn.Linear(dim_obs_u, 1, bias=False)
         if delta_per_alt:
-            self.delta = nn.Parameter(torch.zeros(n_choices, n_latent))
+            self.delta = nn.Parameter(torch.zeros(jm1, n_latent))
         else:
             self.delta = nn.Parameter(torch.zeros(n_latent))
-        self.ASC = nn.Parameter(torch.zeros(n_choices))
+        self.ASC = nn.Parameter(torch.zeros(jm1))
 
         self._reset_parameters()
 
@@ -59,21 +66,48 @@ class DeterministicICLV(nn.Module):
             nn.init.xavier_uniform_(self.Lambda.weight)
             if self.Lambda.bias is not None:
                 nn.init.zeros_(self.Lambda.bias)
-        nn.init.xavier_uniform_(self.beta)
+        if isinstance(self.beta, nn.Linear):
+            nn.init.xavier_uniform_(self.beta.weight)
+        else:
+            nn.init.xavier_uniform_(self.beta)
         nn.init.zeros_(self.ASC)
         nn.init.zeros_(self.delta)
+        if self.Lambda is not None and self.Lambda.weight.numel() > 0:
+            with torch.no_grad():
+                self.Lambda.weight[0, 0] = 1.0
+            self.Lambda.weight.register_hook(self._freeze_lambda_anchor_grad)
+
+    def _freeze_lambda_anchor_grad(self, grad: torch.Tensor) -> torch.Tensor:
+        if grad is None or grad.numel() == 0:
+            return grad
+        grad = grad.clone()
+        grad[0, 0] = 0.0
+        return grad
 
     def compute_utilities(self, obs_u: torch.Tensor, LT: torch.Tensor) -> torch.Tensor:
         """Computa V_nj = beta^T OBS_U_nj + delta_j^T LT_n + ASC_j."""
         if obs_u.dim() != 3:
             raise ValueError(f"Se espera obs_u con shape [B, J, dim_obs_u]; se recibio {obs_u.shape}")
-        # beta_j^T * obs_u_nj
-        beta_term = (obs_u * self.beta.unsqueeze(0)).sum(dim=-1)  # [B, J]
+        B, J, _ = obs_u.shape
+        device = obs_u.device
+        dtype = obs_u.dtype
+        # ASC completo con base=0
+        asc_full = torch.zeros(J, device=device, dtype=dtype)
+        if self.ASC.numel() > 0:
+            asc_full[1:] = self.ASC
+        if self.beta_per_alt:
+            beta_full = torch.zeros(J, obs_u.size(-1), device=device, dtype=dtype)
+            beta_full[1:, :] = self.beta
+            beta_term = (obs_u * beta_full.unsqueeze(0)).sum(-1)
+        else:
+            beta_term = self.beta(obs_u).squeeze(-1)
         if self.delta.dim() == 2:
-            delta_term = LT @ self.delta.t()  # [B, J]
+            delta_full = torch.zeros(J, LT.size(-1), device=device, dtype=dtype)
+            delta_full[1:, :] = self.delta
+            delta_term = LT @ delta_full.t()
         else:
             delta_term = (LT @ self.delta).unsqueeze(1).expand_as(beta_term)  # [B, J]
-        asc_term = self.ASC.unsqueeze(0)  # [1, J]
+        asc_term = asc_full.unsqueeze(0)
         return beta_term + delta_term + asc_term
 
     def forward(
@@ -83,20 +117,26 @@ class DeterministicICLV(nn.Module):
         indicators: torch.Tensor,
         choice: torch.Tensor,
     ):
-        LT = self.Gamma(obs_lt)  # [B, n_latent]
+        LT_mean = self.Gamma(obs_lt)  # [B, n_latent]
+        if self.training:
+            epsilon = torch.randn_like(LT_mean)
+            LT = LT_mean + epsilon
+        else:
+            LT = LT_mean
         I_hat = self.Lambda(LT) if (self.Lambda is not None and self.n_indicators > 0) else None
 
         V = self.compute_utilities(obs_u, LT)  # [B, J]
         logp = F.log_softmax(V, dim=1)
 
-        loss_choice = F.nll_loss(logp, choice, reduction="mean")
+        ll_choice = logp.gather(1, choice.view(-1, 1)).sum()
         if I_hat is None:
-            loss_meas = torch.tensor(0.0, device=obs_lt.device, dtype=loss_choice.dtype)
+            ll_meas = torch.tensor(0.0, device=obs_lt.device, dtype=ll_choice.dtype)
         else:
-            loss_meas = F.mse_loss(I_hat, indicators, reduction="mean")
-
-        loss = loss_choice + self.alpha * loss_meas
-        ll = logp.gather(1, choice.view(-1, 1)).sum()
+            ll_meas = -0.5 * torch.pow(I_hat - indicators, 2).sum()
+        total_loglik = ll_choice + self.alpha * ll_meas
+        loss_choice = -ll_choice
+        loss_meas = -ll_meas
+        loss = -total_loglik
         return {
             "loss": loss,
             "logp": logp,
@@ -104,7 +144,9 @@ class DeterministicICLV(nn.Module):
             "I_hat": I_hat,
             "loss_choice": loss_choice,
             "loss_meas": loss_meas,
-            "log_likelihood": ll,
+            "log_likelihood": total_loglik,
+            "loglik_choice_sum": ll_choice,
+            "loglik_meas_sum": ll_meas,
         }
 
 
@@ -132,7 +174,12 @@ def param_names(model: nn.Module) -> List[str]:
     return names
 
 
-def compute_hessian_stats(model: nn.Module, loss_closure: Callable[[], torch.Tensor]) -> HessianResult:
+def compute_hessian_stats(
+    model: nn.Module,
+    loss_closure: Callable[[], torch.Tensor],
+    n_samples: int | None = None,
+    ridge: float = 1e-6,
+) -> HessianResult:
     """Calcula Hessiano numerico, errores estandar y t-stats sobre la loss provista."""
     named_params = trainable_named_params(model)
     params: Sequence[nn.Parameter] = [p for _, p in named_params]
@@ -148,8 +195,10 @@ def compute_hessian_stats(model: nn.Module, loss_closure: Callable[[], torch.Ten
     # Restaurar parametros originales
     vector_to_parameters(flat_init, params)
 
+    if n_samples is not None and n_samples > 0:
+        H = H * float(n_samples)
     # Estabilizar inversion
-    eye = torch.eye(H.shape[0], device=H.device, dtype=H.dtype) * 1e-4
+    eye = torch.eye(H.shape[0], device=H.device, dtype=H.dtype) * float(ridge)
     H_safe = H + eye
     try:
         H_inv = torch.linalg.pinv(H_safe)
@@ -194,6 +243,8 @@ class MultimodalICLVDeterministic(nn.Module):
         self.alpha = float(alpha)
         self.n_indicators = int(n_indicators)
         self.n_choices = int(n_choices)
+        self.base_alt = 0
+        jm1 = self.n_choices - 1
         self.freeze_video = bool(freeze_video)
         self.freeze_audio = bool(freeze_audio)
 
@@ -216,12 +267,12 @@ class MultimodalICLVDeterministic(nn.Module):
         self.Lambda = nn.Linear(shared_dim, n_indicators) if n_indicators > 0 else None
 
         # Utility block (beta por alternativa)
-        self.beta = nn.Parameter(torch.zeros(n_choices, dim_obs_u))
+        self.beta = nn.Parameter(torch.zeros(jm1, dim_obs_u))
         if delta_per_alt:
-            self.delta = nn.Parameter(torch.zeros(n_choices, shared_dim))
+            self.delta = nn.Parameter(torch.zeros(jm1, shared_dim))
         else:
             self.delta = nn.Parameter(torch.zeros(shared_dim))
-        self.ASC = nn.Parameter(torch.zeros(n_choices))
+        self.ASC = nn.Parameter(torch.zeros(jm1))
 
         self._reset_parameters()
 
@@ -236,16 +287,37 @@ class MultimodalICLVDeterministic(nn.Module):
         nn.init.xavier_uniform_(self.beta)
         nn.init.zeros_(self.ASC)
         nn.init.zeros_(self.delta)
+        if self.Lambda is not None and self.Lambda.weight.numel() > 0:
+            with torch.no_grad():
+                self.Lambda.weight[0, 0] = 1.0
+            self.Lambda.weight.register_hook(self._freeze_lambda_anchor_grad)
+
+    def _freeze_lambda_anchor_grad(self, grad: torch.Tensor) -> torch.Tensor:
+        if grad is None or grad.numel() == 0:
+            return grad
+        grad = grad.clone()
+        grad[0, 0] = 0.0
+        return grad
 
     def compute_utilities(self, obs_u: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
         if obs_u.dim() != 3:
             raise ValueError(f"Se espera obs_u con shape [B, J, dim_obs_u]; se recibio {obs_u.shape}")
-        beta_term = (obs_u * self.beta.unsqueeze(0)).sum(dim=-1)  # [B, J]
+        B, J, _ = obs_u.shape
+        device = obs_u.device
+        dtype = obs_u.dtype
+        asc_full = torch.zeros(J, device=device, dtype=dtype)
+        if self.ASC.numel() > 0:
+            asc_full[1:] = self.ASC
+        beta_full = torch.zeros(J, obs_u.size(-1), device=device, dtype=dtype)
+        beta_full[1:, :] = self.beta
+        beta_term = (obs_u * beta_full.unsqueeze(0)).sum(dim=-1)
         if self.delta.dim() == 2:
-            delta_term = z @ self.delta.t()  # [B, J]
+            delta_full = torch.zeros(J, z.size(-1), device=device, dtype=dtype)
+            delta_full[1:, :] = self.delta
+            delta_term = z @ delta_full.t()
         else:
             delta_term = (z @ self.delta).unsqueeze(1).expand_as(beta_term)
-        asc_term = self.ASC.unsqueeze(0)
+        asc_term = asc_full.unsqueeze(0)
         return beta_term + delta_term + asc_term
 
     def forward(
@@ -266,19 +338,25 @@ class MultimodalICLVDeterministic(nn.Module):
             with torch.no_grad() if self.freeze_audio else torch.enable_grad():
                 z_aud = self.audio_enc(x_aud)
         z = torch.cat([z_tab, z_vid, z_aud], dim=1)
-        z = self.fuse(z)
+        z_mean = self.fuse(z)
+        if self.training:
+            z = z_mean + torch.randn_like(z_mean)
+        else:
+            z = z_mean
 
         I_hat = self.Lambda(z) if (self.Lambda is not None and self.n_indicators > 0) else None
         V = self.compute_utilities(obs_u, z)
         logp = F.log_softmax(V, dim=1)
 
-        loss_choice = F.nll_loss(logp, choice, reduction="mean")
+        ll_choice = logp.gather(1, choice.view(-1, 1)).sum()
         if I_hat is None:
-            loss_meas = torch.tensor(0.0, device=z.device, dtype=z.dtype)
+            ll_meas = torch.tensor(0.0, device=z.device, dtype=z.dtype)
         else:
-            loss_meas = F.mse_loss(I_hat, indicators, reduction="mean")
-        loss = loss_choice + self.alpha * loss_meas
-        ll = logp.gather(1, choice.view(-1, 1)).sum()
+            ll_meas = -0.5 * torch.pow(I_hat - indicators, 2).sum()
+        total_loglik = ll_choice + self.alpha * ll_meas
+        loss_choice = -ll_choice
+        loss_meas = -ll_meas
+        loss = -total_loglik
 
         return {
             "loss": loss,
@@ -287,7 +365,9 @@ class MultimodalICLVDeterministic(nn.Module):
             "logp": logp,
             "z": z,
             "I_hat": I_hat,
-            "log_likelihood": ll,
+            "log_likelihood": total_loglik,
+            "loglik_choice_sum": ll_choice,
+            "loglik_meas_sum": ll_meas,
         }
 
 

@@ -308,13 +308,28 @@ def main():
     ap = argparse.ArgumentParser(description="Entrena un ICLV determinista amortizado (sin integracion Monte Carlo).")
     ap.add_argument("--pkl", type=str, default="data/processed/multimodal_av_join_audio_cached.pkl", help="Pickle multimodal de entrada")
     ap.add_argument("--label-col", type=str, default="action_proc")
-    ap.add_argument("--features-file", type=str, default="utils/feature_sets/exp1.json", help="Archivo con columnas base")
+    ap.add_argument("--features-file", type=str, default=None, help="Archivo con columnas base (fallback)")
     ap.add_argument("--obs-lt-cols", nargs="*", default=None, help="Columnas observables para latentes")
-    ap.add_argument("--obs-lt-cols-file", type=str, default=None, help="Archivo con columnas OBS_LT (json/txt)")
+    ap.add_argument(
+        "--obs-lt-cols-file",
+        type=str,
+        default="utils/feature_sets/filtered_iclv/obs_lt.txt",
+        help="Archivo con columnas OBS_LT (json/txt)",
+    )
     ap.add_argument("--obs-u-cols", nargs="*", default=None, help="Columnas observables para utilidad")
-    ap.add_argument("--obs-u-cols-file", type=str, default=None, help="Archivo con columnas OBS_U (json/txt)")
+    ap.add_argument(
+        "--obs-u-cols-file",
+        type=str,
+        default="utils/feature_sets/filtered_iclv/obs_u.txt",
+        help="Archivo con columnas OBS_U (json/txt)",
+    )
     ap.add_argument("--indicator-cols", nargs="*", default=None, help="Indicadores OBS_I para el bloque de medicion")
-    ap.add_argument("--indicator-cols-file", type=str, default=None, help="Archivo con columnas OBS_I (json/txt)")
+    ap.add_argument(
+        "--indicator-cols-file",
+        type=str,
+        default="utils/feature_sets/filtered_iclv/obs_i.txt",
+        help="Archivo con columnas OBS_I (json/txt)",
+    )
     ap.add_argument("--n-latent", type=int, default=3, help="Numero de variables latentes")
     ap.add_argument("--alpha", type=float, default=1.0, help="Peso de la loss de medicion")
     ap.add_argument("--delta-shared", action="store_true", help="Usar un delta compartido en vez de por alternativa")
@@ -325,6 +340,7 @@ def main():
     ap.add_argument("--test-split", type=float, default=0.0)
     ap.add_argument("--participant-col", type=str, default="participant")
     ap.add_argument("--participant-frac", type=float, default=1.0, help="Fracción de participantes a usar")
+    ap.add_argument("--half-data", action="store_true", help="Usar 50% de las filas para acelerar")
     ap.add_argument("--device", type=str, default="cpu")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--tabular-scaler", type=str, default="standard", choices=["standard", "robust"])
@@ -334,6 +350,22 @@ def main():
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
+
+    if not args.obs_lt_cols and args.obs_lt_cols_file and not Path(args.obs_lt_cols_file).exists():
+        raise FileNotFoundError(
+            f"No existe obs_lt_cols_file: {args.obs_lt_cols_file}. "
+            "Genera el set filtrado en utils/feature_sets/filtered_iclv o pasa --obs-lt-cols."
+        )
+    if not args.obs_u_cols and args.obs_u_cols_file and not Path(args.obs_u_cols_file).exists():
+        raise FileNotFoundError(
+            f"No existe obs_u_cols_file: {args.obs_u_cols_file}. "
+            "Genera el set filtrado en utils/feature_sets/filtered_iclv o pasa --obs-u-cols."
+        )
+    if not args.indicator_cols and args.indicator_cols_file and not Path(args.indicator_cols_file).exists():
+        raise FileNotFoundError(
+            f"No existe indicator_cols_file: {args.indicator_cols_file}. "
+            "Genera el set filtrado en utils/feature_sets/filtered_iclv o pasa --indicator-cols."
+        )
 
     pkl_path = Path(args.pkl)
     if not pkl_path.exists():
@@ -407,6 +439,14 @@ def main():
         df[args.label_col] = df[args.label_col].map(default_class_map)
     if df[args.label_col].isna().any():
         df = df.dropna(subset=[args.label_col]).reset_index(drop=True)
+    if args.half_data:
+        parts = pd.Index(df[args.participant_col].dropna().unique())
+        if len(parts) > 0:
+            rng = np.random.RandomState(args.seed)
+            k = max(1, int(np.ceil(len(parts) * 0.5)))
+            keep_parts = rng.choice(parts, size=k, replace=False)
+            df = df[df[args.participant_col].isin(keep_parts)].reset_index(drop=True)
+            print(f"Subconjunto de participantes: {len(keep_parts)}/{len(parts)} (frac=0.5)")
     df[args.label_col] = df[args.label_col].astype(int)
     num_choices = int(pd.Series(df[args.label_col]).nunique())
 
@@ -533,6 +573,7 @@ def main():
         "tabular_scaler": args.tabular_scaler,
         "participant_col": args.participant_col,
         "participant_frac": args.participant_frac,
+        "half_data": args.half_data,
         "seed": args.seed,
         "device": str(device),
         "argv": sys.argv,
