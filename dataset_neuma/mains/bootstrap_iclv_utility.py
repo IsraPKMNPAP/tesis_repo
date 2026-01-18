@@ -33,13 +33,21 @@ def to_float_array(mat) -> np.ndarray:
 
 
 def prepare_preprocessor(
-    df: pd.DataFrame, cols: Sequence[str], scaler: str = "standard", cat_unique_threshold: int = 50
+    df: pd.DataFrame,
+    cols: Sequence[str],
+    scaler: str = "standard",
+    cat_unique_threshold: int = 50,
+    force_numeric: Sequence[str] | None = None,
 ):
     from sklearn.compose import ColumnTransformer
     from sklearn.preprocessing import OneHotEncoder, RobustScaler, StandardScaler
 
     df_prep = df[list(cols)].copy()
+    force_numeric = set(c.lower() for c in (force_numeric or []))
     for c in df_prep.columns:
+        if c in force_numeric:
+            df_prep[c] = pd.to_numeric(df_prep[c], errors="coerce")
+            continue
         if df_prep[c].dtype == object:
             df_prep[c] = df_prep[c].astype("category")
         else:
@@ -310,7 +318,13 @@ def main() -> None:
     X_lt_tr, preproc_lt = prepare_preprocessor(df_train, obs_lt_cols, scaler=scaler, cat_unique_threshold=cat_unique_threshold) if obs_lt_cols else (np.zeros((len(df_train), 0), dtype=np.float32), None)
     X_lt_all = to_float_array(preproc_lt.transform(df[obs_lt_cols].copy())) if obs_lt_cols else np.zeros((len(df), 0), dtype=np.float32)
 
-    X_u_tr, preproc_u = prepare_preprocessor(df_train, obs_u_cols, scaler=scaler, cat_unique_threshold=cat_unique_threshold)
+    X_u_tr, preproc_u = prepare_preprocessor(
+        df_train,
+        obs_u_cols,
+        scaler=scaler,
+        cat_unique_threshold=cat_unique_threshold,
+        force_numeric=["supermarketvisitduration"],
+    )
     X_u_all = to_float_array(preproc_u.transform(df[obs_u_cols].copy()))
     X_u_tr = to_float_array(X_u_tr)
     X_u_tr, mask = filter_low_variance(X_u_tr, min_var)
