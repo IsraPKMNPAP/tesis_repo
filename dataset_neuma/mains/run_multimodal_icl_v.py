@@ -52,6 +52,8 @@ def preprocess_block(
     force_numeric = set(c.lower() for c in (force_numeric or []))
     for c in cols:
         if c in force_numeric:
+            train_df[c] = pd.to_numeric(train_df[c], errors="coerce")
+            val_df[c] = pd.to_numeric(val_df[c], errors="coerce")
             num_cols.append(c)
         elif not ptypes.is_numeric_dtype(train_df[c]) or train_df[c].nunique(dropna=True) <= cat_unique_threshold:
             cat_cols.append(c)
@@ -233,6 +235,13 @@ def main():
     if "offer" in df.columns:
         offer = df["offer"].astype(str).str.strip().str.lower()
         df["offer"] = np.where(offer.isin(["no", "nan", "none", "0", "0.0", ""]), "no", "yes")
+    if "supermarketvisitduration" in df.columns:
+        print(
+            "[prep] supermarketvisitduration stats:",
+            df["supermarketvisitduration"].describe().to_dict(),
+        )
+    if "offer" in df.columns:
+        print("[prep] offer counts:", df["offer"].value_counts(dropna=False).to_dict())
 
     df = df.dropna(subset=[label_col, img_emb_col, eeg_emb_col])
 

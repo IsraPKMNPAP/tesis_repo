@@ -118,6 +118,7 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--by-subject", action="store_true", help="Bootstrap por sujeto.")
+    parser.add_argument("--beta-only", action="store_true", help="Resumir solo betas de utilidad.")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -240,6 +241,10 @@ def main() -> None:
         params.append(vec)
 
     samples = np.vstack(params)
+    if args.beta_only:
+        keep_idx = [i for i, n in enumerate(base_names) if n.startswith("beta")]
+        samples = samples[:, keep_idx]
+        base_names = [base_names[i] for i in keep_idx]
     summary = summarize_params(samples, base_names)
     out_path = args.iclv_dir / "bootstrap_param_summary.csv"
     summary.to_csv(out_path, index=False)
