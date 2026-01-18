@@ -69,14 +69,14 @@ def preprocess_block(
 
 
 def summarize_params(samples: np.ndarray, names: List[str]) -> pd.DataFrame:
-    mean = samples.mean(axis=0)
-    median = np.median(samples, axis=0)
-    mean_abs = np.mean(np.abs(samples), axis=0)
-    median_abs = np.median(np.abs(samples), axis=0)
-    p25 = np.percentile(samples, 25, axis=0)
-    p75 = np.percentile(samples, 75, axis=0)
+    mean = np.nanmean(samples, axis=0)
+    median = np.nanmedian(samples, axis=0)
+    mean_abs = np.nanmean(np.abs(samples), axis=0)
+    median_abs = np.nanmedian(np.abs(samples), axis=0)
+    p25 = np.nanpercentile(samples, 25, axis=0)
+    p75 = np.nanpercentile(samples, 75, axis=0)
     sign = np.sign(median)
-    sign_pct = np.mean(np.sign(samples) == np.sign(median), axis=0)
+    sign_pct = np.nanmean(np.sign(samples) == np.sign(median), axis=0)
     rows = []
     for i, name in enumerate(names):
         rows.append(
@@ -266,7 +266,10 @@ def main() -> None:
     if not ckpt_path.exists():
         ckpt_path = args.iclv_dir / "model_last.pt"
     if ckpt_path.exists():
-        ckpt = torch.load(ckpt_path, map_location=device)
+        try:
+            ckpt = torch.load(ckpt_path, map_location=device, weights_only=True)
+        except TypeError:
+            ckpt = torch.load(ckpt_path, map_location=device)
         base_model.load_state_dict(ckpt, strict=False)
     base_model.eval()
     base_params, base_names = expand_param_names(base_model)
@@ -333,9 +336,18 @@ def main() -> None:
 
         params_list, _ = expand_param_names(model)
         vec = torch.nn.utils.parameters_to_vector(params_list).detach().cpu().numpy()
+        if not np.isfinite(vec).all():
+            continue
         params.append(vec)
 
+    if not params:
+        raise ValueError("Bootstrap vacio: todas las replicas devolvieron NaN/Inf.")
     samples = np.vstack(params)
+    keep = np.isfinite(samples).all(axis=1)
+    if not np.all(keep):
+        dropped = int(np.sum(~keep))
+        print(f"[bootstrap][warn] dropped {dropped} replicas con NaN/Inf.")
+        samples = samples[keep]
     if args.beta_only and args.tabular_only:
         raise ValueError("--beta-only y --tabular-only son excluyentes.")
     if args.beta_only:
