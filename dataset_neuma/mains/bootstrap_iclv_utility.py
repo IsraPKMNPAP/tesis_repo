@@ -314,6 +314,7 @@ def main() -> None:
     X_u_all = to_float_array(preproc_u.transform(df[obs_u_cols].copy()))
     X_u_tr = to_float_array(X_u_tr)
     X_u_tr, mask = filter_low_variance(X_u_tr, min_var)
+    u_mask = mask
     if mask.size:
         X_u_all = X_u_all[:, mask]
     if obs_u_buy_only:
