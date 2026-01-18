@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from src.models.icl_v import DeterministicICLV, param_names
+from src.models.icl_v import DeterministicICLV
 from torch.nn.utils import parameters_to_vector
 from utils.features import load_features_file
 
@@ -101,6 +101,139 @@ def stars_for_t(t: float) -> str:
     if abs(t) >= 1.64:
         return "*"
     return ""
+
+
+def build_param_metadata(
+    model: DeterministicICLV,
+    feat_names_u: Sequence[str],
+    feat_names_lt: Sequence[str],
+    indicator_cols: Sequence[str],
+    n_choices: int,
+) -> tuple[List[torch.nn.Parameter], List[dict]]:
+    params: List[torch.nn.Parameter] = []
+    meta: List[dict] = []
+    base_alt = getattr(model, "base_alt", 0)
+    alt_list = [a for a in range(n_choices) if a != base_alt]
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        params.append(p)
+        if name == "beta" and model.beta_per_alt:
+            for alt_pos, alt in enumerate(alt_list):
+                for j, feat in enumerate(feat_names_u):
+                    meta.append(
+                        {
+                            "name": f"{name}[{alt_pos},{j}]",
+                            "block": "utility",
+                            "var_name": feat,
+                            "alt": alt,
+                            "latent": None,
+                        }
+                    )
+        elif name == "beta.weight" and not model.beta_per_alt:
+            for j, feat in enumerate(feat_names_u):
+                meta.append(
+                    {
+                        "name": f"{name}[0,{j}]",
+                        "block": "utility",
+                        "var_name": feat,
+                        "alt": "all",
+                        "latent": None,
+                    }
+                )
+        elif name == "delta":
+            if p.dim() == 2:
+                for alt_pos, alt in enumerate(alt_list):
+                    for lv in range(p.shape[1]):
+                        meta.append(
+                            {
+                                "name": f"{name}[{alt_pos},{lv}]",
+                                "block": "utility",
+                                "var_name": f"LV{lv}",
+                                "alt": alt,
+                                "latent": lv,
+                            }
+                        )
+            else:
+                for lv in range(p.numel()):
+                    meta.append(
+                        {
+                            "name": f"{name}[{lv}]",
+                            "block": "utility",
+                            "var_name": f"LV{lv}",
+                            "alt": "all",
+                            "latent": lv,
+                        }
+                    )
+        elif name == "ASC":
+            for alt_pos, alt in enumerate(alt_list):
+                meta.append(
+                    {
+                        "name": f"{name}[{alt_pos}]",
+                        "block": "utility",
+                        "var_name": "ASC",
+                        "alt": alt,
+                        "latent": None,
+                    }
+                )
+        elif name == "Gamma.weight":
+            for lv in range(p.shape[0]):
+                for j, feat in enumerate(feat_names_lt):
+                    meta.append(
+                        {
+                            "name": f"{name}[{lv},{j}]",
+                            "block": "structural",
+                            "var_name": feat,
+                            "alt": None,
+                            "latent": lv,
+                        }
+                    )
+        elif name == "Gamma.bias":
+            for lv in range(p.numel()):
+                meta.append(
+                    {
+                        "name": f"{name}[{lv}]",
+                        "block": "structural",
+                        "var_name": "intercept",
+                        "alt": None,
+                        "latent": lv,
+                    }
+                )
+        elif name == "Lambda.weight":
+            for i, ind_name in enumerate(indicator_cols):
+                for lv in range(p.shape[1]):
+                    meta.append(
+                        {
+                            "name": f"{name}[{i},{lv}]",
+                            "block": "measurement",
+                            "var_name": ind_name,
+                            "alt": None,
+                            "latent": lv,
+                        }
+                    )
+        elif name == "Lambda.bias":
+            for i, ind_name in enumerate(indicator_cols):
+                meta.append(
+                    {
+                        "name": f"{name}[{i}]",
+                        "block": "measurement",
+                        "var_name": ind_name,
+                        "alt": None,
+                        "latent": None,
+                    }
+                )
+        else:
+            for idx in range(p.numel()):
+                meta.append(
+                    {
+                        "name": f"{name}[{idx}]" if p.numel() > 1 else name,
+                        "block": "other",
+                        "var_name": name,
+                        "alt": None,
+                        "latent": None,
+                    }
+                )
+    return params, meta
 
 
 def main() -> None:
@@ -204,8 +337,23 @@ def main() -> None:
         delta_per_alt=bool(run_args.get("delta_per_alt", True)),
         beta_per_alt=bool(run_args.get("beta_per_alt", False)),
     ).to(device)
-
-    param_names_list = param_names(model_init)
+    try:
+        feat_names_u = list(preproc_u.get_feature_names_out(obs_u_cols))
+    except Exception:
+        feat_names_u = obs_u_cols
+    if u_mask is not None and len(u_mask):
+        feat_names_u = [n for n, keep in zip(feat_names_u, u_mask) if keep]
+    try:
+        feat_names_lt = list(preproc_lt.get_feature_names_out(obs_lt_cols)) if obs_lt_cols else []
+    except Exception:
+        feat_names_lt = obs_lt_cols
+    _, param_meta = build_param_metadata(
+        model_init,
+        feat_names_u,
+        feat_names_lt,
+        obs_i_cols,
+        n_choices,
+    )
     param_samples = []
 
     for b in range(args.n_bootstrap):
@@ -254,10 +402,14 @@ def main() -> None:
     tstat = mean / np.where(std == 0, np.nan, std)
 
     rows = []
-    for name, m, s, t in zip(param_names_list, mean, std, tstat):
+    for meta, m, s, t in zip(param_meta, mean, std, tstat):
         rows.append(
             {
-                "name": name,
+                "name": meta["name"],
+                "block": meta["block"],
+                "var_name": meta["var_name"],
+                "alt": meta["alt"],
+                "latent": meta["latent"],
                 "mean": float(m),
                 "std": float(s),
                 "tstat": float(t),
