@@ -117,6 +117,7 @@ def main() -> None:
     parser.add_argument("--max-iter", type=int, default=30)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--by-subject", action="store_true", help="Bootstrap por sujeto.")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -204,8 +205,15 @@ def main() -> None:
 
     params = []
     rng = np.random.default_rng(args.seed)
+    grouped = df.groupby("subject").indices if "subject" in df.columns else {}
+    unique_subjects = df["subject"].unique() if "subject" in df.columns else []
     for b in range(args.n_bootstrap):
-        idx = rng.choice(np.arange(len(df)), size=len(df), replace=True)
+        if args.by_subject and len(unique_subjects) > 0:
+            subs = rng.choice(unique_subjects, size=len(unique_subjects), replace=True)
+            idx_list = [grouped[s] for s in subs]
+            idx = np.concatenate(idx_list)
+        else:
+            idx = rng.choice(np.arange(len(df)), size=len(df), replace=True)
         obs_lt_b = torch.tensor(X_lt[idx], dtype=torch.float32, device=device)
         obs_u_b = torch.tensor(X_u[idx], dtype=torch.float32, device=device)
         if obs_u_buy_only:

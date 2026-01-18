@@ -608,6 +608,7 @@ def main():
                 {
                     "alt": alt,
                     "feature": feat,
+                    "var_name": feat,
                     "coef": float(coef),
                     "std": float(sd) if sd == sd else np.nan,
                     "tstat": float(tstat) if tstat == tstat else np.nan,
@@ -629,6 +630,9 @@ def main():
         "biogeme_diag": biogeme_diag,
     }
     save_metrics(metrics, run_dir)
+
+    if beta_stats:
+        pd.DataFrame(beta_stats).to_csv(run_dir / "utility_beta_stats.csv", index=False)
 
     if hess is not None:
         # Reemplazar nombres beta por nombres de features (utilidad)
