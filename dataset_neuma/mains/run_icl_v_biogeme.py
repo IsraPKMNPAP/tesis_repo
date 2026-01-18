@@ -9,6 +9,7 @@ import biogeme.database as db
 import biogeme.biogeme as bio
 from biogeme import models
 from biogeme.expressions import Beta, Variable, Draws, MonteCarlo, log, exp
+from sklearn.metrics import roc_auc_score, f1_score, accuracy_score
 
 
 def load_cols(path: Path) -> list[str]:
@@ -259,6 +260,42 @@ def main() -> None:
     out.to_csv(out_path, index=False)
     print(f"Saved params: {out_path}")
     print("General stats:", general)
+
+    # Prediccion + metricas
+    try:
+        beta_values = results.getBetaValues()
+        P1 = models.logit(V, av, 1)
+        sim = bio.BIOGEME(database, {"p1": P1}, number_of_draws=args.n_draws)
+        sim.model_name = "icl_v_biogeme_sim"
+        sim_res = sim.simulate(beta_values)
+        p1 = sim_res["p1"].to_numpy(dtype=float)
+        y = df[label_col].to_numpy(dtype=int)
+        p1 = np.clip(p1, 1e-9, 1 - 1e-9)
+        y_hat = (p1 >= 0.5).astype(int)
+        acc = float(accuracy_score(y, y_hat))
+        f1_macro = float(f1_score(y, y_hat, average="macro"))
+        auc = float(roc_auc_score(y, p1)) if len(np.unique(y)) > 1 else float("nan")
+        loglik = float(np.sum(y * np.log(p1) + (1 - y) * np.log(1 - p1)))
+        nll = float(-loglik / max(1, len(y)))
+        k = len(beta_values)
+        aic = float(2 * k - 2 * loglik)
+        bic = float(np.log(max(1, len(y))) * k - 2 * loglik)
+        metrics = {
+            "acc": acc,
+            "f1_macro": f1_macro,
+            "auc": auc,
+            "log_likelihood": loglik,
+            "mean_nll": nll,
+            "aic": aic,
+            "bic": bic,
+            "n_params": k,
+            "n_obs": int(len(y)),
+        }
+        metrics_path = args.results_dir / "biogeme_metrics.json"
+        pd.Series(metrics).to_json(metrics_path, indent=2, force_ascii=False)
+        print("Saved metrics:", metrics_path)
+    except Exception as exc:
+        print(f"[warn] no se pudieron calcular metricas predictivas: {exc}")
 
 
 if __name__ == "__main__":
