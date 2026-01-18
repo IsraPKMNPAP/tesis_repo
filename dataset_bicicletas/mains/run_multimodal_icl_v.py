@@ -302,6 +302,7 @@ def main():
     ap.add_argument("--device", type=str, default="cpu")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--participant-frac", type=float, default=1.0)
+    ap.add_argument("--half-data", action="store_true", help="Usar 50% de participantes para acelerar")
     ap.add_argument("--tabular-scaler", type=str, default="standard", choices=["standard", "robust"])
     # Video/audio paths
     ap.add_argument("--path-col", type=str, default="frames_route")
@@ -337,6 +338,14 @@ def main():
         keep_parts = rng.choice(parts, size=k, replace=False)
         df = df[df[args.participant_col].isin(keep_parts)].reset_index(drop=True)
         print(f"Subconjunto de participantes: {len(keep_parts)}/{len(parts)} (frac={args.participant_frac})")
+    if args.half_data:
+        parts = pd.Index(df[args.participant_col].dropna().unique())
+        if len(parts) > 0:
+            rng = np.random.RandomState(args.seed)
+            k = max(1, int(np.ceil(len(parts) * 0.5)))
+            keep_parts = rng.choice(parts, size=k, replace=False)
+            df = df[df[args.participant_col].isin(keep_parts)].reset_index(drop=True)
+            print(f"Subconjunto de participantes: {len(keep_parts)}/{len(parts)} (frac=0.5)")
 
     # Submuestreo de participantes
     if 0 < args.participant_frac < 1.0:
@@ -490,6 +499,7 @@ def main():
         "grad_clip": args.grad_clip,
         "participant_col": args.participant_col,
         "participant_frac": args.participant_frac,
+        "half_data": args.half_data,
         "argv": sys.argv,
     }
     run_hash = compute_run_hash(base_config, sys.argv, model="MM_ICLV")
