@@ -274,20 +274,34 @@ def main() -> None:
         y_hat = (p1 >= 0.5).astype(int)
         acc = float(accuracy_score(y, y_hat))
         f1_macro = float(f1_score(y, y_hat, average="macro"))
+        f1_pos = float(f1_score(y, y_hat, pos_label=1))
+        f1_neg = float(f1_score(y, y_hat, pos_label=0))
         auc = float(roc_auc_score(y, p1)) if len(np.unique(y)) > 1 else float("nan")
         loglik = float(np.sum(y * np.log(p1) + (1 - y) * np.log(1 - p1)))
-        nll = float(-loglik / max(1, len(y)))
+        nll = float(-loglik)
+        mean_nll = float(-loglik / max(1, len(y)))
         k = len(beta_values)
         aic = float(2 * k - 2 * loglik)
         bic = float(np.log(max(1, len(y))) * k - 2 * loglik)
+        p_null = y.mean()
+        p_null = float(min(max(p_null, 1e-9), 1 - 1e-9))
+        loglik_null = float(np.sum(y * np.log(p_null) + (1 - y) * np.log(1 - p_null)))
+        loglik_ratio = float(2 * (loglik - loglik_null))
+        pseudo_r2 = float(1 - (loglik / loglik_null)) if loglik_null != 0 else float("nan")
         metrics = {
             "acc": acc,
             "f1_macro": f1_macro,
+            "f1_pos": f1_pos,
+            "f1_neg": f1_neg,
             "auc": auc,
+            "nll": nll,
+            "mean_nll": mean_nll,
             "log_likelihood": loglik,
-            "mean_nll": nll,
             "aic": aic,
             "bic": bic,
+            "loglik_null": loglik_null,
+            "loglik_ratio": loglik_ratio,
+            "pseudo_r2": pseudo_r2,
             "n_params": k,
             "n_obs": int(len(y)),
         }
