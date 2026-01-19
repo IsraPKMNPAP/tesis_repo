@@ -16,6 +16,12 @@ except Exception:
     from biogeme.expressions import bioDraws as Draws
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 
+# Ensure package root on path when running from dataset_bicicletas
+ROOT = Path(__file__).resolve().parent.parent
+import sys
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from utils.splits import split_by_participant
 
 
