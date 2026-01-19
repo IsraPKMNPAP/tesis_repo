@@ -176,6 +176,8 @@ def main() -> None:
             obs_lt_cols = obs_lt_cols[: args.max_obs_lt]
         if args.max_obs_u and args.max_obs_u > 0:
             obs_u_cols = obs_u_cols[: args.max_obs_u]
+        if args.limit_blocks and args.max_obs_i and args.max_obs_i > 0:
+            obs_i_cols = obs_i_cols[: args.max_obs_i]
         if args.minimal:
             print(f"[biogeme] minimal obs_lt={len(obs_lt_cols)} obs_u={len(obs_u_cols)} obs_i={len(obs_i_cols)}")
         else:
