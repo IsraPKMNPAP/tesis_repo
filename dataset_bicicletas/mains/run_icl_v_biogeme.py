@@ -254,6 +254,12 @@ def main() -> None:
         max_diff = float(np.max(np.abs(obs_u_rep - obs_u_rep[:, :1, :])))
         print(f"[biogeme] max |obs_u - obs_u_alt0| = {max_diff:.6f}")
 
+    print("\n[diag] Chequeo de variacion de obs_u por alternativa")
+    for c in obs_u_cols:
+        vals = df_tr[c].to_numpy(dtype=float)
+        max_diff = float(np.max(vals) - np.min(vals)) if len(vals) else 0.0
+        print(f"  {c:30s} | range = {max_diff: .6f}")
+
     # Remove participant from modeling data (keep only for split)
     if args.participant_col in df_tr.columns:
         df_tr = df_tr.drop(columns=[args.participant_col])
@@ -386,9 +392,19 @@ def main() -> None:
         out_rows.append({"name": name, "beta": betas[name], "std": std_val, "tstat": t_val, "pval": p_val})
     out = pd.DataFrame(out_rows)
 
+    def _normalize_col(name: str) -> str:
+        import re
+
+        return re.sub(r"[^a-z0-9]+", "", name.lower())
+
     if est_params is not None:
         try:
-            est = est_params if isinstance(est_params, pd.DataFrame) else pd.DataFrame(est_params)
+            if isinstance(est_params, pd.DataFrame):
+                est = est_params.copy()
+            elif hasattr(est_params, "data"):
+                est = pd.DataFrame(est_params.data)
+            else:
+                est = pd.DataFrame(est_params)
             if isinstance(est.index, pd.Index) and est.index.name:
                 est = est.reset_index()
             est.columns = [c.lower().strip().replace(" ", "_") for c in est.columns]
@@ -401,15 +417,17 @@ def main() -> None:
                         break
             if "parameter" in est.columns:
                 est = est.set_index("parameter")
-                col_map = {
-                    "beta": ["value", "estimate", "estimated_value"],
-                    "std": ["std_err", "std_error", "robust_std_err", "robust_std_err.", "std_err."],
-                    "tstat": ["t_test", "t_stat", "tstat", "robust_t_stat", "robust_t-stat.", "t_test."],
-                    "pval": ["p_value", "pval", "robust_p_value", "robust_p-value", "p_value."],
+                norm_map = {_normalize_col(c): c for c in est.columns}
+                col_candidates = {
+                    "beta": ["value", "estimate", "estimatedvalue"],
+                    "std": ["stderr", "std_err", "standarderror", "robuststderr", "robuststderror"],
+                    "tstat": ["tstat", "t_test", "ttest", "tvalue", "robusttstat", "robustttest"],
+                    "pval": ["pval", "p_value", "pvalue", "robustpval", "robustpvalue"],
                 }
-                for dst, candidates in col_map.items():
-                    for src in candidates:
-                        if src in est.columns:
+                for dst, candidates in col_candidates.items():
+                    for key in candidates:
+                        if key in norm_map:
+                            src = norm_map[key]
                             out[dst] = out[dst].fillna(out["name"].map(est[src]))
                             break
             else:
