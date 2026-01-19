@@ -11,6 +11,7 @@ from biogeme import models
 from biogeme.expressions import Beta, Variable, Draws, MonteCarlo, log, exp
 from sklearn.metrics import roc_auc_score, f1_score, accuracy_score
 
+from utils.splits import split_by_subject_train_val_test, save_split_info
 
 def load_cols(path: Path) -> list[str]:
     return [c.strip().lower() for c in path.read_text().splitlines() if c.strip()]
@@ -87,6 +88,9 @@ def main() -> None:
     parser.add_argument("--max-obs-lt", type=int, default=0, help="Max columnas obs_lt si --minimal (0 = todas).")
     parser.add_argument("--optimizer", type=str, default="BFGS", help="Algoritmo de optimizacion Biogeme.")
     parser.add_argument("--results-dir", type=Path, default=Path("./results/icl_v_biogeme"))
+    parser.add_argument("--val-frac", type=float, default=0.2)
+    parser.add_argument("--test-frac", type=float, default=0.2)
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
     df = pd.read_csv(args.data)
@@ -116,14 +120,33 @@ def main() -> None:
         df, obs_i_cols, prefix="i_", cat_unique_threshold=args.cat_unique_threshold, standardize_numeric=args.standardize_numeric_only
     )
 
+    if "subject" not in df.columns and "id_sub" in df.columns:
+        df["subject"] = df["id_sub"].astype(str)
+    if "subject" not in df.columns:
+        raise ValueError("Se requiere columna 'subject' para split por sujeto.")
+
     # Coerce numeric + drop NaN en columnas relevantes
-    keep_cols = [label_col] + obs_lt_cols + obs_u_cols + obs_i_cols
+    keep_cols = ["subject", label_col] + obs_lt_cols + obs_u_cols + obs_i_cols
     df = df[keep_cols].copy()
     for c in keep_cols:
+        if c == "subject":
+            continue
         df[c] = pd.to_numeric(df[c], errors="coerce")
     df = df.dropna().reset_index(drop=True)
 
-    database = db.Database("neuma", df)
+    train_df, val_df, test_df, split_info = split_by_subject_train_val_test(
+        df, subject_col="subject", val_frac=args.val_frac, test_frac=args.test_frac, seed=args.seed
+    )
+    print(
+        f"[split] subjects={split_info['n_subjects']} train={split_info['n_train_subjects']} "
+        f"val={split_info['n_val_subjects']} test={split_info['n_test_subjects']} | "
+        f"rows train={split_info['train_rows']} val={split_info['val_rows']} test={split_info['test_rows']}"
+    )
+
+    def to_db(sub_df: pd.DataFrame) -> db.Database:
+        return db.Database("neuma", sub_df.drop(columns=["subject"]))
+
+    database = to_db(train_df)
 
     # Variables
     Choice = Variable(label_col)
@@ -268,49 +291,57 @@ def main() -> None:
             raise RuntimeError("No se pudieron leer betas para simulacion.")
         P1 = models.logit(V, av, 1)
         P1_mc = MonteCarlo(P1)
-        sim = bio.BIOGEME(database, {"p1": P1_mc}, number_of_draws=args.n_draws)
-        sim.model_name = "icl_v_biogeme_sim"
-        sim_res = sim.simulate(beta_values)
-        p1 = sim_res["p1"].to_numpy(dtype=float)
-        y = df[label_col].to_numpy(dtype=int)
-        p1 = np.clip(p1, 1e-9, 1 - 1e-9)
-        y_hat = (p1 >= 0.5).astype(int)
-        acc = float(accuracy_score(y, y_hat))
-        f1_macro = float(f1_score(y, y_hat, average="macro"))
-        f1_pos = float(f1_score(y, y_hat, pos_label=1))
-        f1_neg = float(f1_score(y, y_hat, pos_label=0))
-        auc = float(roc_auc_score(y, p1)) if len(np.unique(y)) > 1 else float("nan")
-        loglik = float(np.sum(y * np.log(p1) + (1 - y) * np.log(1 - p1)))
-        nll = float(-loglik)
-        mean_nll = float(-loglik / max(1, len(y)))
-        k = len(beta_values)
-        aic = float(2 * k - 2 * loglik)
-        bic = float(np.log(max(1, len(y))) * k - 2 * loglik)
-        p_null = y.mean()
-        p_null = float(min(max(p_null, 1e-9), 1 - 1e-9))
-        loglik_null = float(np.sum(y * np.log(p_null) + (1 - y) * np.log(1 - p_null)))
-        loglik_ratio = float(2 * (loglik - loglik_null))
-        pseudo_r2 = float(1 - (loglik / loglik_null)) if loglik_null != 0 else float("nan")
+        def split_metrics(sub_df: pd.DataFrame) -> dict:
+            sim = bio.BIOGEME(to_db(sub_df), {"p1": P1_mc}, number_of_draws=args.n_draws)
+            sim.model_name = "icl_v_biogeme_sim"
+            sim_res = sim.simulate(beta_values)
+            p1 = sim_res["p1"].to_numpy(dtype=float)
+            y = sub_df[label_col].to_numpy(dtype=int)
+            p1 = np.clip(p1, 1e-9, 1 - 1e-9)
+            y_hat = (p1 >= 0.5).astype(int)
+            acc = float(accuracy_score(y, y_hat))
+            f1_macro = float(f1_score(y, y_hat, average="macro"))
+            f1_pos = float(f1_score(y, y_hat, pos_label=1))
+            f1_neg = float(f1_score(y, y_hat, pos_label=0))
+            auc = float(roc_auc_score(y, p1)) if len(np.unique(y)) > 1 else float("nan")
+            loglik = float(np.sum(y * np.log(p1) + (1 - y) * np.log(1 - p1)))
+            nll = float(-loglik)
+            mean_nll = float(-loglik / max(1, len(y)))
+            k = len(beta_values)
+            aic = float(2 * k - 2 * loglik)
+            bic = float(np.log(max(1, len(y))) * k - 2 * loglik)
+            p_null = y.mean()
+            p_null = float(min(max(p_null, 1e-9), 1 - 1e-9))
+            loglik_null = float(np.sum(y * np.log(p_null) + (1 - y) * np.log(1 - p_null)))
+            loglik_ratio = float(2 * (loglik - loglik_null))
+            pseudo_r2 = float(1 - (loglik / loglik_null)) if loglik_null != 0 else float("nan")
+            return {
+                "acc": acc,
+                "f1_macro": f1_macro,
+                "f1_pos": f1_pos,
+                "f1_neg": f1_neg,
+                "auc": auc,
+                "nll": nll,
+                "mean_nll": mean_nll,
+                "log_likelihood": loglik,
+                "aic": aic,
+                "bic": bic,
+                "loglik_null": loglik_null,
+                "loglik_ratio": loglik_ratio,
+                "pseudo_r2": pseudo_r2,
+                "n_params": k,
+                "n_obs": int(len(y)),
+            }
+
         metrics = {
-            "acc": acc,
-            "f1_macro": f1_macro,
-            "f1_pos": f1_pos,
-            "f1_neg": f1_neg,
-            "auc": auc,
-            "nll": nll,
-            "mean_nll": mean_nll,
-            "log_likelihood": loglik,
-            "aic": aic,
-            "bic": bic,
-            "loglik_null": loglik_null,
-            "loglik_ratio": loglik_ratio,
-            "pseudo_r2": pseudo_r2,
-            "n_params": k,
-            "n_obs": int(len(y)),
+            "train": split_metrics(train_df),
+            "val": split_metrics(val_df),
+            "test": split_metrics(test_df),
         }
         metrics_path = args.results_dir / "biogeme_metrics.json"
         pd.Series(metrics).to_json(metrics_path, indent=2, force_ascii=False)
         print("Saved metrics:", metrics_path)
+        save_split_info(split_info, args.results_dir)
     except Exception as exc:
         print(f"[warn] no se pudieron calcular metricas predictivas: {exc}")
 
