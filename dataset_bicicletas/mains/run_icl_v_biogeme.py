@@ -136,6 +136,7 @@ def main() -> None:
     parser.add_argument("--val-split", type=float, default=0.2)
     parser.add_argument("--test-split", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--half-data", action="store_true", help="Usar 50% de participantes para acelerar")
     parser.add_argument("--n-draws", type=int, default=200)
     parser.add_argument("--n-latent", type=int, default=1)
     parser.add_argument("--cat-unique-threshold", type=int, default=10)
@@ -146,6 +147,7 @@ def main() -> None:
     parser.add_argument("--max-obs-lt", type=int, default=0)
     parser.add_argument("--optimizer", type=str, default="BFGS")
     parser.add_argument("--results-dir", type=Path, default=Path("results/icl_v_biogeme"))
+    parser.add_argument("--model-name", type=str, default="icl_v_biogeme")
     args = parser.parse_args()
 
     data_path = args.data
@@ -202,6 +204,16 @@ def main() -> None:
         if c == label_col:
             df[c] = pd.to_numeric(df[c], errors="coerce")
     df = df.dropna(subset=[label_col]).reset_index(drop=True)
+    # Optional: reduce to half of participants before split
+    if args.half_data and args.participant_col in df.columns:
+        parts = pd.Index(df[args.participant_col].dropna().unique())
+        if len(parts) > 0:
+            rng = np.random.default_rng(args.seed)
+            k = max(1, int(np.ceil(len(parts) * 0.5)))
+            keep_parts = rng.choice(parts, size=k, replace=False)
+            df = df[df[args.participant_col].isin(keep_parts)].reset_index(drop=True)
+            print(f"[biogeme] subset participants: {len(keep_parts)}/{len(parts)} (frac=0.5)")
+
     # Split by participant before estimation
     if args.participant_col in df.columns:
         df_tr, df_val, df_te, split_info = split_by_participant(
@@ -305,7 +317,7 @@ def main() -> None:
     args.results_dir.mkdir(parents=True, exist_ok=True)
     biogeme = bio.BIOGEME(database, logprob, number_of_draws=args.n_draws)
     biogeme.algorithm = args.optimizer
-    biogeme.model_name = "icl_v_biogeme"
+    biogeme.model_name = args.model_name
     results = biogeme.estimate()
 
     def get_with_fallback(obj, names):
