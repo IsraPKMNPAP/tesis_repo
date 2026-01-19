@@ -190,6 +190,14 @@ def main() -> None:
         df_te[label_col] = df_te[label_col].map(mapping).astype(int)
     n_choices = len(uniq)
 
+    # Remove participant from modeling data (keep only for split)
+    if args.participant_col in df_tr.columns:
+        df_tr = df_tr.drop(columns=[args.participant_col])
+    if args.participant_col in df_val.columns:
+        df_val = df_val.drop(columns=[args.participant_col])
+    if args.participant_col in df_te.columns:
+        df_te = df_te.drop(columns=[args.participant_col])
+
     # Save filtered input for traceability
     args.results_dir.mkdir(parents=True, exist_ok=True)
     filtered_path = args.results_dir / "biogeme_input_filtered.csv"
