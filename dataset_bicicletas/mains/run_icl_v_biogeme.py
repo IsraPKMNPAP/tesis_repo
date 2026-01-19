@@ -318,12 +318,12 @@ def main() -> None:
     # Utilities (base alt=0), per-alt betas to match ICLV
     V = {0: 0}
     beta_u_generic = [Beta(f"beta_{c}", 0, None, None, 0) for c in obs_u_cols]
+    delta_generic = [Beta(f"delta_lv_{k}", 0, None, None, 0) for k in range(args.n_latent)]
     for alt in range(1, n_choices):
         asc = Beta(f"ASC_{alt}", 0, None, None, 0)
-        delta = [Beta(f"delta_{alt}_lv_{k}", 0, None, None, 0) for k in range(args.n_latent)]
         util = asc + sum(b * x for b, x in zip(beta_u_generic, obs_u_vars))
         if LVs:
-            util += sum(d * lv for d, lv in zip(delta, LVs))
+            util += sum(d * lv for d, lv in zip(delta_generic, LVs))
         V[alt] = util
     av = {k: 1 for k in V.keys()}
     P = models.logit(V, av, Choice)
