@@ -61,6 +61,15 @@ def expand_categoricals(
                 df[c] = (col - mu) / sd
             else:
                 df[c] = col - mu
+    # Impute numeric (mean) and categorical (mode) before one-hot
+    for c in num_cols:
+        col = pd.to_numeric(df[c], errors="coerce")
+        mu = col.mean()
+        df[c] = col.fillna(mu)
+    for c in cat_cols:
+        mode = df[c].mode(dropna=True)
+        fill_val = mode.iloc[0] if len(mode) else "missing"
+        df[c] = df[c].fillna(fill_val)
     if not cat_cols:
         return df, cols
     dummies = pd.get_dummies(df[cat_cols].astype(str), prefix=[f"{prefix}{c}" for c in cat_cols], drop_first=True)
@@ -80,7 +89,7 @@ def main() -> None:
     parser.add_argument("--n-draws", type=int, default=200)
     parser.add_argument("--n-latent", type=int, default=1)
     parser.add_argument("--cat-unique-threshold", type=int, default=10)
-    parser.add_argument("--standardize-numeric-only", action="store_true")
+    parser.add_argument("--standardize-numeric-only", action="store_true", default=True)
     parser.add_argument("--minimal", action="store_true")
     parser.add_argument("--max-obs-u", type=int, default=5)
     parser.add_argument("--max-obs-i", type=int, default=1)
