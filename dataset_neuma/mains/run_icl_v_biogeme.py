@@ -42,13 +42,18 @@ def expand_categoricals(
     prefix: str,
     cat_unique_threshold: int,
     standardize_numeric: bool,
+    force_numeric: list[str] | None = None,
 ) -> tuple[pd.DataFrame, list[str]]:
     if not cols:
         return df, cols
     cat_cols = []
     num_cols = []
+    force_numeric = set(c.lower() for c in (force_numeric or []))
     for c in cols:
-        if not pd.api.types.is_numeric_dtype(df[c]) or df[c].nunique(dropna=True) <= cat_unique_threshold:
+        if c in force_numeric:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+            num_cols.append(c)
+        elif not pd.api.types.is_numeric_dtype(df[c]) or df[c].nunique(dropna=True) <= cat_unique_threshold:
             cat_cols.append(c)
         else:
             num_cols.append(c)
@@ -109,15 +114,54 @@ def main() -> None:
         obs_i_cols = obs_i_cols[: args.max_obs_i]
         print(f"[biogeme] minimal obs_lt={len(obs_lt_cols)} obs_u={len(obs_u_cols)} obs_i={len(obs_i_cols)}")
 
+    # Normalizar supermarketvisitduration a numerico (minutos) antes del one-hot
+    if "supermarketvisitduration" in df.columns:
+        s = (
+            df["supermarketvisitduration"]
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            .str.replace("-", "-", regex=False)
+        )
+        mapping = {
+            "<15 minutes": 10,
+            "< 15 minutes": 10,
+            "30-60 minutes": 45,
+            ">60 minutes": 70,
+            "nan": np.nan,
+            "none": np.nan,
+            "": np.nan,
+        }
+        mapped = s.map(mapping)
+        numeric_fallback = pd.to_numeric(df["supermarketvisitduration"], errors="coerce")
+        df["supermarketvisitduration"] = mapped.combine_first(numeric_fallback)
+        if df["supermarketvisitduration"].isna().any():
+            df["supermarketvisitduration"] = df["supermarketvisitduration"].fillna(
+                df["supermarketvisitduration"].median()
+            )
+
     # Convertir categóricas a dummies (Biogeme requiere float)
     df, obs_lt_cols = expand_categoricals(
-        df, obs_lt_cols, prefix="lt_", cat_unique_threshold=args.cat_unique_threshold, standardize_numeric=args.standardize_numeric_only
+        df,
+        obs_lt_cols,
+        prefix="lt_",
+        cat_unique_threshold=args.cat_unique_threshold,
+        standardize_numeric=args.standardize_numeric_only,
     )
     df, obs_u_cols = expand_categoricals(
-        df, obs_u_cols, prefix="u_", cat_unique_threshold=args.cat_unique_threshold, standardize_numeric=args.standardize_numeric_only
+        df,
+        obs_u_cols,
+        prefix="u_",
+        cat_unique_threshold=args.cat_unique_threshold,
+        standardize_numeric=args.standardize_numeric_only,
+        force_numeric=["supermarketvisitduration"],
     )
     df, obs_i_cols = expand_categoricals(
-        df, obs_i_cols, prefix="i_", cat_unique_threshold=args.cat_unique_threshold, standardize_numeric=args.standardize_numeric_only
+        df,
+        obs_i_cols,
+        prefix="i_",
+        cat_unique_threshold=args.cat_unique_threshold,
+        standardize_numeric=args.standardize_numeric_only,
     )
 
     if "subject" not in df.columns and "id_sub" in df.columns:
