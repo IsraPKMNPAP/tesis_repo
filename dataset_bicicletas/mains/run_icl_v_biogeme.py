@@ -8,7 +8,12 @@ import pandas as pd
 import biogeme.database as db
 import biogeme.biogeme as bio
 from biogeme import models
-from biogeme.expressions import Beta, Variable, Draws, MonteCarlo, log, exp
+from biogeme.expressions import Beta, Variable, MonteCarlo, log, exp
+try:
+    from biogeme.expressions import Draws
+except Exception:
+    # Newer biogeme exposes draw expressions as bioDraws
+    from biogeme.expressions import bioDraws as Draws
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 
 from utils.splits import split_by_participant
