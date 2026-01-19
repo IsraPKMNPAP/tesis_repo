@@ -94,6 +94,37 @@ def expand_categoricals(
     return df, new_cols
 
 
+def sanitize_columns(df: pd.DataFrame, cols: list[str], label: str) -> tuple[pd.DataFrame, list[str]]:
+    """Make column names safe for Biogeme variables and Betas."""
+    import re
+
+    def _safe(name: str) -> str:
+        s = re.sub(r"[^0-9a-zA-Z_]+", "_", name).strip("_")
+        if not s:
+            s = "col"
+        if s[0].isdigit():
+            s = f"c_{s}"
+        return s
+
+    mapping = {}
+    used = set(df.columns)
+    for c in cols:
+        safe = _safe(c)
+        base = safe
+        k = 1
+        while safe in used and safe != c:
+            safe = f"{base}_{k}"
+            k += 1
+        mapping[c] = safe
+        used.add(safe)
+    if mapping:
+        df = df.rename(columns=mapping)
+    renamed = [mapping.get(c, c) for c in cols]
+    if mapping:
+        print(f"[biogeme] sanitized {label} names (sample): {list(mapping.items())[:5]}")
+    return df, renamed
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="ICLV en Biogeme (dataset_bicicletas).")
     parser.add_argument("--data", type=Path, required=True, help="CSV o PKL con dataset.")
@@ -158,6 +189,10 @@ def main() -> None:
     df, obs_i_cols = expand_categoricals(
         df, obs_i_cols, prefix="i_", cat_unique_threshold=args.cat_unique_threshold, standardize_numeric=args.standardize_numeric_only
     )
+    # Sanitize names for Biogeme
+    df, obs_lt_cols = sanitize_columns(df, obs_lt_cols, "obs_lt")
+    df, obs_u_cols = sanitize_columns(df, obs_u_cols, "obs_u")
+    df, obs_i_cols = sanitize_columns(df, obs_i_cols, "obs_i")
 
     # Coerce numeric + drop NaN in relevant columns
     keep_cols = [label_col, args.participant_col] + obs_lt_cols + obs_u_cols + obs_i_cols
