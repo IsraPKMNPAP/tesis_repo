@@ -385,20 +385,22 @@ def main() -> None:
         p_val = pval[name] if pval is not None and name in pval else np.nan
         out_rows.append({"name": name, "beta": betas[name], "std": std_val, "tstat": t_val, "pval": p_val})
     out = pd.DataFrame(out_rows)
+
     if est_params is not None:
         try:
             est = est_params if isinstance(est_params, pd.DataFrame) else pd.DataFrame(est_params)
             est.columns = [c.lower().strip().replace(" ", "_") for c in est.columns]
             if "parameter" not in est.columns and "name" in est.columns:
                 est = est.rename(columns={"name": "parameter"})
-            if "value" in est.columns and "parameter" in est.columns:
+            if "parameter" in est.columns:
                 est = est.set_index("parameter")
-                col_candidates = {
-                    "std": ["std_err", "robust_std_err.", "robust_std_err", "std_err."],
-                    "tstat": ["t_test", "robust_t-stat.", "robust_t_stat", "t_stat", "t_test."],
-                    "pval": ["p_value", "robust_p-value", "robust_p_value", "p_value."],
+                col_map = {
+                    "beta": ["value", "estimate", "estimated_value"],
+                    "std": ["std_err", "std_error", "robust_std_err", "robust_std_err.", "std_err."],
+                    "tstat": ["t_test", "t_stat", "tstat", "robust_t_stat", "robust_t-stat.", "t_test."],
+                    "pval": ["p_value", "pval", "robust_p_value", "robust_p-value", "p_value."],
                 }
-                for dst, candidates in col_candidates.items():
+                for dst, candidates in col_map.items():
                     for src in candidates:
                         if src in est.columns:
                             out[dst] = out[dst].fillna(out["name"].map(est[src]))
@@ -407,6 +409,10 @@ def main() -> None:
                 print("[warn] estimated_parameters columns:", est.columns.tolist())
         except Exception as exc:
             print(f"[warn] failed to parse estimated_parameters: {exc}")
+
+    for c in ["beta", "std", "tstat", "pval"]:
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
 
     if "stars" not in out.columns:
         out["stars"] = out["pval"].apply(stars_from_p)
