@@ -139,6 +139,7 @@ def main() -> None:
     parser.add_argument("--test-split", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--half-data", action="store_true", help="Usar 50% de participantes para acelerar")
+    parser.add_argument("--data-frac", type=float, default=None, help="Fraccion de participantes a usar (0-1).")
     parser.add_argument("--n-draws", type=int, default=200)
     parser.add_argument("--n-latent", type=int, default=1)
     parser.add_argument("--cat-unique-threshold", type=int, default=10)
@@ -207,14 +208,17 @@ def main() -> None:
             df[c] = pd.to_numeric(df[c], errors="coerce")
     df = df.dropna(subset=[label_col]).reset_index(drop=True)
     # Optional: reduce to half of participants before split
-    if args.half_data and args.participant_col in df.columns:
+    frac = args.data_frac
+    if args.half_data:
+        frac = 0.5
+    if frac is not None and args.participant_col in df.columns:
         parts = pd.Index(df[args.participant_col].dropna().unique())
         if len(parts) > 0:
             rng = np.random.default_rng(args.seed)
-            k = max(1, int(np.ceil(len(parts) * 0.5)))
+            k = max(1, int(np.ceil(len(parts) * float(frac))))
             keep_parts = rng.choice(parts, size=k, replace=False)
             df = df[df[args.participant_col].isin(keep_parts)].reset_index(drop=True)
-            print(f"[biogeme] subset participants: {len(keep_parts)}/{len(parts)} (frac=0.5)")
+            print(f"[biogeme] subset participants: {len(keep_parts)}/{len(parts)} (frac={float(frac)})")
 
     # Split by participant before estimation
     if args.participant_col in df.columns:
@@ -396,7 +400,7 @@ def main() -> None:
         split_db = db.Database(f"dataset_bicicletas_{split_name}", split_df)
         probs = {f"p{alt}": models.logit(V, av, alt) for alt in V.keys()}
         sim = bio.BIOGEME(split_db, {k: MonteCarlo(v) for k, v in probs.items()}, number_of_draws=args.n_draws)
-        sim.model_name = f"icl_v_biogeme_sim_{split_name}"
+        sim.model_name = f"{args.model_name}_sim_{split_name}"
         sim_res = sim.simulate(beta_values)
         p_mat = np.stack([sim_res[f"p{alt}"].to_numpy(dtype=float) for alt in sorted(V.keys())], axis=1)
         y = split_df[label_col].to_numpy(dtype=int)
