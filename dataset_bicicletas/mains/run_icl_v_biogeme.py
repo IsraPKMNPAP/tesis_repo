@@ -332,11 +332,17 @@ def main() -> None:
             log_pdf = -0.5 * (np.log(2 * np.pi) + 2 * log(sigma) + z * z)
             meas_loglik += log_pdf
 
-    integrand = P * exp(meas_loglik) if not args.mnl_only else P
-    logprob = log(MonteCarlo(integrand))
+    if args.mnl_only:
+        logprob = log(P)
+    else:
+        integrand = P * exp(meas_loglik)
+        logprob = log(MonteCarlo(integrand))
 
     args.results_dir.mkdir(parents=True, exist_ok=True)
-    biogeme = bio.BIOGEME(database, logprob, number_of_draws=args.n_draws)
+    if args.mnl_only:
+        biogeme = bio.BIOGEME(database, logprob)
+    else:
+        biogeme = bio.BIOGEME(database, logprob, number_of_draws=args.n_draws)
     biogeme.algorithm = args.optimizer
     biogeme.model_name = args.model_name
     print(f"[biogeme] estimating model '{args.model_name}' (draws={args.n_draws}, optimizer={args.optimizer})")
@@ -414,7 +420,10 @@ def main() -> None:
             return {}
         split_db = db.Database(f"dataset_bicicletas_{split_name}", split_df)
         probs = {f"p{alt}": models.logit(V, av, alt) for alt in V.keys()}
-        sim = bio.BIOGEME(split_db, {k: MonteCarlo(v) for k, v in probs.items()}, number_of_draws=args.n_draws)
+        if args.mnl_only:
+            sim = bio.BIOGEME(split_db, probs)
+        else:
+            sim = bio.BIOGEME(split_db, {k: MonteCarlo(v) for k, v in probs.items()}, number_of_draws=args.n_draws)
         sim.model_name = f"{args.model_name}_sim_{split_name}"
         sim_res = sim.simulate(beta_values)
         p_mat = np.stack([sim_res[f"p{alt}"].to_numpy(dtype=float) for alt in sorted(V.keys())], axis=1)
