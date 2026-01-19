@@ -96,6 +96,7 @@ def main() -> None:
     parser.add_argument("--val-frac", type=float, default=0.2)
     parser.add_argument("--test-frac", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--drop-supermarketvisitduration", action="store_true", help="Elimina supermarketvisitduration del modelo.")
     args = parser.parse_args()
 
     df = pd.read_csv(args.data)
@@ -107,6 +108,9 @@ def main() -> None:
     obs_lt_cols = warn_missing(df, load_cols(args.obs_lt_cols), "obs_lt")
     obs_u_cols = warn_missing(df, load_cols(args.obs_u_cols), "obs_u")
     obs_i_cols = warn_missing(df, load_cols(args.obs_i_cols), "obs_i")
+    if args.drop_supermarketvisitduration:
+        obs_u_cols = [c for c in obs_u_cols if c != "supermarketvisitduration"]
+        print("[biogeme] drop supermarketvisitduration from obs_u")
     if args.minimal:
         if args.max_obs_lt and args.max_obs_lt > 0:
             obs_lt_cols = obs_lt_cols[: args.max_obs_lt]
