@@ -11,6 +11,8 @@ from biogeme import models
 from biogeme.expressions import Beta, Variable, Draws, MonteCarlo, log, exp
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 
+from utils.splits import split_by_participant
+
 
 def load_cols(path: Path) -> list[str]:
     return [c.strip().lower() for c in path.read_text(encoding="utf-8").splitlines() if c.strip()]
@@ -86,6 +88,10 @@ def main() -> None:
     parser.add_argument("--obs-u-cols", type=Path, required=True)
     parser.add_argument("--obs-i-cols", type=Path, required=True)
     parser.add_argument("--label-col", type=str, default="action_proc")
+    parser.add_argument("--participant-col", type=str, default="participant")
+    parser.add_argument("--val-split", type=float, default=0.2)
+    parser.add_argument("--test-split", type=float, default=0.1)
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--n-draws", type=int, default=200)
     parser.add_argument("--n-latent", type=int, default=1)
     parser.add_argument("--cat-unique-threshold", type=int, default=10)
@@ -141,20 +147,37 @@ def main() -> None:
     )
 
     # Coerce numeric + drop NaN in relevant columns
-    keep_cols = [label_col] + obs_lt_cols + obs_u_cols + obs_i_cols
+    keep_cols = [label_col, args.participant_col] + obs_lt_cols + obs_u_cols + obs_i_cols
     df = df[keep_cols].copy()
     for c in keep_cols:
         df[c] = pd.to_numeric(df[c], errors="coerce")
     df = df.dropna().reset_index(drop=True)
+    # Split by participant before estimation
+    if args.participant_col in df.columns:
+        df_tr, df_val, df_te, split_info = split_by_participant(
+            df,
+            participant_col=args.participant_col,
+            val_frac=args.val_split,
+            test_frac=args.test_split,
+            seed=args.seed,
+        )
+    else:
+        df_tr, df_val, df_te = df, df.iloc[0:0].copy(), df.iloc[0:0].copy()
 
     # Ensure labels are integer and contiguous
-    df[label_col] = df[label_col].astype(int)
-    uniq = sorted(pd.Series(df[label_col]).unique().tolist())
+    df_tr[label_col] = df_tr[label_col].astype(int)
+    df_val[label_col] = df_val[label_col].astype(int) if len(df_val) else df_val[label_col]
+    df_te[label_col] = df_te[label_col].astype(int) if len(df_te) else df_te[label_col]
+    uniq = sorted(pd.Series(df_tr[label_col]).unique().tolist())
     mapping = {v: i for i, v in enumerate(uniq)}
-    df[label_col] = df[label_col].map(mapping).astype(int)
+    df_tr[label_col] = df_tr[label_col].map(mapping).astype(int)
+    if len(df_val):
+        df_val[label_col] = df_val[label_col].map(mapping).astype(int)
+    if len(df_te):
+        df_te[label_col] = df_te[label_col].map(mapping).astype(int)
     n_choices = len(uniq)
 
-    database = db.Database("dataset_bicicletas", df)
+    database = db.Database("dataset_bicicletas_train", df_tr)
 
     # Variables
     Choice = Variable(label_col)
@@ -284,43 +307,67 @@ def main() -> None:
     print(f"Saved params: {out_path}")
     print("General stats:", general)
 
-    try:
-        beta_values = get_with_fallback(results, ["get_beta_values", "getBetaValues"])
-        if beta_values is None:
-            raise RuntimeError("No se pudieron leer betas para simulacion.")
-        probs = {}
-        for alt in V.keys():
-            probs[f"p{alt}"] = models.logit(V, av, alt)
-        sim = bio.BIOGEME(database, {k: MonteCarlo(v) for k, v in probs.items()}, number_of_draws=args.n_draws)
-        sim.model_name = "icl_v_biogeme_sim"
+    def _compute_metrics(split_name: str, split_df: pd.DataFrame) -> dict:
+        if split_df is None or split_df.empty:
+            return {}
+        split_db = db.Database(f"dataset_bicicletas_{split_name}", split_df)
+        probs = {f"p{alt}": models.logit(V, av, alt) for alt in V.keys()}
+        sim = bio.BIOGEME(split_db, {k: MonteCarlo(v) for k, v in probs.items()}, number_of_draws=args.n_draws)
+        sim.model_name = f"icl_v_biogeme_sim_{split_name}"
         sim_res = sim.simulate(beta_values)
         p_mat = np.stack([sim_res[f"p{alt}"].to_numpy(dtype=float) for alt in sorted(V.keys())], axis=1)
-        y = df[label_col].to_numpy(dtype=int)
+        y = split_df[label_col].to_numpy(dtype=int)
         y_hat = np.argmax(p_mat, axis=1)
         acc = float(accuracy_score(y, y_hat))
         f1_macro = float(f1_score(y, y_hat, average="macro"))
-        try:
+        if n_choices == 2:
+            f1_pos = float(f1_score(y, y_hat, pos_label=1))
+            f1_neg = float(f1_score(y, y_hat, pos_label=0))
+            auc = float(roc_auc_score(y, p_mat[:, 1])) if len(np.unique(y)) > 1 else float("nan")
+        else:
+            f1_pos = float("nan")
+            f1_neg = float("nan")
             auc = float(roc_auc_score(y, p_mat, multi_class="ovr")) if len(np.unique(y)) > 1 else float("nan")
-        except Exception:
-            auc = float("nan")
         loglik = float(np.sum(np.log(np.clip(p_mat[np.arange(len(y)), y], 1e-9, 1))))
         nll = float(-loglik)
         mean_nll = float(-loglik / max(1, len(y)))
         k = len(beta_values)
         aic = float(2 * k - 2 * loglik)
         bic = float(np.log(max(1, len(y))) * k - 2 * loglik)
-        metrics = {
+        y_mean = y.mean()
+        p_null = float(min(max(y_mean, 1e-9), 1 - 1e-9)) if n_choices == 2 else 1.0 / max(1, n_choices)
+        if n_choices == 2:
+            loglik_null = float(np.sum(y * np.log(p_null) + (1 - y) * np.log(1 - p_null)))
+        else:
+            loglik_null = float(len(y) * np.log(p_null))
+        loglik_ratio = float(2 * (loglik - loglik_null))
+        pseudo_r2 = float(1 - (loglik / loglik_null)) if loglik_null != 0 else float("nan")
+        return {
             "acc": acc,
             "f1_macro": f1_macro,
+            "f1_pos": f1_pos,
+            "f1_neg": f1_neg,
             "auc": auc,
             "nll": nll,
             "mean_nll": mean_nll,
             "log_likelihood": loglik,
             "aic": aic,
             "bic": bic,
+            "loglik_null": loglik_null,
+            "loglik_ratio": loglik_ratio,
+            "pseudo_r2": pseudo_r2,
             "n_params": k,
             "n_obs": int(len(y)),
-            "n_choices": int(n_choices),
+        }
+
+    try:
+        beta_values = get_with_fallback(results, ["get_beta_values", "getBetaValues"])
+        if beta_values is None:
+            raise RuntimeError("No se pudieron leer betas para simulacion.")
+        metrics = {
+            "train": _compute_metrics("train", df_tr),
+            "val": _compute_metrics("val", df_val),
+            "test": _compute_metrics("test", df_te),
         }
         metrics_path = args.results_dir / "biogeme_metrics.json"
         pd.Series(metrics).to_json(metrics_path, indent=2, force_ascii=False)
