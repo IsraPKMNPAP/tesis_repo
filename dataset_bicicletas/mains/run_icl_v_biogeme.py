@@ -142,6 +142,7 @@ def main() -> None:
     parser.add_argument("--data-frac", type=float, default=None, help="Fraccion de participantes a usar (0-1).")
     parser.add_argument("--n-draws", type=int, default=200)
     parser.add_argument("--n-latent", type=int, default=1)
+    parser.add_argument("--mnl-only", action="store_true", help="Usa MNL sin latentes ni medicion.")
     parser.add_argument("--cat-unique-threshold", type=int, default=10)
     parser.add_argument("--standardize-numeric-only", action="store_true", default=True)
     parser.add_argument("--minimal", action="store_true")
@@ -152,6 +153,8 @@ def main() -> None:
     parser.add_argument("--results-dir", type=Path, default=Path("results/icl_v_biogeme"))
     parser.add_argument("--model-name", type=str, default="icl_v_biogeme")
     args = parser.parse_args()
+    if not args.model_name:
+        args.model_name = "icl_v_biogeme"
 
     data_path = args.data
     if data_path.suffix.lower() == ".csv":
@@ -170,7 +173,6 @@ def main() -> None:
         if args.max_obs_lt and args.max_obs_lt > 0:
             obs_lt_cols = obs_lt_cols[: args.max_obs_lt]
         obs_u_cols = obs_u_cols[: args.max_obs_u]
-        obs_i_cols = obs_i_cols[: args.max_obs_i]
         print(f"[biogeme] minimal obs_lt={len(obs_lt_cols)} obs_u={len(obs_u_cols)} obs_i={len(obs_i_cols)}")
 
     # Map action labels if needed
@@ -207,6 +209,8 @@ def main() -> None:
         if c == label_col:
             df[c] = pd.to_numeric(df[c], errors="coerce")
     df = df.dropna(subset=[label_col]).reset_index(drop=True)
+    if args.mnl_only:
+        print("[biogeme] mnl_only=True: sin latentes ni bloque de medicion")
     # Optional: reduce to half of participants before split
     frac = args.data_frac
     if args.half_data:
@@ -244,6 +248,11 @@ def main() -> None:
     if len(df_te):
         df_te[label_col] = df_te[label_col].map(mapping).astype(int)
     n_choices = len(uniq)
+    if obs_u_cols:
+        obs_u_vals = df_tr[obs_u_cols].to_numpy(dtype=float)
+        obs_u_rep = np.repeat(obs_u_vals[:, None, :], n_choices, axis=1)
+        max_diff = float(np.max(np.abs(obs_u_rep - obs_u_rep[:, :1, :])))
+        print(f"[biogeme] max |obs_u - obs_u_alt0| = {max_diff:.6f}")
 
     # Remove participant from modeling data (keep only for split)
     if args.participant_col in df_tr.columns:
@@ -271,15 +280,18 @@ def main() -> None:
     obs_i_vars = [Variable(c) for c in obs_i_cols]
 
     # Latent variables: LV_k = Gamma_k * X + omega_k (Normal)
-    gamma_betas = [
-        [Beta(f"gamma_{k}_{c}", 0, None, None, 0) for c in obs_lt_cols]
-        for k in range(args.n_latent)
-    ]
-    omegas = [Draws(f"omega_{k}", "NORMAL") for k in range(args.n_latent)]
-    LVs = [
-        sum(b * x for b, x in zip(gamma_betas[k], obs_lt_vars)) + omegas[k]
-        for k in range(args.n_latent)
-    ]
+    if args.mnl_only:
+        LVs = []
+    else:
+        gamma_betas = [
+            [Beta(f"gamma_{k}_{c}", 0, None, None, 0) for c in obs_lt_cols]
+            for k in range(args.n_latent)
+        ]
+        omegas = [Draws(f"omega_{k}", "NORMAL") for k in range(args.n_latent)]
+        LVs = [
+            sum(b * x for b, x in zip(gamma_betas[k], obs_lt_vars)) + omegas[k]
+            for k in range(args.n_latent)
+        ]
 
     # Utilities (base alt=0), per-alt betas to match ICLV
     V = {0: 0}
@@ -287,37 +299,40 @@ def main() -> None:
         asc = Beta(f"ASC_{alt}", 0, None, None, 0)
         beta_u = [Beta(f"beta_{alt}_{c}", 0, None, None, 0) for c in obs_u_cols]
         delta = [Beta(f"delta_{alt}_lv_{k}", 0, None, None, 0) for k in range(args.n_latent)]
-        util = asc + sum(b * x for b, x in zip(beta_u, obs_u_vars)) + sum(d * lv for d, lv in zip(delta, LVs))
+        util = asc + sum(b * x for b, x in zip(beta_u, obs_u_vars))
+        if LVs:
+            util += sum(d * lv for d, lv in zip(delta, LVs))
         V[alt] = util
     av = {k: 1 for k in V.keys()}
     P = models.logit(V, av, Choice)
 
     # Measurement: indicators ~ Normal(alpha + lambda * LV, sigma)
     meas_loglik = 0
-    for idx, y in enumerate(obs_i_vars):
-        alpha = Beta(f"alpha_i{idx}", 0, None, None, 0)
-        lam = []
-        for k in range(args.n_latent):
-            fixed = 0
-            init = 0
-            if args.n_latent == 1 and idx == 0 and k == 0:
-                fixed = 1
-                init = 1
-            elif args.n_latent >= 2:
-                if idx == 0 and k == 0:
+    if not args.mnl_only:
+        for idx, y in enumerate(obs_i_vars):
+            alpha = Beta(f"alpha_i{idx}", 0, None, None, 0)
+            lam = []
+            for k in range(args.n_latent):
+                fixed = 0
+                init = 0
+                if args.n_latent == 1 and idx == 0 and k == 0:
                     fixed = 1
                     init = 1
-                elif idx == 1 and k == 1:
-                    fixed = 1
-                    init = 1
-            lam.append(Beta(f"lambda_i{idx}_lv{k}", init, None, None, fixed))
-        sigma = 1.0
-        mu = alpha + sum(lam_k * lv for lam_k, lv in zip(lam, LVs))
-        z = (y - mu) / sigma
-        log_pdf = -0.5 * (np.log(2 * np.pi) + 2 * log(sigma) + z * z)
-        meas_loglik += log_pdf
+                elif args.n_latent >= 2:
+                    if idx == 0 and k == 0:
+                        fixed = 1
+                        init = 1
+                    elif idx == 1 and k == 1:
+                        fixed = 1
+                        init = 1
+                lam.append(Beta(f"lambda_i{idx}_lv{k}", init, None, None, fixed))
+            sigma = 1.0
+            mu = alpha + sum(lam_k * lv for lam_k, lv in zip(lam, LVs))
+            z = (y - mu) / sigma
+            log_pdf = -0.5 * (np.log(2 * np.pi) + 2 * log(sigma) + z * z)
+            meas_loglik += log_pdf
 
-    integrand = P * exp(meas_loglik)
+    integrand = P * exp(meas_loglik) if not args.mnl_only else P
     logprob = log(MonteCarlo(integrand))
 
     args.results_dir.mkdir(parents=True, exist_ok=True)
