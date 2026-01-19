@@ -65,12 +65,15 @@ def main() -> None:
     lat["id_sub_num"] = pd.to_numeric(lat["id_sub"], errors="coerce").astype("Int64")
     lat["id_prod_num"] = pd.to_numeric(lat["id_prod"], errors="coerce").astype("Int64")
 
+    for col in ["subject_num", "page_num", "prod_num", "id_prod_num"]:
+        if col in mm.columns:
+            mm = mm.drop(columns=[col])
     mm["subject_num"] = mm["subject"].apply(subject_to_num).astype("Int64")
     mm["page_num"] = mm["page"].apply(parse_page).astype("Int64")
     mm["prod_num"] = mm["product_id"].apply(parse_product).astype("Int64")
     mm["id_prod_num"] = ((mm["page_num"] - 1) * 24 + mm["prod_num"]).astype("Int64")
 
-    join_cols = [c for c in mm.columns if c not in {"subject", "page", "product_id"}]
+    join_cols = [c for c in mm.columns if c not in {"subject", "page", "product_id", "subject_num", "id_prod_num"}]
     merged = lat.merge(
         mm[join_cols + ["subject_num", "id_prod_num"]],
         how="left",
