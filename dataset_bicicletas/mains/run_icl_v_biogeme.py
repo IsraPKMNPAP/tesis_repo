@@ -389,9 +389,16 @@ def main() -> None:
     if est_params is not None:
         try:
             est = est_params if isinstance(est_params, pd.DataFrame) else pd.DataFrame(est_params)
+            if isinstance(est.index, pd.Index) and est.index.name:
+                est = est.reset_index()
             est.columns = [c.lower().strip().replace(" ", "_") for c in est.columns]
-            if "parameter" not in est.columns and "name" in est.columns:
-                est = est.rename(columns={"name": "parameter"})
+            if "parameter" not in est.columns:
+                if not isinstance(est.index, pd.RangeIndex):
+                    est = est.reset_index().rename(columns={"index": "parameter"})
+                for candidate in ["name", "param", "beta", "parameter_name"]:
+                    if candidate in est.columns:
+                        est = est.rename(columns={candidate: "parameter"})
+                        break
             if "parameter" in est.columns:
                 est = est.set_index("parameter")
                 col_map = {
@@ -426,6 +433,7 @@ def main() -> None:
             return {}
         split_db = db.Database(f"dataset_bicicletas_{split_name}", split_df)
         probs = {f"p{alt}": models.logit(V, av, alt) for alt in V.keys()}
+        prob_choice = models.logit(V, av, Choice)
         if args.mnl_only:
             sim = bio.BIOGEME(split_db, probs)
         else:
@@ -445,7 +453,14 @@ def main() -> None:
             f1_pos = float("nan")
             f1_neg = float("nan")
             auc = float(roc_auc_score(y, p_mat, multi_class="ovr")) if len(np.unique(y)) > 1 else float("nan")
-        loglik = float(np.sum(np.log(np.clip(p_mat[np.arange(len(y)), y], 1e-9, 1))))
+        if args.mnl_only:
+            loglik = float(np.sum(np.log(np.clip(p_mat[np.arange(len(y)), y], 1e-9, 1))))
+        else:
+            prob_db = bio.BIOGEME(split_db, {"prob": MonteCarlo(prob_choice)}, number_of_draws=args.n_draws)
+            prob_db.model_name = f"{args.model_name}_prob_{split_name}"
+            prob_res = prob_db.simulate(beta_values)
+            p_choice = prob_res["prob"].to_numpy(dtype=float) if "prob" in prob_res.columns else prob_res.iloc[:, 0].to_numpy(dtype=float)
+            loglik = float(np.sum(np.log(np.clip(p_choice, 1e-9, 1))))
         nll = float(-loglik)
         mean_nll = float(-loglik / max(1, len(y)))
         k = len(beta_values)
