@@ -434,9 +434,9 @@ def main() -> None:
                 norm_map = {_normalize_col(c): c for c in est.columns}
                 col_candidates = {
                     "beta": ["value", "estimate", "estimatedvalue"],
-                    "std": ["stderr", "std_err", "standarderror", "robuststderr", "robuststderror"],
-                    "tstat": ["tstat", "t_test", "ttest", "tvalue", "robusttstat", "robustttest"],
-                    "pval": ["pval", "p_value", "pvalue", "robustpval", "robustpvalue"],
+                    "std": ["stderr", "std_err", "standarderror", "robstderr", "robstderror", "robstd", "rob_std_err"],
+                    "tstat": ["tstat", "t_test", "ttest", "tvalue", "robt_test", "robttest", "robttest", "rob_t_test"],
+                    "pval": ["pval", "p_value", "pvalue", "robpval", "robpvalue", "rob_p_value"],
                 }
                 for dst, candidates in col_candidates.items():
                     for key in candidates:
