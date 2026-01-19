@@ -201,6 +201,14 @@ def main() -> None:
     df, obs_u_cols = sanitize_columns(df, obs_u_cols, "obs_u")
     df, obs_i_cols = sanitize_columns(df, obs_i_cols, "obs_i")
 
+    # Drop specific noisy column if present
+    drop_u_col = "u_obstructions_obst_culos"
+    if drop_u_col in df.columns:
+        df = df.drop(columns=[drop_u_col])
+        if drop_u_col in obs_u_cols:
+            obs_u_cols = [c for c in obs_u_cols if c != drop_u_col]
+        print(f"[biogeme] dropped noisy column: {drop_u_col}")
+
     # Coerce numeric + drop NaN in relevant columns
     keep_cols = [label_col, args.participant_col] + obs_lt_cols + obs_u_cols + obs_i_cols
     df = df[keep_cols].copy()
@@ -301,11 +309,11 @@ def main() -> None:
 
     # Utilities (base alt=0), per-alt betas to match ICLV
     V = {0: 0}
+    beta_u_generic = [Beta(f"beta_{c}", 0, None, None, 0) for c in obs_u_cols]
     for alt in range(1, n_choices):
         asc = Beta(f"ASC_{alt}", 0, None, None, 0)
-        beta_u = [Beta(f"beta_{alt}_{c}", 0, None, None, 0) for c in obs_u_cols]
         delta = [Beta(f"delta_{alt}_lv_{k}", 0, None, None, 0) for k in range(args.n_latent)]
-        util = asc + sum(b * x for b, x in zip(beta_u, obs_u_vars))
+        util = asc + sum(b * x for b, x in zip(beta_u_generic, obs_u_vars))
         if LVs:
             util += sum(d * lv for d, lv in zip(delta, LVs))
         V[alt] = util
@@ -354,6 +362,12 @@ def main() -> None:
     print(f"[biogeme] estimating model '{args.model_name}' (draws={args.n_draws}, optimizer={args.optimizer})")
     results = biogeme.estimate()
     print(f"[biogeme] estimation finished for '{args.model_name}'")
+    try:
+        est_debug = results.getEstimatedParameters()
+        print("[diag] getEstimatedParameters head:")
+        print(est_debug.head(5))
+    except Exception as exc:
+        print(f"[warn] getEstimatedParameters head failed: {exc}")
 
     def get_with_fallback(obj, names):
         for name in names:
