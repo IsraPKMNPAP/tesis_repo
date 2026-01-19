@@ -86,6 +86,8 @@ def expand_categoricals(
     if not cat_cols:
         return df, cols
     dummies = pd.get_dummies(df[cat_cols].astype(str), prefix=[f"{prefix}{c}" for c in cat_cols], drop_first=True)
+    # Ensure dummy columns are numeric (biogeme rejects bool)
+    dummies = dummies.astype(int)
     df = df.drop(columns=cat_cols).join(dummies)
     new_cols = num_cols + dummies.columns.tolist()
     print(f"[biogeme] one-hot cols: {cat_cols} -> {len(dummies.columns)} dummies")
