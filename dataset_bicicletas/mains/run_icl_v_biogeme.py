@@ -160,9 +160,11 @@ def main() -> None:
     # Coerce numeric + drop NaN in relevant columns
     keep_cols = [label_col, args.participant_col] + obs_lt_cols + obs_u_cols + obs_i_cols
     df = df[keep_cols].copy()
+    # Coerce numeric columns where possible; keep categoricals for later imputation/one-hot
     for c in keep_cols:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-    df = df.dropna().reset_index(drop=True)
+        if c == label_col:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    df = df.dropna(subset=[label_col]).reset_index(drop=True)
     # Split by participant before estimation
     if args.participant_col in df.columns:
         df_tr, df_val, df_te, split_info = split_by_participant(
@@ -188,6 +190,15 @@ def main() -> None:
         df_te[label_col] = df_te[label_col].map(mapping).astype(int)
     n_choices = len(uniq)
 
+    # Save filtered input for traceability
+    args.results_dir.mkdir(parents=True, exist_ok=True)
+    filtered_path = args.results_dir / "biogeme_input_filtered.csv"
+    df.to_csv(filtered_path, index=False)
+    print(f"[biogeme] input saved: {filtered_path}")
+
+    if df_tr is None or df_tr.empty:
+        print("[warn] split train vacio; usando dataframe completo para estimacion.")
+        df_tr = df
     database = db.Database("dataset_bicicletas_train", df_tr)
 
     # Variables
