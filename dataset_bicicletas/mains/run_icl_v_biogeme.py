@@ -143,6 +143,7 @@ def main() -> None:
     parser.add_argument("--n-draws", type=int, default=200)
     parser.add_argument("--n-latent", type=int, default=1)
     parser.add_argument("--mnl-only", action="store_true", help="Usa MNL sin latentes ni medicion.")
+    parser.add_argument("--no-measurement", action="store_true", help="Usa latentes sin bloque de medicion.")
     parser.add_argument("--cat-unique-threshold", type=int, default=10)
     parser.add_argument("--standardize-numeric-only", action="store_true", default=True)
     parser.add_argument("--minimal", action="store_true")
@@ -219,6 +220,8 @@ def main() -> None:
     df = df.dropna(subset=[label_col]).reset_index(drop=True)
     if args.mnl_only:
         print("[biogeme] mnl_only=True: sin latentes ni bloque de medicion")
+    if args.no_measurement and not args.mnl_only:
+        print("[biogeme] no_measurement=True: con latentes, sin bloque de medicion")
     # Optional: reduce to half of participants before split
     frac = args.data_frac
     if args.half_data:
@@ -322,7 +325,7 @@ def main() -> None:
 
     # Measurement: indicators ~ Normal(alpha + lambda * LV, sigma)
     meas_loglik = 0
-    if not args.mnl_only:
+    if not args.mnl_only and not args.no_measurement:
         for idx, y in enumerate(obs_i_vars):
             alpha = Beta(f"alpha_i{idx}", 0, None, None, 0)
             lam = []
@@ -348,6 +351,8 @@ def main() -> None:
 
     if args.mnl_only:
         logprob = log(P)
+    elif args.no_measurement:
+        logprob = log(MonteCarlo(P))
     else:
         integrand = P * exp(meas_loglik)
         logprob = log(MonteCarlo(integrand))
