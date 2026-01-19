@@ -16,6 +16,8 @@ except Exception:
     from biogeme.expressions import bioDraws as Draws
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 
+pd.set_option("future.no_silent_downcasting", True)
+
 # Ensure package root on path when running from dataset_bicicletas
 ROOT = Path(__file__).resolve().parent.parent
 import sys
@@ -82,7 +84,7 @@ def expand_categoricals(
     for c in cat_cols:
         mode = df[c].mode(dropna=True)
         fill_val = mode.iloc[0] if len(mode) else "missing"
-        df[c] = df[c].fillna(fill_val)
+        df[c] = df[c].fillna(fill_val).infer_objects(copy=False)
     if not cat_cols:
         return df, cols
     dummies = pd.get_dummies(df[cat_cols].astype(str), prefix=[f"{prefix}{c}" for c in cat_cols], drop_first=True)
@@ -318,7 +320,9 @@ def main() -> None:
     biogeme = bio.BIOGEME(database, logprob, number_of_draws=args.n_draws)
     biogeme.algorithm = args.optimizer
     biogeme.model_name = args.model_name
+    print(f"[biogeme] estimating model '{args.model_name}' (draws={args.n_draws}, optimizer={args.optimizer})")
     results = biogeme.estimate()
+    print(f"[biogeme] estimation finished for '{args.model_name}'")
 
     def get_with_fallback(obj, names):
         for name in names:
