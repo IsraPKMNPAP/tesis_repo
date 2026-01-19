@@ -147,6 +147,7 @@ def main() -> None:
     parser.add_argument("--cat-unique-threshold", type=int, default=10)
     parser.add_argument("--standardize-numeric-only", action="store_true", default=True)
     parser.add_argument("--minimal", action="store_true")
+    parser.add_argument("--limit-blocks", action="store_true", help="Limita cantidad de variables por bloque")
     parser.add_argument("--max-obs-u", type=int, default=5)
     parser.add_argument("--max-obs-i", type=int, default=1)
     parser.add_argument("--max-obs-lt", type=int, default=0)
@@ -170,11 +171,15 @@ def main() -> None:
     obs_lt_cols = warn_missing(df, load_cols(args.obs_lt_cols), "obs_lt")
     obs_u_cols = warn_missing(df, load_cols(args.obs_u_cols), "obs_u")
     obs_i_cols = warn_missing(df, load_cols(args.obs_i_cols), "obs_i")
-    if args.minimal:
+    if args.minimal or args.limit_blocks:
         if args.max_obs_lt and args.max_obs_lt > 0:
             obs_lt_cols = obs_lt_cols[: args.max_obs_lt]
-        obs_u_cols = obs_u_cols[: args.max_obs_u]
-        print(f"[biogeme] minimal obs_lt={len(obs_lt_cols)} obs_u={len(obs_u_cols)} obs_i={len(obs_i_cols)}")
+        if args.max_obs_u and args.max_obs_u > 0:
+            obs_u_cols = obs_u_cols[: args.max_obs_u]
+        if args.minimal:
+            print(f"[biogeme] minimal obs_lt={len(obs_lt_cols)} obs_u={len(obs_u_cols)} obs_i={len(obs_i_cols)}")
+        else:
+            print(f"[biogeme] limited obs_lt={len(obs_lt_cols)} obs_u={len(obs_u_cols)} obs_i={len(obs_i_cols)}")
 
     # Map action labels if needed
     if df[label_col].dtype == object:
