@@ -478,12 +478,13 @@ def main() -> None:
         split_db = db.Database(f"dataset_bicicletas_{split_name}", split_df)
         probs = {f"p{alt}": models.logit(V, av, alt) for alt in V.keys()}
         prob_choice = models.logit(V, av, Choice)
+        beta_values_sim = {k: v for k, v in beta_values.items() if not (k.startswith("alpha_i") or k.startswith("lambda_i"))}
         if args.mnl_only:
             sim = bio.BIOGEME(split_db, probs)
         else:
             sim = bio.BIOGEME(split_db, {k: MonteCarlo(v) for k, v in probs.items()}, number_of_draws=args.n_draws)
         sim.model_name = f"{args.model_name}_sim_{split_name}"
-        sim_res = sim.simulate(beta_values)
+        sim_res = sim.simulate(beta_values_sim)
         p_mat = np.stack([sim_res[f"p{alt}"].to_numpy(dtype=float) for alt in sorted(V.keys())], axis=1)
         y = split_df[label_col].to_numpy(dtype=int)
         y_hat = np.argmax(p_mat, axis=1)
@@ -502,7 +503,7 @@ def main() -> None:
         else:
             prob_db = bio.BIOGEME(split_db, {"prob": MonteCarlo(prob_choice)}, number_of_draws=args.n_draws)
             prob_db.model_name = f"{args.model_name}_prob_{split_name}"
-            prob_res = prob_db.simulate(beta_values)
+            prob_res = prob_db.simulate(beta_values_sim)
             p_choice = prob_res["prob"].to_numpy(dtype=float) if "prob" in prob_res.columns else prob_res.iloc[:, 0].to_numpy(dtype=float)
             loglik = float(np.sum(np.log(np.clip(p_choice, 1e-9, 1))))
         nll = float(-loglik)
