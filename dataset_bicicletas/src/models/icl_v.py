@@ -256,6 +256,8 @@ class MultimodalICLVDeterministic(nn.Module):
 
         vid_emb_dim = self.vid_enc.output_dim()
         aud_emb_dim = tab_emb_dim  # SimpleAudioEncoder outputs emb_dim
+        self._vid_emb_dim = int(vid_emb_dim)
+        self._aud_emb_dim = int(aud_emb_dim)
         fuse_in = tab_emb_dim + vid_emb_dim + aud_emb_dim
         fuse_hidden = max(shared_dim * 2, fuse_in // 2 + 1)
         self.fuse = nn.Sequential(
@@ -333,15 +335,15 @@ class MultimodalICLVDeterministic(nn.Module):
     ):
         z_tab = self.tab_enc(x_tab_lt)
         if self.skip_video:
-            z_vid = torch.zeros(z_tab.size(0), self.vid_enc.output_dim(), device=z_tab.device)
+            z_vid = torch.zeros(z_tab.size(0), self._vid_emb_dim, device=z_tab.device)
         else:
             with torch.no_grad() if self.freeze_video else torch.enable_grad():
                 z_vid = self.vid_enc(x_vid)
         if x_aud is None:
-            z_aud = torch.zeros_like(z_tab)
+            z_aud = torch.zeros(z_tab.size(0), self._aud_emb_dim, device=z_tab.device)
         else:
             if self.skip_audio:
-                z_aud = torch.zeros_like(z_tab)
+                z_aud = torch.zeros(z_tab.size(0), self._aud_emb_dim, device=z_tab.device)
             else:
                 with torch.no_grad() if self.freeze_audio else torch.enable_grad():
                     z_aud = self.audio_enc(x_aud)
