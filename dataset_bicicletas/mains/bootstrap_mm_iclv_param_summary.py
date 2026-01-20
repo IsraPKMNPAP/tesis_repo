@@ -300,6 +300,19 @@ def main() -> None:
     preproc_lt = joblib.load(preproc_lt_path)
     preproc_u = joblib.load(preproc_u_path)
 
+    # fallback a columnas del preproc si no se pudieron resolver desde archivos
+    if not obs_lt_cols and hasattr(preproc_lt, "feature_names_in_"):
+        obs_lt_cols = list(preproc_lt.feature_names_in_)
+    if not obs_u_cols and hasattr(preproc_u, "feature_names_in_"):
+        obs_u_cols = list(preproc_u.feature_names_in_)
+
+    missing_lt = [c for c in obs_lt_cols if c not in df.columns]
+    missing_u = [c for c in obs_u_cols if c not in df.columns]
+    if missing_lt:
+        raise ValueError(f"Faltan columnas OBS_LT en df: {missing_lt}")
+    if missing_u:
+        raise ValueError(f"Faltan columnas OBS_U en df: {missing_u}")
+
     X_lt_all = to_float_array(preproc_lt.transform(convertir_a_categorico(categorias_a_str(df[obs_lt_cols].copy()))))
     X_u_all = to_float_array(preproc_u.transform(convertir_a_categorico(categorias_a_str(df[obs_u_cols].copy()))))
     X_i_all = encode_indicator_blocks(df_train, df, ind_cols)
