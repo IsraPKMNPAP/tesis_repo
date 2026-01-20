@@ -254,6 +254,8 @@ def main() -> None:
     ap.add_argument("--progress-every", type=int, default=1, help="Imprime progreso cada N bootstraps.")
     ap.add_argument("--iter-log-every", type=int, default=0, help="Imprime log cada N iteraciones internas (0=off).")
     ap.add_argument("--utility-only", action="store_true", help="Entrena solo beta/delta/ASC para acelerar.")
+    ap.add_argument("--skip-video", action="store_true", help="Salta encoder de video (usa ceros).")
+    ap.add_argument("--skip-audio", action="store_true", help="Salta encoder de audio (usa ceros).")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--out-csv", type=Path, default=Path("results/MM_ICLV/bootstrap_param_summary.csv"))
     ap.add_argument("--split-info", type=Path, default=Path("results/MM_ICLV/split_info.txt"))
@@ -357,6 +359,10 @@ def main() -> None:
             state = torch.load(ckpt, map_location="cpu")
         base_model.load_state_dict(state, strict=False)
     base_model = base_model.to(torch.device(args.device))
+    if args.skip_video:
+        base_model.skip_video = True
+    if args.skip_audio:
+        base_model.skip_audio = True
     base_model.eval()
 
     print(f"[bootstrap] beta_per_alt={not args.beta_shared} obs_u_buy_only=False")
@@ -435,6 +441,10 @@ def main() -> None:
             except TypeError:
                 state = torch.load(ckpt, map_location=args.device)
             model.load_state_dict(state, strict=False)
+        if args.skip_video:
+            model.skip_video = True
+        if args.skip_audio:
+            model.skip_audio = True
         if args.utility_only:
             for n, p in model.named_parameters():
                 if not (n.startswith("beta") or n.startswith("delta") or n.startswith("ASC")):
