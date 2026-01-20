@@ -73,7 +73,7 @@ def main() -> None:
     mm["prod_num"] = mm["product_id"].apply(parse_product).astype("Int64")
     mm["id_prod_num"] = ((mm["page_num"] - 1) * 24 + mm["prod_num"]).astype("Int64")
 
-    join_cols = [c for c in mm.columns if c not in {"subject", "page", "product_id", "subject_num", "id_prod_num"}]
+    join_cols = [c for c in mm.columns if c not in {"subject_num", "id_prod_num"}]
     merged = lat.merge(
         mm[join_cols + ["subject_num", "id_prod_num"]],
         how="left",
@@ -91,22 +91,21 @@ def main() -> None:
         print("[join] NaN columns (top 20):")
         print(top_na.to_string())
 
-    # Drop rows with any NaN after join (left is latente)
+    # Keep only multimodal columns (no latente extra fields)
+    keep_cols = [c for c in mm.columns if c in merged.columns]
+    merged = merged[keep_cols].copy()
+
+    # Drop rows with any NaN after join
     before = len(merged)
     merged = merged.dropna().reset_index(drop=True)
     if len(merged) != before:
         print(f"[join] dropped rows with NaN: {before - len(merged)}")
 
-    # Normalize column names by removing suffixes
-    rename_map = {}
-    for c in merged.columns:
-        if c.endswith("_mm"):
-            base = c[:-3]
-            if base not in merged.columns:
-                rename_map[c] = base
-    if rename_map:
-        merged = merged.rename(columns=rename_map)
-        print(f"[join] renamed {len(rename_map)} columns (removed _mm)")
+    # Remove any duplicated columns (keep first)
+    if merged.columns.duplicated().any():
+        dupes = merged.columns[merged.columns.duplicated()].tolist()
+        print(f"[join] dropped duplicated columns: {dupes}")
+        merged = merged.loc[:, ~merged.columns.duplicated()]
 
     print(f"[join] final rows: {len(merged)} cols: {len(merged.columns)}")
 
