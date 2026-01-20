@@ -242,11 +242,16 @@ def run_epoch(model, loader, device, train: bool = True, optimizer=None, grad_cl
     }
 
 
+def _num_params(model: torch.nn.Module) -> int:
+    return int(sum(p.numel() for p in model.parameters() if p.requires_grad))
+
+
 def eval_loader_metrics(model, loader, device):
     if loader is None:
         return {}
     ys, preds, logps = [], [], []
     total_loglik = 0.0
+    n_obs = 0
     model.eval()
     with torch.no_grad():
         for batch in loader:
@@ -268,6 +273,7 @@ def eval_loader_metrics(model, loader, device):
             logps.append(lp)
             idx = (torch.arange(lp.size(0)), y.cpu())
             total_loglik += float(lp[idx].sum().item())
+            n_obs += int(lp.size(0))
     if not ys:
         return {}
     y_true = torch.cat(ys).numpy()
@@ -276,6 +282,9 @@ def eval_loader_metrics(model, loader, device):
     metrics = classification_report_basic(y_true, y_pred, log_probs=logp_np)
     metrics["log_likelihood"] = total_loglik
     metrics["pseudo_r2_mcfadden"] = pseudo_r2_mcfadden(total_loglik, y_true)
+    k = _num_params(model)
+    metrics["aic"] = float(2 * k - 2 * total_loglik)
+    metrics["bic"] = float(np.log(max(1, n_obs)) * k - 2 * total_loglik)
     return metrics
 
 
@@ -513,12 +522,25 @@ def main():
     split_path = results_dir / "MM_ICLV" / "split_info.txt"
     split_path.write_text(format_split_report(info), encoding="utf-8")
 
-    torch.save(model.state_dict(), results_dir / artifact_name("MM_ICLV", "model", run_hash, "pt"))
-    save_model_pickle(preproc_lt, results_dir / artifact_name("MM_ICLV", "preproc_lt", run_hash, "pkl"))
-    save_model_pickle(preproc_u, results_dir / artifact_name("MM_ICLV", "preproc_u", run_hash, "pkl"))
+    model_path = results_dir / artifact_name("MM_ICLV", "model", run_hash, "pt")
+    preproc_lt_path = results_dir / artifact_name("MM_ICLV", "preproc_lt", run_hash, "pkl")
+    preproc_u_path = results_dir / artifact_name("MM_ICLV", "preproc_u", run_hash, "pkl")
     hist_path = results_dir / artifact_name("MM_ICLV", "history", run_hash, "json")
+    metrics_path = results_dir / "MM_ICLV" / f"metrics_{run_hash}.json"
+
+    torch.save(model.state_dict(), model_path)
+    save_model_pickle(preproc_lt, preproc_lt_path)
+    save_model_pickle(preproc_u, preproc_u_path)
     hist_path.write_text(json.dumps(history, indent=2), encoding="utf-8")
     register_run(results_dir, run_hash, "MM_ICLV", cmd=" ".join(sys.argv), config=base_config)
+
+    print(f"[OK] run_hash={run_hash}")
+    print(f"[OK] model: {model_path}")
+    print(f"[OK] preproc_lt: {preproc_lt_path}")
+    print(f"[OK] preproc_u: {preproc_u_path}")
+    print(f"[OK] history: {hist_path}")
+    if metrics_path.exists():
+        print(f"[OK] metrics: {metrics_path}")
 
 
 if __name__ == "__main__":
