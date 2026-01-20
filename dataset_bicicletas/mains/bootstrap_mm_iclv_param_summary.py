@@ -160,7 +160,12 @@ def build_param_annotations(
         block = "other"
         var_name = name
         alt = None
-        if name.startswith("beta"):
+        if name.startswith("beta_shared"):
+            block = "utility"
+            idx = parse_flat_index(name)
+            if idx is not None and u_names:
+                var_name = u_names[idx] if idx < len(u_names) else var_name
+        elif name.startswith("beta"):
             block = "utility"
             idx = parse_flat_index(name)
             if idx is not None and u_names:
@@ -237,6 +242,7 @@ def main() -> None:
     ap.add_argument("--device", type=str, default="cpu")
     ap.add_argument("--by-row", action="store_true")
     ap.add_argument("--beta-only", action="store_true")
+    ap.add_argument("--beta-shared", action="store_true", help="Colapsa betas por alternativa en un beta generico.")
     ap.add_argument("--tabular-only", action="store_true")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--out-csv", type=Path, default=Path("results/MM_ICLV/bootstrap_param_summary.csv"))
@@ -335,11 +341,15 @@ def main() -> None:
     )
     ckpt = args.results_dir / f"MM_ICLV-model-{run_hash}.pt"
     if ckpt.exists():
-        base_model.load_state_dict(torch.load(ckpt, map_location="cpu"), strict=False)
+        try:
+            state = torch.load(ckpt, map_location="cpu", weights_only=True)
+        except TypeError:
+            state = torch.load(ckpt, map_location="cpu")
+        base_model.load_state_dict(state, strict=False)
     base_model = base_model.to(torch.device(args.device))
     base_model.eval()
 
-    print(f"[bootstrap] beta_per_alt=True obs_u_buy_only=False")
+    print(f"[bootstrap] beta_per_alt={not args.beta_shared} obs_u_buy_only=False")
 
     base_params, base_names = expand_param_names(base_model)
     try:
@@ -402,7 +412,11 @@ def main() -> None:
             freeze_audio=bool(config.get("freeze_audio", False)),
         ).to(torch.device(args.device))
         if ckpt.exists():
-            model.load_state_dict(torch.load(ckpt, map_location=args.device), strict=False)
+            try:
+                state = torch.load(ckpt, map_location=args.device, weights_only=True)
+            except TypeError:
+                state = torch.load(ckpt, map_location=args.device)
+            model.load_state_dict(state, strict=False)
 
         opt = torch.optim.Adam(model.parameters(), lr=args.lr)
         best_ll = -np.inf
@@ -434,6 +448,22 @@ def main() -> None:
         params.append(vec)
 
     samples = np.vstack(params)
+    if args.beta_shared:
+        beta_idx = [i for i, n in enumerate(base_names) if n.startswith("beta")]
+        non_beta_idx = [i for i, n in enumerate(base_names) if not n.startswith("beta")]
+        if not beta_idx:
+            raise ValueError("No hay betas para colapsar (beta_shared).")
+        dim_u = len(u_names)
+        if dim_u <= 0:
+            if n_choices > 0 and len(beta_idx) % n_choices == 0:
+                dim_u = len(beta_idx) // n_choices
+            else:
+                raise ValueError("No se pudo inferir dim_obs_u para beta_shared.")
+        beta_samples = samples[:, beta_idx].reshape(samples.shape[0], n_choices, dim_u)
+        beta_shared = beta_samples.mean(axis=1)
+        shared_names = [f"beta_shared[{i}]" for i in range(dim_u)]
+        samples = np.concatenate([beta_shared, samples[:, non_beta_idx]], axis=1)
+        base_names = shared_names + [base_names[i] for i in non_beta_idx]
     if args.beta_only and args.tabular_only:
         raise ValueError("--beta-only y --tabular-only son excluyentes.")
     if args.beta_only:
