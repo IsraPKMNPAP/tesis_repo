@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 import re
 from pathlib import Path
 from typing import List, Sequence, Tuple
@@ -137,6 +138,12 @@ def expand_param_names(model: torch.nn.Module) -> tuple[List[torch.nn.Parameter]
     return params, names
 
 
+def _count_params(model: torch.nn.Module) -> tuple[int, int]:
+    total = sum(p.numel() for p in model.parameters())
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return int(total), int(trainable)
+
+
 def parse_flat_index(name: str) -> int | None:
     if "[" not in name or "]" not in name:
         return None
@@ -244,6 +251,9 @@ def main() -> None:
     ap.add_argument("--beta-only", action="store_true")
     ap.add_argument("--beta-shared", action="store_true", help="Colapsa betas por alternativa en un beta generico.")
     ap.add_argument("--tabular-only", action="store_true")
+    ap.add_argument("--progress-every", type=int, default=1, help="Imprime progreso cada N bootstraps.")
+    ap.add_argument("--iter-log-every", type=int, default=0, help="Imprime log cada N iteraciones internas (0=off).")
+    ap.add_argument("--utility-only", action="store_true", help="Entrena solo beta/delta/ASC para acelerar.")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--out-csv", type=Path, default=Path("results/MM_ICLV/bootstrap_param_summary.csv"))
     ap.add_argument("--split-info", type=Path, default=Path("results/MM_ICLV/split_info.txt"))
@@ -351,17 +361,25 @@ def main() -> None:
 
     print(f"[bootstrap] beta_per_alt={not args.beta_shared} obs_u_buy_only=False")
 
+    if args.utility_only:
+        for n, p in base_model.named_parameters():
+            if not (n.startswith("beta") or n.startswith("delta") or n.startswith("ASC")):
+                p.requires_grad = False
     base_params, base_names = expand_param_names(base_model)
     try:
         u_names = list(preproc_u.get_feature_names_out(obs_u_cols))
     except Exception:
         u_names = obs_u_cols
 
+    total_params, trainable_params = _count_params(base_model)
+    print(f"[bootstrap] params total={total_params} trainable={trainable_params}")
+
     params = []
     rng = np.random.default_rng(args.seed)
     grouped = df.groupby(participant_col).indices if participant_col in df.columns else {}
     uniq_parts = df[participant_col].dropna().unique() if participant_col in df.columns else []
     for b in range(args.n_bootstrap):
+        t0 = time.time()
         if not args.by_row and len(uniq_parts) > 0:
             subs = rng.choice(uniq_parts, size=len(uniq_parts), replace=True)
             idx_list = [grouped[s] for s in subs if s in grouped]
@@ -417,12 +435,18 @@ def main() -> None:
             except TypeError:
                 state = torch.load(ckpt, map_location=args.device)
             model.load_state_dict(state, strict=False)
+        if args.utility_only:
+            for n, p in model.named_parameters():
+                if not (n.startswith("beta") or n.startswith("delta") or n.startswith("ASC")):
+                    p.requires_grad = False
 
         opt = torch.optim.Adam(model.parameters(), lr=args.lr)
         best_ll = -np.inf
         patience = 0
         for _ in range(args.max_iter):
             ll = _epoch_pass(model, loader, torch.device(args.device), optimizer=opt)
+            if args.iter_log_every and (_ + 1) % args.iter_log_every == 0:
+                print(f"[bootstrap] iter={_+1}/{args.max_iter} ll={ll:.4f}")
             if ll > best_ll + 1e-6:
                 best_ll = ll
                 patience = 0
@@ -446,6 +470,9 @@ def main() -> None:
         params_list, _ = expand_param_names(model)
         vec = torch.nn.utils.parameters_to_vector(params_list).detach().cpu().numpy()
         params.append(vec)
+        if args.progress_every and (b + 1) % args.progress_every == 0:
+            dt = time.time() - t0
+            print(f"[bootstrap] done {b+1}/{args.n_bootstrap} (sec={dt:.2f})")
 
     samples = np.vstack(params)
     if args.beta_shared:
