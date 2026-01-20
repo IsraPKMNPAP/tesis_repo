@@ -91,6 +91,25 @@ def main() -> None:
         print("[join] NaN columns (top 20):")
         print(top_na.to_string())
 
+    # Drop rows with any NaN after join (left is latente)
+    before = len(merged)
+    merged = merged.dropna().reset_index(drop=True)
+    if len(merged) != before:
+        print(f"[join] dropped rows with NaN: {before - len(merged)}")
+
+    # Normalize column names by removing suffixes
+    rename_map = {}
+    for c in merged.columns:
+        if c.endswith("_mm"):
+            base = c[:-3]
+            if base not in merged.columns:
+                rename_map[c] = base
+    if rename_map:
+        merged = merged.rename(columns=rename_map)
+        print(f"[join] renamed {len(rename_map)} columns (removed _mm)")
+
+    print(f"[join] final rows: {len(merged)} cols: {len(merged.columns)}")
+
     args.output.parent.mkdir(parents=True, exist_ok=True)
     merged.to_csv(args.output, index=False)
     print(f"Saved: {args.output}")
