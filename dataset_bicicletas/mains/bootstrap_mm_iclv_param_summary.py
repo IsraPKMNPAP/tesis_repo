@@ -372,6 +372,7 @@ def main() -> None:
             if not (n.startswith("beta") or n.startswith("delta") or n.startswith("ASC")):
                 p.requires_grad = False
     base_params, base_names = expand_param_names(base_model)
+    beta_shape = tuple(base_model.beta.shape) if hasattr(base_model, "beta") else None
     try:
         u_names = list(preproc_u.get_feature_names_out(obs_u_cols))
     except Exception:
@@ -490,17 +491,29 @@ def main() -> None:
         non_beta_idx = [i for i, n in enumerate(base_names) if not n.startswith("beta")]
         if not beta_idx:
             raise ValueError("No hay betas para colapsar (beta_shared).")
-        dim_u = len(u_names)
+        if beta_shape is not None and len(beta_shape) == 2:
+            n_choices_beta, dim_u_beta = beta_shape
+        else:
+            n_choices_beta, dim_u_beta = None, None
+        dim_u = dim_u_beta or len(u_names)
         if dim_u <= 0:
-            if n_choices > 0 and len(beta_idx) % n_choices == 0:
-                dim_u = len(beta_idx) // n_choices
+            dim_u = 1
+        expected = (n_choices_beta * dim_u) if n_choices_beta else None
+        if expected is not None and len(beta_idx) != expected:
+            if len(beta_idx) == dim_u:
+                # Ya es beta compartido
+                shared_names = [f"beta_shared[{i}]" for i in range(dim_u)]
+                samples = np.concatenate([samples[:, beta_idx], samples[:, non_beta_idx]], axis=1)
+                base_names = shared_names + [base_names[i] for i in non_beta_idx]
             else:
-                raise ValueError("No se pudo inferir dim_obs_u para beta_shared.")
-        beta_samples = samples[:, beta_idx].reshape(samples.shape[0], n_choices, dim_u)
-        beta_shared = beta_samples.mean(axis=1)
-        shared_names = [f"beta_shared[{i}]" for i in range(dim_u)]
-        samples = np.concatenate([beta_shared, samples[:, non_beta_idx]], axis=1)
-        base_names = shared_names + [base_names[i] for i in non_beta_idx]
+                raise ValueError(f"beta_shared: mismatch beta_idx={len(beta_idx)} expected={expected}")
+        else:
+            n_betas = n_choices_beta if n_choices_beta else n_choices
+            beta_samples = samples[:, beta_idx].reshape(samples.shape[0], n_betas, dim_u)
+            beta_shared = beta_samples.mean(axis=1)
+            shared_names = [f"beta_shared[{i}]" for i in range(dim_u)]
+            samples = np.concatenate([beta_shared, samples[:, non_beta_idx]], axis=1)
+            base_names = shared_names + [base_names[i] for i in non_beta_idx]
     if args.beta_only and args.tabular_only:
         raise ValueError("--beta-only y --tabular-only son excluyentes.")
     if args.beta_only:
