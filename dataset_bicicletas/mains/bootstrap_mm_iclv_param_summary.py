@@ -250,6 +250,7 @@ def main() -> None:
     ap.add_argument("--by-row", action="store_true")
     ap.add_argument("--beta-only", action="store_true")
     ap.add_argument("--beta-shared", action="store_true", help="Colapsa betas por alternativa en un beta generico.")
+    ap.add_argument("--utility-betas-only", action="store_true", help="Guarda solo betas de utilidad (obs_u).")
     ap.add_argument("--tabular-only", action="store_true")
     ap.add_argument("--progress-every", type=int, default=1, help="Imprime progreso cada N bootstraps.")
     ap.add_argument("--iter-log-every", type=int, default=0, help="Imprime log cada N iteraciones internas (0=off).")
@@ -516,12 +517,22 @@ def main() -> None:
             base_names = shared_names + [base_names[i] for i in non_beta_idx]
     if args.beta_only and args.tabular_only:
         raise ValueError("--beta-only y --tabular-only son excluyentes.")
+    if args.utility_betas_only and (args.tabular_only or (not args.beta_only and not args.beta_shared)):
+        # utility-betas-only implica betas (shared o no), sin otros bloques
+        pass
     if args.beta_only:
         keep_idx = [i for i, n in enumerate(base_names) if n.startswith("beta")]
         samples = samples[:, keep_idx]
         base_names = [base_names[i] for i in keep_idx]
     elif args.tabular_only:
         keep_idx = [i for i, n in enumerate(base_names) if n.startswith("beta") or n.startswith("tab_enc")]
+        samples = samples[:, keep_idx]
+        base_names = [base_names[i] for i in keep_idx]
+    elif args.utility_betas_only:
+        if args.beta_shared:
+            keep_idx = [i for i, n in enumerate(base_names) if n.startswith("beta_shared")]
+        else:
+            keep_idx = [i for i, n in enumerate(base_names) if n.startswith("beta")]
         samples = samples[:, keep_idx]
         base_names = [base_names[i] for i in keep_idx]
 
