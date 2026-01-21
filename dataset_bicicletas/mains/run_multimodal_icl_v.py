@@ -157,18 +157,28 @@ def build_datasets(
 ):
     # OBS_LT preprocessing (para el encoder multimodal)
     X_lt_tr_mat, preproc_lt, obs_lt_cols = prepare_preprocessor(df_tr, obs_lt_cols, cat_unique_threshold=cat_unique_threshold)
-    X_lt_val_mat = preproc_lt.transform(df_val[obs_lt_cols].copy())
+    if len(df_val):
+        X_lt_val_mat = preproc_lt.transform(df_val[obs_lt_cols].copy())
+    else:
+        X_lt_val_mat = np.zeros((0, X_lt_tr_mat.shape[1]), dtype=np.float32)
 
     # OBS_U preprocessing
     X_u_tr_mat, preproc_u, obs_u_cols = prepare_preprocessor(df_tr, obs_u_cols, cat_unique_threshold=cat_unique_threshold)
-    X_u_val_mat = preproc_u.transform(df_val[obs_u_cols].copy())
+    if len(df_val):
+        X_u_val_mat = preproc_u.transform(df_val[obs_u_cols].copy())
+    else:
+        X_u_val_mat = np.zeros((0, X_u_tr_mat.shape[1]), dtype=np.float32)
 
     # Indicadores
-    if indicator_cols:
+    if indicator_cols and len(df_val):
         ind_tr_mat, preproc_i, indicator_cols = prepare_preprocessor(df_tr, indicator_cols, cat_unique_threshold=cat_unique_threshold)
         ind_val_mat = preproc_i.transform(df_val[indicator_cols].copy())
         ind_tr_mat = to_float_array(ind_tr_mat)
         ind_val_mat = to_float_array(ind_val_mat)
+    elif indicator_cols:
+        ind_tr_mat, preproc_i, indicator_cols = prepare_preprocessor(df_tr, indicator_cols, cat_unique_threshold=cat_unique_threshold)
+        ind_tr_mat = to_float_array(ind_tr_mat)
+        ind_val_mat = np.zeros((0, ind_tr_mat.shape[1]), dtype=np.float32)
     else:
         ind_tr_mat = np.zeros((len(df_tr), 0), dtype=np.float32)
         ind_val_mat = np.zeros((len(df_val), 0), dtype=np.float32)

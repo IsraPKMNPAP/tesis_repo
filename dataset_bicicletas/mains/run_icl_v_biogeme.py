@@ -173,7 +173,10 @@ def main() -> None:
     df.columns = df.columns.str.lower()
     label_col = args.label_col.lower()
     if label_col not in df.columns:
-        raise ValueError(f"No se encontro etiqueta '{label_col}'.")
+        if "action" in df.columns:
+            df[label_col] = df["action"]
+        else:
+            raise ValueError(f"No se encontro etiqueta '{label_col}'.")
 
     obs_lt_cols = warn_missing(df, load_cols(args.obs_lt_cols), "obs_lt")
     obs_u_cols = warn_missing(df, load_cols(args.obs_u_cols), "obs_u")
