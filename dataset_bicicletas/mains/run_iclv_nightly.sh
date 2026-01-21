@@ -6,7 +6,7 @@ cd "$ROOT_DIR"
 
 # MM-ICLV (10 epochs, 50% participants)
 python mains/run_multimodal_icl_v.py \
-  --pkl data/processed/multimodal_av_join_audio_cached.pkl \
+  --pkl data/processed/mm_iclv_dataset_filtered.pkl \
   --label-col action_proc \
   --obs-lt-cols-file utils/feature_sets/obs_lt_mm.txt \
   --obs-u-cols-file utils/feature_sets/obs_u_mm.txt \
@@ -30,7 +30,7 @@ python mains/run_multimodal_icl_v.py \
 
 # ICLV Biogeme (sanity/standard, 50% participants, minimal draws)
 python mains/run_icl_v_biogeme.py \
-  --data data/raw/all_data.csv \
+  --data data/processed/iclv_dataset_filtered.pkl \
   --obs-lt-cols utils/feature_sets/obs_lt.txt \
   --obs-u-cols utils/feature_sets/obs_u.txt \
   --obs-i-cols utils/feature_sets/obs_i.txt \
