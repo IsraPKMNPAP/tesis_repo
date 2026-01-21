@@ -257,6 +257,8 @@ def main() -> None:
     ap.add_argument("--utility-only", action="store_true", help="Entrena solo beta/delta/ASC para acelerar.")
     ap.add_argument("--skip-video", action="store_true", help="Salta encoder de video (usa ceros).")
     ap.add_argument("--skip-audio", action="store_true", help="Salta encoder de audio (usa ceros).")
+    ap.add_argument("--force-freeze-video", action="store_true", help="Fuerza congelar video en el bootstrap.")
+    ap.add_argument("--force-freeze-audio", action="store_true", help="Fuerza congelar audio en el bootstrap.")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--out-csv", type=Path, default=Path("results/MM_ICLV/bootstrap_param_summary.csv"))
     ap.add_argument("--split-info", type=Path, default=Path("results/MM_ICLV/split_info.txt"))
@@ -339,6 +341,13 @@ def main() -> None:
     y = df[label_col].to_numpy(dtype=np.int64)
     n_choices = int(pd.Series(y).nunique())
 
+    freeze_video = bool(config.get("freeze_video", True))
+    freeze_audio = bool(config.get("freeze_audio", False))
+    if args.force_freeze_video:
+        freeze_video = True
+    if args.force_freeze_audio:
+        freeze_audio = True
+
     base_model = MultimodalICLVDeterministic(
         tab_in_dim=X_lt_all.shape[1],
         dim_obs_u=X_u_all.shape[1],
@@ -349,8 +358,8 @@ def main() -> None:
         alpha=float(config.get("alpha", 1.0)),
         delta_per_alt=not bool(config.get("delta_shared", False)),
         fuse_dropout=0.0,
-        freeze_video=bool(config.get("freeze_video", True)),
-        freeze_audio=bool(config.get("freeze_audio", False)),
+        freeze_video=freeze_video,
+        freeze_audio=freeze_audio,
     )
     ckpt = args.results_dir / f"MM_ICLV-model-{run_hash}.pt"
     if ckpt.exists():
@@ -378,6 +387,8 @@ def main() -> None:
         u_names = list(preproc_u.get_feature_names_out(obs_u_cols))
     except Exception:
         u_names = obs_u_cols
+    if args.utility_betas_only or args.beta_only or args.beta_shared:
+        print(f"[bootstrap] utility vars ({len(u_names)}): {u_names}")
 
     total_params, trainable_params = _count_params(base_model)
     print(f"[bootstrap] params total={total_params} trainable={trainable_params}")
@@ -434,8 +445,8 @@ def main() -> None:
             alpha=float(config.get("alpha", 1.0)),
             delta_per_alt=not bool(config.get("delta_shared", False)),
             fuse_dropout=0.0,
-            freeze_video=bool(config.get("freeze_video", True)),
-            freeze_audio=bool(config.get("freeze_audio", False)),
+            freeze_video=freeze_video,
+            freeze_audio=freeze_audio,
         ).to(torch.device(args.device))
         if ckpt.exists():
             try:
@@ -530,9 +541,9 @@ def main() -> None:
         base_names = [base_names[i] for i in keep_idx]
     elif args.utility_betas_only:
         if args.beta_shared:
-            keep_idx = [i for i, n in enumerate(base_names) if n.startswith("beta_shared")]
+            keep_idx = [i for i, n in enumerate(base_names) if n.startswith("beta_shared") or n.startswith("ASC")]
         else:
-            keep_idx = [i for i, n in enumerate(base_names) if n.startswith("beta")]
+            keep_idx = [i for i, n in enumerate(base_names) if n.startswith("beta") or n.startswith("ASC")]
         samples = samples[:, keep_idx]
         base_names = [base_names[i] for i in keep_idx]
 
