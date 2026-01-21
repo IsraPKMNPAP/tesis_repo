@@ -92,6 +92,32 @@ def _map_cols(df: pd.DataFrame, cols: List[str]) -> tuple[List[str], List[str]]:
     return resolved, missing
 
 
+def _prep_for_preproc(preproc, df: pd.DataFrame) -> pd.DataFrame:
+    """Prepara df con imputacion y tipos compatibles con el preprocessor entrenado."""
+    num_cols = []
+    cat_cols = []
+    for name, _, cols in getattr(preproc, "transformers_", []):
+        if name == "num":
+            num_cols = list(cols)
+        elif name == "cat":
+            cat_cols = list(cols)
+    # asegurar columnas existen
+    for c in num_cols + cat_cols:
+        if c not in df.columns:
+            df[c] = np.nan
+    df_num = df[num_cols].apply(pd.to_numeric, errors="coerce") if num_cols else pd.DataFrame(index=df.index)
+    if num_cols:
+        med = df_num.median(numeric_only=True)
+        df_num = df_num.fillna(med)
+    df_cat = df[cat_cols].copy() if cat_cols else pd.DataFrame(index=df.index)
+    if cat_cols:
+        for c in cat_cols:
+            mode = df_cat[c].mode(dropna=True)
+            fill_val = mode.iloc[0] if len(mode) else "missing"
+            df_cat[c] = df_cat[c].fillna(fill_val).infer_objects(copy=False).astype(str)
+    return pd.concat([df_num, df_cat], axis=1)
+
+
 def to_float_array(mat) -> np.ndarray:
     try:
         arr = mat.toarray()
@@ -360,8 +386,8 @@ def main() -> None:
     if missing_u:
         raise ValueError(f"Faltan columnas OBS_U en df: {missing_u}")
 
-    X_lt_all = to_float_array(preproc_lt.transform(convertir_a_categorico(categorias_a_str(df[obs_lt_cols].copy()))))
-    X_u_all = to_float_array(preproc_u.transform(convertir_a_categorico(categorias_a_str(df[obs_u_cols].copy()))))
+    X_lt_all = to_float_array(preproc_lt.transform(_prep_for_preproc(preproc_lt, df[obs_lt_cols].copy())))
+    X_u_all = to_float_array(preproc_u.transform(_prep_for_preproc(preproc_u, df[obs_u_cols].copy())))
     X_i_all = encode_indicator_blocks(df_train, df, ind_cols)
 
     y = df[label_col].to_numpy(dtype=np.int64)
