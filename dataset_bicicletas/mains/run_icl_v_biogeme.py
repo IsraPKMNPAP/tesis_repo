@@ -62,10 +62,17 @@ def expand_categoricals(
     cat_cols = []
     num_cols = []
     for c in cols:
-        if not pd.api.types.is_numeric_dtype(df[c]) or df[c].nunique(dropna=True) <= cat_unique_threshold:
+        nunique = df[c].nunique(dropna=True)
+        is_num = pd.api.types.is_numeric_dtype(df[c])
+        if (not is_num) and nunique > cat_unique_threshold:
+            print(f"[biogeme] dropped high-card categorical: {c} (unique={nunique})")
+            continue
+        if nunique <= cat_unique_threshold:
             cat_cols.append(c)
-        else:
+        elif is_num:
             num_cols.append(c)
+        else:
+            cat_cols.append(c)
     # Standardize numeric only (mean 0, std 1)
     if standardize_numeric and num_cols:
         for c in num_cols:
@@ -144,7 +151,7 @@ def main() -> None:
     parser.add_argument("--n-latent", type=int, default=1)
     parser.add_argument("--mnl-only", action="store_true", help="Usa MNL sin latentes ni medicion.")
     parser.add_argument("--no-measurement", action="store_true", help="Usa latentes sin bloque de medicion.")
-    parser.add_argument("--cat-unique-threshold", type=int, default=10)
+    parser.add_argument("--cat-unique-threshold", type=int, default=5)
     parser.add_argument("--standardize-numeric-only", action="store_true", default=True)
     parser.add_argument("--minimal", action="store_true")
     parser.add_argument("--limit-blocks", action="store_true", help="Limita cantidad de variables por bloque")

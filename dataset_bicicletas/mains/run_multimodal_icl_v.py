@@ -12,7 +12,7 @@ import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import StandardScaler, OneHotEncoder, RobustScaler
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -35,7 +35,6 @@ from utils.results_io import (
     artifact_name,
     register_run,
 )
-from src.data_cleaning.cleaning import categorias_a_str, convertir_a_categorico
 
 
 def to_float_array(mat) -> np.ndarray:
@@ -46,19 +45,55 @@ def to_float_array(mat) -> np.ndarray:
     return arr.astype(np.float32)
 
 
-def prepare_preprocessor(df: pd.DataFrame, cols: Sequence[str], scaler: str = "standard"):
-    df_prep = convertir_a_categorico(categorias_a_str(df[cols].copy()))
-    numeric = df_prep.select_dtypes(include=["int64", "float64", "int32", "float32"]).columns.tolist()
-    categorical = df_prep.select_dtypes(include=["category"]).columns.tolist()
-    scaler_cls = RobustScaler if scaler == "robust" else StandardScaler
+def split_cols_by_type(df: pd.DataFrame, cols: Sequence[str], cat_unique_threshold: int):
+    numeric = []
+    categorical = []
+    dropped = []
+    for c in cols:
+        if c not in df.columns:
+            continue
+        try:
+            nunique = df[c].nunique(dropna=True)
+        except Exception:
+            nunique = None
+        is_num = pd.api.types.is_numeric_dtype(df[c])
+        if not is_num and nunique is not None and nunique > cat_unique_threshold:
+            dropped.append(c)
+            continue
+        if nunique is not None and nunique <= cat_unique_threshold:
+            categorical.append(c)
+        else:
+            if is_num:
+                numeric.append(c)
+            else:
+                categorical.append(c)
+    return numeric, categorical, dropped
+
+
+def prepare_preprocessor(df: pd.DataFrame, cols: Sequence[str], cat_unique_threshold: int):
+    cols = [c for c in cols if c in df.columns]
+    numeric, categorical, dropped = split_cols_by_type(df, cols, cat_unique_threshold)
+    if dropped:
+        print(f"[prep] dropped high-card categoricals: {dropped}")
+    df_num = df[numeric].apply(pd.to_numeric, errors="coerce") if numeric else pd.DataFrame(index=df.index)
+    if numeric:
+        df_num = df_num.fillna(df_num.median(numeric_only=True))
+    df_cat = df[categorical].copy() if categorical else pd.DataFrame(index=df.index)
+    if categorical:
+        for c in categorical:
+            mode = df_cat[c].mode(dropna=True)
+            fill_val = mode.iloc[0] if len(mode) else "missing"
+            df_cat[c] = df_cat[c].fillna(fill_val).astype(str)
+    df_prep = pd.concat([df_num, df_cat], axis=1)
     preprocessor = ColumnTransformer(
         transformers=[
-            ("num", scaler_cls(), numeric),
-            ("cat", OneHotEncoder(handle_unknown="ignore"), categorical),
+            ("num", StandardScaler(), numeric),
+            ("cat", OneHotEncoder(handle_unknown="ignore", drop="first"), categorical),
         ]
     )
     mat = preprocessor.fit_transform(df_prep)
-    return mat, preprocessor
+    kept_cols = numeric + categorical
+    return mat, preprocessor, kept_cols
 
 
 def encode_indicator_blocks(df_tr: pd.DataFrame, df_val: pd.DataFrame, cols: Sequence[str]) -> tuple[np.ndarray, np.ndarray]:
@@ -118,17 +153,25 @@ def build_datasets(
     audio_duration: float = 5.0,
     audio_template: str = "raw_audio_{participant}.wav",
     audio_fallback_template: str | None = None,
+    cat_unique_threshold: int = 5,
 ):
     # OBS_LT preprocessing (para el encoder multimodal)
-    X_lt_tr_mat, preproc_lt = prepare_preprocessor(df_tr, obs_lt_cols, scaler=scaler)
-    X_lt_val_mat = preproc_lt.transform(convertir_a_categorico(categorias_a_str(df_val[obs_lt_cols].copy())))
+    X_lt_tr_mat, preproc_lt, obs_lt_cols = prepare_preprocessor(df_tr, obs_lt_cols, cat_unique_threshold=cat_unique_threshold)
+    X_lt_val_mat = preproc_lt.transform(df_val[obs_lt_cols].copy())
 
     # OBS_U preprocessing
-    X_u_tr_mat, preproc_u = prepare_preprocessor(df_tr, obs_u_cols, scaler=scaler)
-    X_u_val_mat = preproc_u.transform(convertir_a_categorico(categorias_a_str(df_val[obs_u_cols].copy())))
+    X_u_tr_mat, preproc_u, obs_u_cols = prepare_preprocessor(df_tr, obs_u_cols, cat_unique_threshold=cat_unique_threshold)
+    X_u_val_mat = preproc_u.transform(df_val[obs_u_cols].copy())
 
     # Indicadores
-    ind_tr_mat, ind_val_mat = encode_indicator_blocks(df_tr[indicator_cols].copy(), df_val[indicator_cols].copy(), indicator_cols)
+    if indicator_cols:
+        ind_tr_mat, preproc_i, indicator_cols = prepare_preprocessor(df_tr, indicator_cols, cat_unique_threshold=cat_unique_threshold)
+        ind_val_mat = preproc_i.transform(df_val[indicator_cols].copy())
+        ind_tr_mat = to_float_array(ind_tr_mat)
+        ind_val_mat = to_float_array(ind_val_mat)
+    else:
+        ind_tr_mat = np.zeros((len(df_tr), 0), dtype=np.float32)
+        ind_val_mat = np.zeros((len(df_val), 0), dtype=np.float32)
 
     # Base multimodal dataset (usa OBS_LT como tabular)
     if video_root:
@@ -189,7 +232,7 @@ def build_datasets(
     train_ds = MultimodalICLVDataset(base_tr, obs_u_tr_t, ind_tr_t, n_choices=num_choices)
     val_ds = MultimodalICLVDataset(base_val, obs_u_val_t, ind_val_t, n_choices=num_choices)
 
-    return train_ds, val_ds, preproc_lt, preproc_u
+    return train_ds, val_ds, preproc_lt, preproc_u, preproc_i if indicator_cols else None, obs_lt_cols, obs_u_cols, indicator_cols
 
 
 def run_epoch(model, loader, device, train: bool = True, optimizer=None, grad_clip: float = 0.0):
@@ -330,6 +373,7 @@ def main():
     ap.add_argument("--fuse-dropout", type=float, default=0.0)
     ap.add_argument("--freeze-video", action="store_true", help="Congela el encoder de video para acelerar")
     ap.add_argument("--freeze-audio", action="store_true", help="Congela el encoder de audio")
+    ap.add_argument("--cat-unique-threshold", type=int, default=5, help="Umbral de unicos para categoricas")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -399,7 +443,7 @@ def main():
     )
     print(format_split_report(info))
 
-    train_ds, val_ds, preproc_lt, preproc_u = build_datasets(
+    train_ds, val_ds, preproc_lt, preproc_u, preproc_i, obs_lt_cols, obs_u_cols, indicator_cols = build_datasets(
         df_tr=df_tr,
         df_val=df_val,
         obs_lt_cols=obs_lt_cols,
@@ -421,13 +465,17 @@ def main():
         audio_duration=args.audio_duration,
         audio_template=args.audio_template,
         audio_fallback_template=args.audio_fallback_template,
+        cat_unique_threshold=args.cat_unique_threshold,
     )
     # Test dataset opcional
     test_ds = None
     if len(df_te):
-        X_lt_te_mat = preproc_lt.transform(convertir_a_categorico(categorias_a_str(df_te[obs_lt_cols].copy())))
-        X_u_te_mat = preproc_u.transform(convertir_a_categorico(categorias_a_str(df_te[obs_u_cols].copy())))
-        _, ind_te_mat = encode_indicator_blocks(df_tr[indicator_cols].copy(), df_te[indicator_cols].copy(), indicator_cols)
+        X_lt_te_mat = preproc_lt.transform(df_te[obs_lt_cols].copy())
+        X_u_te_mat = preproc_u.transform(df_te[obs_u_cols].copy())
+        if indicator_cols and preproc_i is not None:
+            ind_te_mat = to_float_array(preproc_i.transform(df_te[indicator_cols].copy()))
+        else:
+            ind_te_mat = np.zeros((len(df_te), 0), dtype=np.float32)
 
         base_te = MultimodalAudioDataset(
             df=df_te,
@@ -501,6 +549,7 @@ def main():
         "val_split": args.val_split,
         "test_split": args.test_split,
         "tabular_scaler": args.tabular_scaler,
+        "cat_unique_threshold": args.cat_unique_threshold,
         "seed": args.seed,
         "device": str(device),
         "freeze_video": args.freeze_video,
