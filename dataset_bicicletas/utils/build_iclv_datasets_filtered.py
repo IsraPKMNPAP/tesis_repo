@@ -166,7 +166,11 @@ def main() -> None:
     join_cols = [c for c in [args.participant_col, args.timestamp_col] if c in df_all.columns and c in df_mm.columns]
     if join_cols:
         keep_cols = [c for c in [args.frames_col, args.audio_col] if c in df_mm.columns]
-        df_all = df_all.merge(df_mm[join_cols + keep_cols], on=join_cols, how="left")
+        for col in join_cols:
+            df_all[col] = df_all[col].astype(str)
+            df_mm[col] = df_mm[col].astype(str)
+        df_mm_sub = df_mm[join_cols + keep_cols].drop_duplicates(subset=join_cols)
+        df_all = df_all.merge(df_mm_sub, on=join_cols, how="left")
 
     # ICLV normal
     lt_cols = [c for c in _load_cols(args.obs_lt) if c in df_all.columns]
