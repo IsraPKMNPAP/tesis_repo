@@ -393,6 +393,7 @@ def main():
     if not pkl_path.exists():
         raise FileNotFoundError(f"No existe el pickle {pkl_path}")
     df = pd.read_pickle(pkl_path).reset_index(drop=True)
+    df.columns = df.columns.str.strip().str.lower().str.replace(" ", "_")
     # Submuestreo de participantes si se solicita
     if 0 < args.participant_frac < 1.0:
         rng = np.random.RandomState(args.seed)
@@ -424,9 +425,13 @@ def main():
     if args.obs_lt_cols_file or args.obs_u_cols_file or args.indicator_cols_file:
         base_features_file = None
 
-    obs_lt_cols = resolve_cols(df, args.obs_lt_cols, args.obs_lt_cols_file or base_features_file, drop_cols)
-    obs_u_cols = resolve_cols(df, args.obs_u_cols, args.obs_u_cols_file or base_features_file, drop_cols)
-    indicator_cols = resolve_cols(df, args.indicator_cols, args.indicator_cols_file, set())
+    obs_lt_cols = [c.strip().lower().replace(" ", "_") for c in (args.obs_lt_cols or [])] if args.obs_lt_cols else args.obs_lt_cols
+    obs_u_cols = [c.strip().lower().replace(" ", "_") for c in (args.obs_u_cols or [])] if args.obs_u_cols else args.obs_u_cols
+    indicator_cols = [c.strip().lower().replace(" ", "_") for c in (args.indicator_cols or [])] if args.indicator_cols else args.indicator_cols
+
+    obs_lt_cols = resolve_cols(df, obs_lt_cols, args.obs_lt_cols_file or base_features_file, drop_cols)
+    obs_u_cols = resolve_cols(df, obs_u_cols, args.obs_u_cols_file or base_features_file, drop_cols)
+    indicator_cols = resolve_cols(df, indicator_cols, args.indicator_cols_file, set())
     if not indicator_cols:
         indicator_cols = []
 

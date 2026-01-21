@@ -170,7 +170,7 @@ def main() -> None:
         df = pd.read_csv(data_path, low_memory=False)
     else:
         df = pd.read_pickle(data_path)
-    df.columns = df.columns.str.lower()
+    df.columns = df.columns.str.strip().str.lower().str.replace(" ", "_")
     label_col = args.label_col.lower()
     if label_col not in df.columns:
         if "action" in df.columns:

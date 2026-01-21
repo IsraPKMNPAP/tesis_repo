@@ -375,6 +375,7 @@ def main():
     else:
         df = pd.read_pickle(pkl_path)
     df = df.reset_index(drop=True)
+    df.columns = df.columns.str.strip().str.lower().str.replace(" ", "_")
 
     # Submuestreo de participantes si se solicita
     if 0 < args.participant_frac < 1.0:
@@ -400,24 +401,28 @@ def main():
     if args.obs_lt_cols_file or args.obs_u_cols_file or args.indicator_cols_file:
         base_features_file = None
 
+    obs_lt_cols = [c.strip().lower().replace(" ", "_") for c in (args.obs_lt_cols or [])] if args.obs_lt_cols else args.obs_lt_cols
+    obs_u_cols = [c.strip().lower().replace(" ", "_") for c in (args.obs_u_cols or [])] if args.obs_u_cols else args.obs_u_cols
+    indicator_cols = [c.strip().lower().replace(" ", "_") for c in (args.indicator_cols or [])] if args.indicator_cols else args.indicator_cols
+
     obs_lt_cols = resolve_cols(
         df=df,
         base_features_file=base_features_file,
-        explicit_cols=args.obs_lt_cols,
+        explicit_cols=obs_lt_cols,
         cols_file=args.obs_lt_cols_file,
         drop_cols=drop_cols,
     )
     obs_u_cols = resolve_cols(
         df=df,
         base_features_file=base_features_file,
-        explicit_cols=args.obs_u_cols,
+        explicit_cols=obs_u_cols,
         cols_file=args.obs_u_cols_file,
         drop_cols=drop_cols,
     )
     indicator_cols = resolve_cols(
         df=df,
         base_features_file=args.features_file,
-        explicit_cols=args.indicator_cols,
+        explicit_cols=indicator_cols,
         cols_file=args.indicator_cols_file,
         drop_cols=set(),  # para indicadores permitimos non-numeric; se codifican
     )
