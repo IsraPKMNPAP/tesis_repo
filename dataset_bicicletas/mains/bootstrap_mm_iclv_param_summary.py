@@ -4,6 +4,7 @@ import argparse
 import json
 import time
 import re
+import unicodedata
 from pathlib import Path
 from typing import List, Sequence, Tuple
 
@@ -63,6 +64,32 @@ def parse_train_parts(split_path: Path) -> List[str]:
                 except Exception:
                     return []
     return []
+
+
+def _normalize_name(name: str) -> str:
+    s = unicodedata.normalize("NFKD", str(name))
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = s.strip().lower().replace(" ", "_")
+    s = re.sub(r"[^0-9a-z_]+", "_", s)
+    s = re.sub(r"_+", "_", s).strip("_")
+    return s
+
+
+def _map_cols(df: pd.DataFrame, cols: List[str]) -> tuple[List[str], List[str]]:
+    norm_map = {}
+    for c in df.columns:
+        norm = _normalize_name(c)
+        if norm not in norm_map:
+            norm_map[norm] = c
+    resolved = []
+    missing = []
+    for c in cols:
+        norm = _normalize_name(c)
+        if norm in norm_map:
+            resolved.append(norm_map[norm])
+        else:
+            missing.append(c)
+    return resolved, missing
 
 
 def to_float_array(mat) -> np.ndarray:
@@ -285,6 +312,7 @@ def main() -> None:
 
     df = pd.read_pickle(pkl_path) if pkl_path.suffix.lower() != ".csv" else pd.read_csv(pkl_path, low_memory=False)
     df = df.reset_index(drop=True)
+    df.columns = df.columns.str.strip().str.lower().str.replace(" ", "_")
     if label_col not in df.columns:
         raise ValueError(f"No existe label_col '{label_col}' en el dataframe.")
 
@@ -307,9 +335,6 @@ def main() -> None:
     obs_lt_cols = load_features_file(obs_lt_cols_file) if obs_lt_cols_file else []
     obs_u_cols = load_features_file(obs_u_cols_file) if obs_u_cols_file else []
     ind_cols = load_features_file(ind_cols_file) if ind_cols_file else []
-    obs_lt_cols = [c for c in obs_lt_cols if c in df.columns]
-    obs_u_cols = [c for c in obs_u_cols if c in df.columns]
-    ind_cols = [c for c in ind_cols if c in df.columns]
 
     participant_col = args.participant_col or config.get("participant_col", "participant")
     train_parts = set(parse_train_parts(args.split_info))
@@ -327,8 +352,9 @@ def main() -> None:
     if not obs_u_cols and hasattr(preproc_u, "feature_names_in_"):
         obs_u_cols = list(preproc_u.feature_names_in_)
 
-    missing_lt = [c for c in obs_lt_cols if c not in df.columns]
-    missing_u = [c for c in obs_u_cols if c not in df.columns]
+    obs_lt_cols, missing_lt = _map_cols(df, obs_lt_cols)
+    obs_u_cols, missing_u = _map_cols(df, obs_u_cols)
+    ind_cols, _ = _map_cols(df, ind_cols)
     if missing_lt:
         raise ValueError(f"Faltan columnas OBS_LT en df: {missing_lt}")
     if missing_u:
