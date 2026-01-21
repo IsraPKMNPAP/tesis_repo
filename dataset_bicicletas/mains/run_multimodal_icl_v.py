@@ -83,7 +83,7 @@ def prepare_preprocessor(df: pd.DataFrame, cols: Sequence[str], cat_unique_thres
         for c in categorical:
             mode = df_cat[c].mode(dropna=True)
             fill_val = mode.iloc[0] if len(mode) else "missing"
-            df_cat[c] = df_cat[c].fillna(fill_val).astype(str)
+            df_cat[c] = df_cat[c].fillna(fill_val).infer_objects(copy=False).astype(str)
     df_prep = pd.concat([df_num, df_cat], axis=1)
     preprocessor = ColumnTransformer(
         transformers=[
