@@ -111,16 +111,10 @@ def _filter_block(df: pd.DataFrame, cols: List[str], y: pd.Series, cat_max: int,
     return cols_final
 
 
-def _expand_onehot(df: pd.DataFrame, cols: List[str], cat_max: int) -> pd.DataFrame:
-    cat_cols = _categorical_cols(df, cols, cat_max)
+def _select_raw(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
     base = df[cols].copy()
     base = base.replace([np.inf, -np.inf], np.nan)
-    base = base.fillna(base.median(numeric_only=True))
-    if not cat_cols:
-        return base
-    dummies = pd.get_dummies(base[cat_cols].astype(str), drop_first=True)
-    base_num = base.drop(columns=cat_cols, errors="ignore")
-    return pd.concat([base_num, dummies], axis=1)
+    return base
 
 
 def main() -> None:
@@ -183,9 +177,9 @@ def main() -> None:
     u_f = _filter_block(df_all, u_cols, y, args.cat_max_unique, args.corr_thresh, args.label_corr_thresh)
     i_f = _filter_block(df_all, i_cols, y, args.cat_max_unique, args.corr_thresh, args.label_corr_thresh)
 
-    X_lt = _expand_onehot(df_all, lt_f, args.cat_max_unique)
-    X_u = _expand_onehot(df_all, u_f, args.cat_max_unique)
-    X_i = _expand_onehot(df_all, i_f, args.cat_max_unique)
+    X_lt = _select_raw(df_all, lt_f)
+    X_u = _select_raw(df_all, u_f)
+    X_i = _select_raw(df_all, i_f)
     df_iclv = pd.concat([df_all[base_cols], X_lt, X_u, X_i], axis=1)
     missing_iclv = int(df_iclv.isna().sum().sum())
     print(f"[ICLV] missing before drop: {missing_iclv}")
@@ -209,9 +203,9 @@ def main() -> None:
     u_mm_f = _filter_block(df_all, u_mm, y, args.cat_max_unique, args.corr_thresh, args.label_corr_thresh)
     i_mm_f = _filter_block(df_all, i_mm, y, args.cat_max_unique, args.corr_thresh, args.label_corr_thresh)
 
-    X_lt_mm = _expand_onehot(df_all, lt_mm_f, args.cat_max_unique)
-    X_u_mm = _expand_onehot(df_all, u_mm_f, args.cat_max_unique)
-    X_i_mm = _expand_onehot(df_all, i_mm_f, args.cat_max_unique)
+    X_lt_mm = _select_raw(df_all, lt_mm_f)
+    X_u_mm = _select_raw(df_all, u_mm_f)
+    X_i_mm = _select_raw(df_all, i_mm_f)
     df_mm_out = pd.concat([df_all[mm_cols], X_lt_mm, X_u_mm, X_i_mm], axis=1)
     missing_mm = int(df_mm_out.isna().sum().sum())
     print(f"[MM] missing before drop: {missing_mm}")
