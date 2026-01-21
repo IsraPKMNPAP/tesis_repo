@@ -214,6 +214,9 @@ def main() -> None:
     df, obs_i_cols = expand_categoricals(
         df, obs_i_cols, prefix="i_", cat_unique_threshold=args.cat_unique_threshold, standardize_numeric=args.standardize_numeric_only
     )
+    print(f"[biogeme] obs_lt cols ({len(obs_lt_cols)}): {obs_lt_cols}")
+    print(f"[biogeme] obs_u cols ({len(obs_u_cols)}): {obs_u_cols}")
+    print(f"[biogeme] obs_i cols ({len(obs_i_cols)}): {obs_i_cols}")
     # Sanitize names for Biogeme
     df, obs_lt_cols = sanitize_columns(df, obs_lt_cols, "obs_lt")
     df, obs_u_cols = sanitize_columns(df, obs_u_cols, "obs_u")
