@@ -12,6 +12,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import torch
+import warnings
 
 # Ensure package root on path (dataset_bicicletas/)
 ROOT = Path(__file__).resolve().parent.parent
@@ -24,6 +25,9 @@ from src.data_loading.multimodal_icl_v import MultimodalICLVDataset, collate_mul
 from src.models.icl_v import MultimodalICLVDeterministic
 from src.data_cleaning.cleaning import categorias_a_str, convertir_a_categorico
 from utils.features import load_features_file
+
+pd.set_option("future.no_silent_downcasting", True)
+warnings.filterwarnings("ignore", category=UserWarning, module=r"sklearn\.preprocessing\._encoders")
 
 
 def parse_run_index(idx_path: Path) -> Tuple[str, dict]:
@@ -440,10 +444,10 @@ def main() -> None:
     except Exception:
         u_names = obs_u_cols
     if args.utility_betas_only or args.beta_only or args.beta_shared:
-        print(f"[bootstrap] utility vars ({len(u_names)}): {u_names}")
+        print(f"[bootstrap] utility vars ({len(u_names)}): {u_names}", flush=True)
 
     total_params, trainable_params = _count_params(base_model)
-    print(f"[bootstrap] params total={total_params} trainable={trainable_params}")
+    print(f"[bootstrap] params total={total_params} trainable={trainable_params}", flush=True)
 
     params = []
     rng = np.random.default_rng(args.seed)
@@ -521,7 +525,7 @@ def main() -> None:
         for _ in range(args.max_iter):
             ll = _epoch_pass(model, loader, torch.device(args.device), optimizer=opt)
             if args.iter_log_every and (_ + 1) % args.iter_log_every == 0:
-                print(f"[bootstrap] iter={_+1}/{args.max_iter} ll={ll:.4f}")
+                print(f"[bootstrap] iter={_+1}/{args.max_iter} ll={ll:.4f}", flush=True)
             if ll > best_ll + 1e-6:
                 best_ll = ll
                 patience = 0
@@ -547,7 +551,7 @@ def main() -> None:
         params.append(vec)
         if args.progress_every and (b + 1) % args.progress_every == 0:
             dt = time.time() - t0
-            print(f"[bootstrap] done {b+1}/{args.n_bootstrap} (sec={dt:.2f})")
+            print(f"[bootstrap] done {b+1}/{args.n_bootstrap} (sec={dt:.2f})", flush=True)
 
     samples = np.vstack(params)
     if args.beta_shared:
