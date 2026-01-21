@@ -316,6 +316,7 @@ def main() -> None:
     ap.add_argument("--skip-audio", action="store_true", help="Salta encoder de audio (usa ceros).")
     ap.add_argument("--force-freeze-video", action="store_true", help="Fuerza congelar video en el bootstrap.")
     ap.add_argument("--force-freeze-audio", action="store_true", help="Fuerza congelar audio en el bootstrap.")
+    ap.add_argument("--inflation-n-bootstrap", type=int, default=0, help="Bootstrap extra por participante para ratio de inflacion.")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--out-csv", type=Path, default=Path("results/MM_ICLV/bootstrap_param_summary.csv"))
     ap.add_argument("--split-info", type=Path, default=Path("results/MM_ICLV/split_info.txt"))
@@ -449,111 +450,120 @@ def main() -> None:
     total_params, trainable_params = _count_params(base_model)
     print(f"[bootstrap] params total={total_params} trainable={trainable_params}", flush=True)
 
-    params = []
     rng = np.random.default_rng(args.seed)
     grouped = df.groupby(participant_col).indices if participant_col in df.columns else {}
     uniq_parts = df[participant_col].dropna().unique() if participant_col in df.columns else []
-    for b in range(args.n_bootstrap):
-        t0 = time.time()
-        if not args.by_row and len(uniq_parts) > 0:
-            subs = rng.choice(uniq_parts, size=len(uniq_parts), replace=True)
-            idx_list = [grouped[s] for s in subs if s in grouped]
-            idx = np.concatenate(idx_list) if idx_list else bootstrap_indices(len(y), args.seed + b)
-        else:
-            idx = bootstrap_indices(len(y), args.seed + b)
 
-        df_b = df.iloc[idx].reset_index(drop=True)
-        X_lt_b = X_lt_all[idx]
-        X_u_b = X_u_all[idx]
-        X_i_b = X_i_all[idx]
-        y_b = y[idx]
-
-        base = MultimodalAudioDataset(
-            df=df_b,
-            tab_columns=obs_lt_cols,
-            X_tab_array=torch.tensor(X_lt_b, dtype=torch.float32),
-            path_col=args.path_col,
-            label_col=label_col,
-            timestamp_col=args.timestamp_col,
-            window_id_col=args.window_id_col,
-            participant_col=participant_col,
-            audio_start_col=args.audio_start_col,
-            audio_cached_col=args.audio_cached_col,
-            audio_root=args.audio_root,
-            audio_template=args.audio_template,
-            audio_fallback_template=args.audio_fallback_template,
-            audio_sr=args.audio_sr,
-            audio_duration=args.audio_duration,
-            audio_norm=args.audio_norm,
-        )
-        obs_u_t = torch.tensor(X_u_b, dtype=torch.float32)
-        ind_t = torch.tensor(X_i_b, dtype=torch.float32)
-        ds = MultimodalICLVDataset(base, obs_u_t, ind_t, n_choices=n_choices)
-        loader = torch.utils.data.DataLoader(ds, batch_size=int(config.get("batch_size", 4)), shuffle=True, collate_fn=collate_multimodal_icl_v)
-
-        model = MultimodalICLVDeterministic(
-            tab_in_dim=X_lt_all.shape[1],
-            dim_obs_u=X_u_all.shape[1],
-            n_indicators=X_i_all.shape[1],
-            n_choices=n_choices,
-            tab_emb_dim=int(config.get("tab_emb_dim", 128)),
-            shared_dim=int(config.get("n_latent", 64)),
-            alpha=float(config.get("alpha", 1.0)),
-            delta_per_alt=not bool(config.get("delta_shared", False)),
-            fuse_dropout=0.0,
-            freeze_video=freeze_video,
-            freeze_audio=freeze_audio,
-        ).to(torch.device(args.device))
-        if ckpt.exists():
-            try:
-                state = torch.load(ckpt, map_location=args.device, weights_only=True)
-            except TypeError:
-                state = torch.load(ckpt, map_location=args.device)
-            model.load_state_dict(state, strict=False)
-        if args.skip_video:
-            model.skip_video = True
-        if args.skip_audio:
-            model.skip_audio = True
-        if args.utility_only:
-            for n, p in model.named_parameters():
-                if not (n.startswith("beta") or n.startswith("delta") or n.startswith("ASC")):
-                    p.requires_grad = False
-
-        opt = torch.optim.Adam(model.parameters(), lr=args.lr)
-        best_ll = -np.inf
-        patience = 0
-        for _ in range(args.max_iter):
-            ll = _epoch_pass(model, loader, torch.device(args.device), optimizer=opt)
-            if args.iter_log_every and (_ + 1) % args.iter_log_every == 0:
-                print(f"[bootstrap] iter={_+1}/{args.max_iter} ll={ll:.4f}", flush=True)
-            if ll > best_ll + 1e-6:
-                best_ll = ll
-                patience = 0
+    def _run_bootstrap(n_bootstrap: int, by_row: bool, show_progress: bool) -> np.ndarray:
+        params_local = []
+        for b in range(n_bootstrap):
+            t0 = time.time()
+            if not by_row and len(uniq_parts) > 0:
+                subs = rng.choice(uniq_parts, size=len(uniq_parts), replace=True)
+                idx_list = [grouped[s] for s in subs if s in grouped]
+                idx = np.concatenate(idx_list) if idx_list else bootstrap_indices(len(y), args.seed + b)
             else:
-                patience += 1
-                if patience >= args.early_stop_patience:
-                    break
+                idx = bootstrap_indices(len(y), args.seed + b)
 
-        if args.lbfgs_steps > 0:
-            lbfgs = torch.optim.LBFGS(model.parameters(), max_iter=args.lbfgs_steps, line_search_fn="strong_wolfe")
+            df_b = df.iloc[idx].reset_index(drop=True)
+            X_lt_b = X_lt_all[idx]
+            X_u_b = X_u_all[idx]
+            X_i_b = X_i_all[idx]
+            y_b = y[idx]
 
-            def closure():
-                lbfgs.zero_grad()
-                ll_full = _epoch_pass(model, loader, torch.device(args.device), optimizer=None)
-                loss = -torch.tensor(ll_full, device=torch.device(args.device), dtype=torch.float32)
-                loss.backward()
-                return loss
+            base = MultimodalAudioDataset(
+                df=df_b,
+                tab_columns=obs_lt_cols,
+                X_tab_array=torch.tensor(X_lt_b, dtype=torch.float32),
+                path_col=args.path_col,
+                label_col=label_col,
+                timestamp_col=args.timestamp_col,
+                window_id_col=args.window_id_col,
+                participant_col=participant_col,
+                audio_start_col=args.audio_start_col,
+                audio_cached_col=args.audio_cached_col,
+                audio_root=args.audio_root,
+                audio_template=args.audio_template,
+                audio_fallback_template=args.audio_fallback_template,
+                audio_sr=args.audio_sr,
+                audio_duration=args.audio_duration,
+                audio_norm=args.audio_norm,
+            )
+            obs_u_t = torch.tensor(X_u_b, dtype=torch.float32)
+            ind_t = torch.tensor(X_i_b, dtype=torch.float32)
+            ds = MultimodalICLVDataset(base, obs_u_t, ind_t, n_choices=n_choices)
+            loader = torch.utils.data.DataLoader(
+                ds, batch_size=int(config.get("batch_size", 4)), shuffle=True, collate_fn=collate_multimodal_icl_v
+            )
 
-            lbfgs.step(closure)
+            model = MultimodalICLVDeterministic(
+                tab_in_dim=X_lt_all.shape[1],
+                dim_obs_u=X_u_all.shape[1],
+                n_indicators=X_i_all.shape[1],
+                n_choices=n_choices,
+                tab_emb_dim=int(config.get("tab_emb_dim", 128)),
+                shared_dim=int(config.get("n_latent", 64)),
+                alpha=float(config.get("alpha", 1.0)),
+                delta_per_alt=not bool(config.get("delta_shared", False)),
+                fuse_dropout=0.0,
+                freeze_video=freeze_video,
+                freeze_audio=freeze_audio,
+            ).to(torch.device(args.device))
+            if ckpt.exists():
+                try:
+                    state = torch.load(ckpt, map_location=args.device, weights_only=True)
+                except TypeError:
+                    state = torch.load(ckpt, map_location=args.device)
+                model.load_state_dict(state, strict=False)
+            if args.skip_video:
+                model.skip_video = True
+            if args.skip_audio:
+                model.skip_audio = True
+            if args.utility_only:
+                for n, p in model.named_parameters():
+                    if not (n.startswith("beta") or n.startswith("delta") or n.startswith("ASC")):
+                        p.requires_grad = False
 
-        params_list, _ = expand_param_names(model)
-        vec = torch.nn.utils.parameters_to_vector(params_list).detach().cpu().numpy()
-        params.append(vec)
-        if args.progress_every and (b + 1) % args.progress_every == 0:
-            dt = time.time() - t0
-            print(f"[bootstrap] done {b+1}/{args.n_bootstrap} (sec={dt:.2f})", flush=True)
+            opt = torch.optim.Adam(model.parameters(), lr=args.lr)
+            best_ll = -np.inf
+            patience = 0
+            for _ in range(args.max_iter):
+                ll = _epoch_pass(model, loader, torch.device(args.device), optimizer=opt)
+                if args.iter_log_every and (_ + 1) % args.iter_log_every == 0 and show_progress:
+                    print(f"[bootstrap] iter={_+1}/{args.max_iter} ll={ll:.4f}", flush=True)
+                if ll > best_ll + 1e-6:
+                    best_ll = ll
+                    patience = 0
+                else:
+                    patience += 1
+                    if patience >= args.early_stop_patience:
+                        break
 
-    samples = np.vstack(params)
+            if args.lbfgs_steps > 0:
+                lbfgs = torch.optim.LBFGS(model.parameters(), max_iter=args.lbfgs_steps, line_search_fn="strong_wolfe")
+
+                def closure():
+                    lbfgs.zero_grad()
+                    ll_full = _epoch_pass(model, loader, torch.device(args.device), optimizer=None)
+                    loss = -torch.tensor(ll_full, device=torch.device(args.device), dtype=torch.float32)
+                    loss.backward()
+                    return loss
+
+                lbfgs.step(closure)
+
+            params_list, _ = expand_param_names(model)
+            vec = torch.nn.utils.parameters_to_vector(params_list).detach().cpu().numpy()
+            params_local.append(vec)
+            if show_progress and args.progress_every and (b + 1) % args.progress_every == 0:
+                dt = time.time() - t0
+                print(f"[bootstrap] done {b+1}/{n_bootstrap} (sec={dt:.2f})", flush=True)
+        return np.vstack(params_local)
+
+    samples = _run_bootstrap(args.n_bootstrap, args.by_row, show_progress=True)
+    inflation_samples = None
+    if args.inflation_n_bootstrap and args.inflation_n_bootstrap > 0:
+        print(f"[bootstrap] inflation bootstrap n={args.inflation_n_bootstrap} (participant-level)", flush=True)
+        inflation_samples = _run_bootstrap(args.inflation_n_bootstrap, by_row=False, show_progress=False)
     if args.beta_shared:
         beta_idx = [i for i, n in enumerate(base_names) if n.startswith("beta")]
         non_beta_idx = [i for i, n in enumerate(base_names) if not n.startswith("beta")]
@@ -573,6 +583,8 @@ def main() -> None:
                 shared_names = [f"beta_shared[{i}]" for i in range(dim_u)]
                 samples = np.concatenate([samples[:, beta_idx], samples[:, non_beta_idx]], axis=1)
                 base_names = shared_names + [base_names[i] for i in non_beta_idx]
+                if inflation_samples is not None:
+                    inflation_samples = np.concatenate([inflation_samples[:, beta_idx], inflation_samples[:, non_beta_idx]], axis=1)
             else:
                 raise ValueError(f"beta_shared: mismatch beta_idx={len(beta_idx)} expected={expected}")
         else:
@@ -582,6 +594,10 @@ def main() -> None:
             shared_names = [f"beta_shared[{i}]" for i in range(dim_u)]
             samples = np.concatenate([beta_shared, samples[:, non_beta_idx]], axis=1)
             base_names = shared_names + [base_names[i] for i in non_beta_idx]
+            if inflation_samples is not None:
+                beta_samples_inf = inflation_samples[:, beta_idx].reshape(inflation_samples.shape[0], n_betas, dim_u)
+                beta_shared_inf = beta_samples_inf.mean(axis=1)
+                inflation_samples = np.concatenate([beta_shared_inf, inflation_samples[:, non_beta_idx]], axis=1)
     if args.beta_only and args.tabular_only:
         raise ValueError("--beta-only y --tabular-only son excluyentes.")
     if args.utility_betas_only and (args.tabular_only or (not args.beta_only and not args.beta_shared)):
@@ -591,10 +607,14 @@ def main() -> None:
         keep_idx = [i for i, n in enumerate(base_names) if n.startswith("beta")]
         samples = samples[:, keep_idx]
         base_names = [base_names[i] for i in keep_idx]
+        if inflation_samples is not None:
+            inflation_samples = inflation_samples[:, keep_idx]
     elif args.tabular_only:
         keep_idx = [i for i, n in enumerate(base_names) if n.startswith("beta") or n.startswith("tab_enc")]
         samples = samples[:, keep_idx]
         base_names = [base_names[i] for i in keep_idx]
+        if inflation_samples is not None:
+            inflation_samples = inflation_samples[:, keep_idx]
     elif args.utility_betas_only:
         if args.beta_shared:
             keep_idx = [i for i, n in enumerate(base_names) if n.startswith("beta_shared") or n.startswith("ASC")]
@@ -602,8 +622,14 @@ def main() -> None:
             keep_idx = [i for i, n in enumerate(base_names) if n.startswith("beta") or n.startswith("ASC")]
         samples = samples[:, keep_idx]
         base_names = [base_names[i] for i in keep_idx]
+        if inflation_samples is not None:
+            inflation_samples = inflation_samples[:, keep_idx]
 
     summary = summarize_params(samples, base_names)
+    if inflation_samples is not None:
+        std_row = np.nanstd(samples, axis=0, ddof=1)
+        std_part = np.nanstd(inflation_samples, axis=0, ddof=1)
+        summary["inflation_std_ratio"] = std_part / np.clip(std_row, 1e-12, None)
     annotations = build_param_annotations(base_names, u_names, ind_cols, n_choices)
     summary = annotations.merge(summary, on="name", how="left")
     args.out_csv.parent.mkdir(parents=True, exist_ok=True)
