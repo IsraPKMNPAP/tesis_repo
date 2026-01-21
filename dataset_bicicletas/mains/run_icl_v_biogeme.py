@@ -159,7 +159,7 @@ def main() -> None:
     parser.add_argument("--max-obs-i", type=int, default=1)
     parser.add_argument("--max-obs-lt", type=int, default=0)
     parser.add_argument("--optimizer", type=str, default="BFGS")
-    parser.add_argument("--results-dir", type=Path, default=Path("results/icl_v_biogeme"))
+    parser.add_argument("--results-dir", type=Path, default=Path("results/latest_iclv/ICLV"))
     parser.add_argument("--model-name", type=str, default="icl_v_biogeme")
     args = parser.parse_args()
     if not args.model_name:

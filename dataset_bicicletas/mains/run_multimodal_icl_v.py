@@ -529,7 +529,7 @@ def main():
             f"val loss={val_metrics['loss']:.4f} acc={val_metrics['acc']:.3f} ll={val_metrics['avg_log_likelihood']:.4f}"
         )
 
-    results_dir = Path("results")
+    results_dir = Path("results/latest_iclv")
     ensure_dir(results_dir)
     base_config = {
         "pkl": str(pkl_path),
