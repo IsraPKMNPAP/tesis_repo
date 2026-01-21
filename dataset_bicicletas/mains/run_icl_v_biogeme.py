@@ -28,7 +28,7 @@ from utils.splits import split_by_participant
 
 
 def load_cols(path: Path) -> list[str]:
-    return [c.strip().lower() for c in path.read_text(encoding="utf-8").splitlines() if c.strip()]
+    return [c.strip().lower().replace(" ", "_") for c in path.read_text(encoding="utf-8").splitlines() if c.strip()]
 
 
 def warn_missing(df: pd.DataFrame, cols: list[str], label: str) -> list[str]:

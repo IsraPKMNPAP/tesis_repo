@@ -70,21 +70,33 @@ def split_cols_by_type(df: pd.DataFrame, cols: Sequence[str], cat_unique_thresho
     return numeric, categorical, dropped
 
 
+def _prep_input(df: pd.DataFrame, numeric: list[str], categorical: list[str], num_medians: pd.Series, cat_modes: dict) -> pd.DataFrame:
+    df_num = df[numeric].apply(pd.to_numeric, errors="coerce") if numeric else pd.DataFrame(index=df.index)
+    if numeric:
+        for c in numeric:
+            med = num_medians.get(c, np.nan)
+            df_num[c] = df_num[c].fillna(med)
+    df_cat = df[categorical].copy() if categorical else pd.DataFrame(index=df.index)
+    if categorical:
+        for c in categorical:
+            fill_val = cat_modes.get(c, "missing")
+            df_cat[c] = df_cat[c].fillna(fill_val).infer_objects(copy=False).astype(str)
+    return pd.concat([df_num, df_cat], axis=1)
+
+
 def prepare_preprocessor(df: pd.DataFrame, cols: Sequence[str], cat_unique_threshold: int):
     cols = [c for c in cols if c in df.columns]
     numeric, categorical, dropped = split_cols_by_type(df, cols, cat_unique_threshold)
     if dropped:
         print(f"[prep] dropped high-card categoricals: {dropped}")
-    df_num = df[numeric].apply(pd.to_numeric, errors="coerce") if numeric else pd.DataFrame(index=df.index)
-    if numeric:
-        df_num = df_num.fillna(df_num.median(numeric_only=True))
-    df_cat = df[categorical].copy() if categorical else pd.DataFrame(index=df.index)
+    df_num_raw = df[numeric].apply(pd.to_numeric, errors="coerce") if numeric else pd.DataFrame(index=df.index)
+    num_medians = df_num_raw.median(numeric_only=True) if numeric else pd.Series(dtype=float)
+    cat_modes = {}
     if categorical:
         for c in categorical:
-            mode = df_cat[c].mode(dropna=True)
-            fill_val = mode.iloc[0] if len(mode) else "missing"
-            df_cat[c] = df_cat[c].fillna(fill_val).infer_objects(copy=False).astype(str)
-    df_prep = pd.concat([df_num, df_cat], axis=1)
+            mode = df[c].mode(dropna=True)
+            cat_modes[c] = mode.iloc[0] if len(mode) else "missing"
+    df_prep = _prep_input(df, numeric, categorical, num_medians, cat_modes)
     preprocessor = ColumnTransformer(
         transformers=[
             ("num", StandardScaler(), numeric),
@@ -93,7 +105,8 @@ def prepare_preprocessor(df: pd.DataFrame, cols: Sequence[str], cat_unique_thres
     )
     mat = preprocessor.fit_transform(df_prep)
     kept_cols = numeric + categorical
-    return mat, preprocessor, kept_cols
+    stats = {"numeric": numeric, "categorical": categorical, "num_medians": num_medians, "cat_modes": cat_modes}
+    return mat, preprocessor, kept_cols, stats
 
 
 def encode_indicator_blocks(df_tr: pd.DataFrame, df_val: pd.DataFrame, cols: Sequence[str]) -> tuple[np.ndarray, np.ndarray]:
@@ -122,7 +135,7 @@ def resolve_cols(df: pd.DataFrame, explicit: Sequence[str] | None, file_path: st
     if explicit:
         cols = list(explicit)
     elif file_path:
-        cols = load_features_file(file_path)
+        cols = [c.strip().lower().replace(" ", "_") for c in load_features_file(file_path)]
     else:
         cols = []
     if not cols:
@@ -155,28 +168,29 @@ def build_datasets(
     audio_fallback_template: str | None = None,
     cat_unique_threshold: int = 5,
 ):
+    i_stats = None
     # OBS_LT preprocessing (para el encoder multimodal)
-    X_lt_tr_mat, preproc_lt, obs_lt_cols = prepare_preprocessor(df_tr, obs_lt_cols, cat_unique_threshold=cat_unique_threshold)
+    X_lt_tr_mat, preproc_lt, obs_lt_cols, lt_stats = prepare_preprocessor(df_tr, obs_lt_cols, cat_unique_threshold=cat_unique_threshold)
     if len(df_val):
-        X_lt_val_mat = preproc_lt.transform(df_val[obs_lt_cols].copy())
+        X_lt_val_mat = preproc_lt.transform(_prep_input(df_val, **lt_stats))
     else:
         X_lt_val_mat = np.zeros((0, X_lt_tr_mat.shape[1]), dtype=np.float32)
 
     # OBS_U preprocessing
-    X_u_tr_mat, preproc_u, obs_u_cols = prepare_preprocessor(df_tr, obs_u_cols, cat_unique_threshold=cat_unique_threshold)
+    X_u_tr_mat, preproc_u, obs_u_cols, u_stats = prepare_preprocessor(df_tr, obs_u_cols, cat_unique_threshold=cat_unique_threshold)
     if len(df_val):
-        X_u_val_mat = preproc_u.transform(df_val[obs_u_cols].copy())
+        X_u_val_mat = preproc_u.transform(_prep_input(df_val, **u_stats))
     else:
         X_u_val_mat = np.zeros((0, X_u_tr_mat.shape[1]), dtype=np.float32)
 
     # Indicadores
     if indicator_cols and len(df_val):
-        ind_tr_mat, preproc_i, indicator_cols = prepare_preprocessor(df_tr, indicator_cols, cat_unique_threshold=cat_unique_threshold)
-        ind_val_mat = preproc_i.transform(df_val[indicator_cols].copy())
+        ind_tr_mat, preproc_i, indicator_cols, i_stats = prepare_preprocessor(df_tr, indicator_cols, cat_unique_threshold=cat_unique_threshold)
+        ind_val_mat = preproc_i.transform(_prep_input(df_val, **i_stats))
         ind_tr_mat = to_float_array(ind_tr_mat)
         ind_val_mat = to_float_array(ind_val_mat)
     elif indicator_cols:
-        ind_tr_mat, preproc_i, indicator_cols = prepare_preprocessor(df_tr, indicator_cols, cat_unique_threshold=cat_unique_threshold)
+        ind_tr_mat, preproc_i, indicator_cols, i_stats = prepare_preprocessor(df_tr, indicator_cols, cat_unique_threshold=cat_unique_threshold)
         ind_tr_mat = to_float_array(ind_tr_mat)
         ind_val_mat = np.zeros((0, ind_tr_mat.shape[1]), dtype=np.float32)
     else:
@@ -242,7 +256,19 @@ def build_datasets(
     train_ds = MultimodalICLVDataset(base_tr, obs_u_tr_t, ind_tr_t, n_choices=num_choices)
     val_ds = MultimodalICLVDataset(base_val, obs_u_val_t, ind_val_t, n_choices=num_choices)
 
-    return train_ds, val_ds, preproc_lt, preproc_u, preproc_i if indicator_cols else None, obs_lt_cols, obs_u_cols, indicator_cols
+    return (
+        train_ds,
+        val_ds,
+        preproc_lt,
+        preproc_u,
+        preproc_i if indicator_cols else None,
+        obs_lt_cols,
+        obs_u_cols,
+        indicator_cols,
+        lt_stats,
+        u_stats,
+        i_stats if indicator_cols else None,
+    )
 
 
 def run_epoch(model, loader, device, train: bool = True, optimizer=None, grad_clip: float = 0.0):
@@ -458,7 +484,19 @@ def main():
     )
     print(format_split_report(info))
 
-    train_ds, val_ds, preproc_lt, preproc_u, preproc_i, obs_lt_cols, obs_u_cols, indicator_cols = build_datasets(
+    (
+        train_ds,
+        val_ds,
+        preproc_lt,
+        preproc_u,
+        preproc_i,
+        obs_lt_cols,
+        obs_u_cols,
+        indicator_cols,
+        lt_stats,
+        u_stats,
+        i_stats,
+    ) = build_datasets(
         df_tr=df_tr,
         df_val=df_val,
         obs_lt_cols=obs_lt_cols,
@@ -485,10 +523,10 @@ def main():
     # Test dataset opcional
     test_ds = None
     if len(df_te):
-        X_lt_te_mat = preproc_lt.transform(df_te[obs_lt_cols].copy())
-        X_u_te_mat = preproc_u.transform(df_te[obs_u_cols].copy())
-        if indicator_cols and preproc_i is not None:
-            ind_te_mat = to_float_array(preproc_i.transform(df_te[indicator_cols].copy()))
+        X_lt_te_mat = preproc_lt.transform(_prep_input(df_te, **lt_stats))
+        X_u_te_mat = preproc_u.transform(_prep_input(df_te, **u_stats))
+        if indicator_cols and preproc_i is not None and i_stats is not None:
+            ind_te_mat = to_float_array(preproc_i.transform(_prep_input(df_te, **i_stats)))
         else:
             ind_te_mat = np.zeros((len(df_te), 0), dtype=np.float32)
 

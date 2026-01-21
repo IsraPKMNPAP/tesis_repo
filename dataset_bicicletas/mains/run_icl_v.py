@@ -115,9 +115,9 @@ def resolve_cols(
     if explicit_cols:
         cols = list(explicit_cols)
     elif cols_file:
-        cols = load_features_file(cols_file)
+        cols = [c.strip().lower().replace(" ", "_") for c in load_features_file(cols_file)]
     elif base_features_file:
-        cols = load_features_file(base_features_file)
+        cols = [c.strip().lower().replace(" ", "_") for c in load_features_file(base_features_file)]
     else:
         cols = []
     if not cols:
